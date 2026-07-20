@@ -52,6 +52,11 @@ export const api = {
   updateSettings: (body) =>
     request('/api/v1/settings', { method: 'PUT', body: JSON.stringify(body) }),
   analytics: () => request('/api/v1/analytics'),
+  backup: () => request('/api/v1/backup'),
+  restoreBackup: (body) => request('/api/v1/backup', { method: 'POST', body: JSON.stringify(body) }),
+  zoneDNSSEC: (name) => request(`/api/v1/zones/${encodeURIComponent(name)}/dnssec`),
+  enableZoneDNSSEC: (name) =>
+    request(`/api/v1/zones/${encodeURIComponent(name)}/dnssec`, { method: 'POST', body: '{}' }),
   anomaly: () => request('/api/v1/anomaly'),
   updateZoneMeta: (name, body) =>
     request(`/api/v1/zones/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(body) }),

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"io/fs"
 	"log/slog"
@@ -25,7 +26,7 @@ import (
 	"github.com/powersvx/powersvx/internal/server"
 )
 
-const Version = "1.1.0-phase5"
+const Version = "1.2.0-hardening"
 
 type API struct {
 	cfg      *config.Config
@@ -86,6 +87,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/anomaly", a.withAuth(a.handleAnomaly))
 	mux.HandleFunc("/api/v1/query-logs", a.withAuth(a.handleQueryLogs))
 	mux.HandleFunc("/api/v1/acme", a.withAuth(a.handleACME))
+	mux.HandleFunc("/api/v1/backup", a.withAuth(a.handleBackup))
 	if a.webFS != nil {
 		mux.Handle("/", a.spaHandler())
 	}
@@ -101,15 +103,38 @@ func (a *API) Shutdown(ctx context.Context) error {
 
 func (a *API) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if a.cfg.API.AuthType == "token" && a.cfg.API.APIToken != "" {
-			h := r.Header.Get("Authorization")
-			if h != "Bearer "+a.cfg.API.APIToken && r.URL.Query().Get("token") != a.cfg.API.APIToken {
+		if a.cfg.API.AuthType == "token" {
+			want := a.cfg.API.APIToken
+			if want == "" {
+				http.Error(w, "api token not configured", http.StatusServiceUnavailable)
+				return
+			}
+			got := bearerToken(r.Header.Get("Authorization"))
+			if got == "" {
+				got = r.URL.Query().Get("token")
+			}
+			if !tokenEqual(got, want) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 		}
 		next(w, r)
 	}
+}
+
+func bearerToken(h string) string {
+	const p = "Bearer "
+	if len(h) > len(p) && strings.EqualFold(h[:len(p)], p) {
+		return strings.TrimSpace(h[len(p):])
+	}
+	return ""
+}
+
+func tokenEqual(got, want string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 func withCORS(next http.Handler) http.Handler {
@@ -316,12 +341,27 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			if body.DNSSECEnabled != nil && *body.DNSSECEnabled {
+				if sig := a.srv.Signer(); sig != nil {
+					if err := sig.Ensure(config.NormalizeName(zone)); err != nil {
+						http.Error(w, "dnssec keys: "+err.Error(), http.StatusInternalServerError)
+						return
+					}
+				}
+			}
 			meta, err := a.db.GetZoneMeta(r.Context(), zone)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			if sig := a.srv.Signer(); sig != nil && sig.Enabled(zone) {
+				meta["signing"] = true
+				if ds, err := sig.DS(zone); err == nil && ds != nil {
+					meta["ds"] = ds.String()
+				}
+			}
 			writeJSON(w, http.StatusOK, meta)
+			return
 		case http.MethodDelete:
 			if a.db != nil && a.cfg.Database.Enabled {
 				if err := a.db.DeleteZone(r.Context(), zone); err != nil {
@@ -334,6 +374,49 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	if parts[1] == "dnssec" {
+		switch r.Method {
+		case http.MethodGet:
+			sig := a.srv.Signer()
+			if sig == nil || !sig.Enabled(zone) {
+				writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+				return
+			}
+			keys := []string{}
+			for _, rr := range sig.DNSKEYs(zone) {
+				keys = append(keys, rr.String())
+			}
+			out := map[string]any{"enabled": true, "keys": keys}
+			if ds, err := sig.DS(zone); err == nil && ds != nil {
+				out["ds"] = ds.String()
+			}
+			writeJSON(w, http.StatusOK, out)
+		case http.MethodPost:
+			sig := a.srv.Signer()
+			if sig == nil {
+				http.Error(w, "signer unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if err := sig.Ensure(config.NormalizeName(zone)); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if a.db != nil && a.cfg.Database.Enabled {
+				on := true
+				_ = a.db.UpdateZoneMeta(r.Context(), zone, &on, nil, nil, nil, nil, nil)
+			}
+			ds, _ := sig.DS(zone)
+			out := map[string]any{"enabled": true}
+			if ds != nil {
+				out["ds"] = ds.String()
+			}
+			writeJSON(w, http.StatusOK, out)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -534,6 +617,10 @@ func (a *API) settingsPayload() map[string]any {
 		"query_log_enabled": f.QueryLog,
 		"udp_addr":          a.srv.UDPAddr(),
 		"geodns_db":         a.cfg.GeoDNS.DatabasePath,
+		"auth_type":         a.cfg.API.AuthType,
+		"auth_required":     a.cfg.API.AuthType == "token",
+		"auth_configured":   a.cfg.API.AuthType == "token" && a.cfg.API.APIToken != "",
+		"tls_min_version":   "1.3",
 		"editable": []string{
 			"geodns", "rpz_enabled", "rate_limit", "ecs_enabled", "split_horizon",
 			"resolver_mode", "forward_on_fail", "query_log_enabled",
@@ -907,6 +994,77 @@ func (a *API) handleACME(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
+
+func (a *API) handleBackup(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		zones := a.auth.ListZones()
+		out := make([]map[string]any, 0, len(zones))
+		for _, z := range zones {
+			recs, _ := a.auth.GetRecords(z.Name)
+			entry := map[string]any{"name": z.Name, "records": recordsDTO(recs)}
+			if a.db != nil && a.cfg.Database.Enabled {
+				if meta, err := a.db.GetZoneMeta(r.Context(), z.Name); err == nil {
+					entry["meta"] = meta
+				}
+			}
+			if sig := a.srv.Signer(); sig != nil && sig.Enabled(z.Name) {
+				entry["dnssec_signing"] = true
+				if ds, err := sig.DS(z.Name); err == nil && ds != nil {
+					entry["ds"] = ds.String()
+				}
+			}
+			out = append(out, entry)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"version": apiBackupVersion,
+			"zones":   out,
+		})
+	case http.MethodPost:
+		var body struct {
+			Zones []struct {
+				Name    string      `json:"name"`
+				Records []recordDTO `json:"records"`
+			} `json:"zones"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		imported := 0
+		for _, z := range body.Zones {
+			if z.Name == "" {
+				continue
+			}
+			if a.db != nil && a.cfg.Database.Enabled {
+				if _, err := a.db.CreateZone(r.Context(), z.Name); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				for _, rec := range z.Records {
+					if err := a.db.AddRecord(r.Context(), z.Name, rec.toRecord()); err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+				}
+			} else {
+				a.auth.UpsertZone(z.Name)
+				for _, rec := range z.Records {
+					a.auth.AddRecord(z.Name, rec.toRecord())
+				}
+			}
+			imported++
+		}
+		if a.db != nil && a.cfg.Database.Enabled {
+			_ = a.reloadZones()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"imported_zones": imported})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+const apiBackupVersion = 1
 
 func (a *API) handleEventStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

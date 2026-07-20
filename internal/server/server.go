@@ -40,6 +40,7 @@ type Server struct {
 	res     *resolver.Resolver
 	auth    *authoritative.Store
 	dnssec  *dnssec.Validator
+	signer  *dnssec.Signer
 	limiter *ratelimit.Limiter
 	rpz     *rpz.Engine
 	tsig    *tsig.Store
@@ -75,6 +76,7 @@ type Deps struct {
 	Res     *resolver.Resolver
 	Auth    *authoritative.Store
 	DNSSEC  *dnssec.Validator
+	Signer  *dnssec.Signer
 	Limiter *ratelimit.Limiter
 	RPZ     *rpz.Engine
 	TSIG    *tsig.Store
@@ -99,6 +101,7 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 		res:     d.Res,
 		auth:    d.Auth,
 		dnssec:  d.DNSSEC,
+		signer:  d.Signer,
 		limiter: d.Limiter,
 		rpz:     d.RPZ,
 		tsig:    d.TSIG,
@@ -292,10 +295,18 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			m.SetReply(req)
 			m.Authoritative = true
 			m.RecursionAvailable = true
-			if len(rrs) == 0 {
+			zone := s.auth.FindZone(qname)
+			if qtype == dns.TypeDNSKEY && s.signer != nil && s.signer.Enabled(zone) {
+				m.Answer = s.signer.DNSKEYs(zone)
+				m.Rcode = dns.RcodeSuccess
+				s.signer.SignResponse(zone, req, m)
+			} else if len(rrs) == 0 {
 				m.Rcode = dns.RcodeNameError
 			} else {
 				m.Answer = rrs
+				if s.signer != nil && s.signer.Enabled(zone) {
+					s.signer.SignResponse(zone, req, m)
+				}
 			}
 			s.storeAndWriteScoped(w, req, m, ecsKey, viewName, geoTag)
 			metrics.QueriesTotal.WithLabelValues(proto, "auth").Inc()
@@ -616,6 +627,7 @@ func (s *Server) QueryLogger() *database.QueryLogger     { return s.qlog }
 
 func (s *Server) Analytics() *analytics.Collector { return s.stats }
 func (s *Server) Anomaly() *anomaly.Detector       { return s.anomaly }
+func (s *Server) Signer() *dnssec.Signer           { return s.signer }
 
 func (s *Server) ServeDNSMsg(req *dns.Msg) (*dns.Msg, []byte, error) {
 	rw := &memResponseWriter{}

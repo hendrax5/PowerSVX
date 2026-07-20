@@ -217,6 +217,12 @@ func pickGeo(recs []Record, geoTag string) []Record {
 	return untagged
 }
 
+func (s *Store) FindZone(qname string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.findZone(config.NormalizeName(qname))
+}
+
 func (s *Store) findZone(qname string) string {
 	best := ""
 	for z := range s.zones {

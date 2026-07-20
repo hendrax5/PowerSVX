@@ -604,11 +604,14 @@ function ZoneDetail() {
   const nav = useNavigate()
 
   const load = () =>
-    api
-      .getZone(zone)
-      .then((d) => {
+    Promise.all([api.getZone(zone), api.zoneDNSSEC(zone).catch(() => null)])
+      .then(([d, dnssec]) => {
         setRecs(d.records || [])
-        setMeta(d.meta || null)
+        let m = d.meta || null
+        if (dnssec?.enabled) {
+          m = { ...(m || {}), dnssec_enabled: true, ds: dnssec.ds || (m && m.ds), signing: true }
+        }
+        setMeta(m)
       })
       .catch((e) => setErr(e.message))
 
@@ -736,15 +739,64 @@ function ZoneDetail() {
                 checked={!!meta.dnssec_enabled}
                 onChange={(e) => setMeta({ ...meta, dnssec_enabled: e.target.checked })}
               />
-              DNSSEC enabled flag
+              DNSSEC signing (generates KSK/ZSK)
             </label>
           </div>
-          <button type="submit" className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm">
-            Save zone meta
-          </button>
+          {meta.ds ? (
+            <div className="text-xs mono break-all text-[var(--muted)]">
+              <span className="text-[var(--accent)]">DS </span>
+              {meta.ds}
+            </div>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            <button type="submit" className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm">
+              Save zone meta
+            </button>
+            <button
+              type="button"
+              className="border border-[var(--border)] px-3 py-2 text-sm"
+              onClick={async () => {
+                try {
+                  const d = await api.enableZoneDNSSEC(zone)
+                  setMeta((m) => ({ ...(m || {}), dnssec_enabled: true, ds: d.ds, signing: true }))
+                  setOk('DNSSEC keys ready — publish DS at parent')
+                } catch (ex) {
+                  setErr(ex.message)
+                }
+              }}
+            >
+              Enable signing / show DS
+            </button>
+          </div>
         </form>
       ) : (
-        <p className="text-xs text-[var(--muted)]">Zone meta/SOA editor appears when PostgreSQL is enabled.</p>
+        <div className="panel p-4 space-y-3">
+          <h2 className="text-sm font-medium">DNSSEC signing</h2>
+          <p className="text-xs text-[var(--muted)]">
+            Zone meta/SOA editor appears when PostgreSQL is enabled. Signing keys work without DB.
+          </p>
+          {meta?.ds ? (
+            <div className="text-xs mono break-all text-[var(--muted)]">
+              <span className="text-[var(--accent)]">DS </span>
+              {meta.ds}
+            </div>
+          ) : null}
+          <button
+            type="button"
+            className="border border-[var(--border)] px-3 py-2 text-sm"
+            onClick={async () => {
+              try {
+                const d = await api.enableZoneDNSSEC(zone)
+                setMeta((m) => ({ ...(m || {}), dnssec_enabled: true, ds: d.ds, signing: true }))
+                setOk('DNSSEC keys ready — publish DS at parent')
+              } catch (ex) {
+                setErr(ex.message)
+              }
+            }}
+          >
+            Enable signing / show DS
+          </button>
+        </div>
       )}
 
       <form onSubmit={save} className="grid grid-cols-2 md:grid-cols-3 gap-2 panel p-4">
@@ -1091,6 +1143,10 @@ function Settings() {
           ['dnssec_mode', saved.dnssec_mode],
           ['udp_addr', saved.udp_addr],
           ['forwarders', (saved.forwarders || []).join(', ')],
+          ['auth_type', saved.auth_type],
+          ['auth_required', saved.auth_required],
+          ['auth_configured', saved.auth_configured],
+          ['tls_min_version', saved.tls_min_version],
         ].map(([k, v]) => (
           <div key={k} className="flex justify-between gap-4 px-4 py-2.5">
             <dt className="text-[var(--muted)]">{k}</dt>
@@ -1100,6 +1156,7 @@ function Settings() {
       </dl>
 
       <ACMEPanel />
+      <BackupPanel />
       <RPZPanel initial={rpz} onChange={setRpz} />
     </div>
   )
@@ -1341,6 +1398,87 @@ function clonePolicies(list) {
     format: p.format || 'hosts',
     action: p.action || 'nxdomain',
   }))
+}
+
+function BackupPanel() {
+  const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
+  const [busy, setBusy] = useState(false)
+  const fileRef = useRef(null)
+
+  const download = async () => {
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const data = await api.backup()
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `powersvx-backup-${new Date().toISOString().slice(0, 10)}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      setOk('Backup downloaded')
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const restore = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const text = await file.text()
+      const body = JSON.parse(text)
+      await api.restoreBackup(body)
+      setOk('Backup restored — reload zones if needed')
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="panel p-4 space-y-3">
+      <h2 className="text-sm font-medium">Zone backup</h2>
+      <p className="text-xs text-[var(--muted)]">
+        Export authoritative zones as JSON, or restore from a previous backup. See docs/PRODUCTION.md.
+      </p>
+      {err ? <ErrorBox msg={err} /> : null}
+      {ok ? (
+        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
+          {ok}
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={download}
+          className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm disabled:opacity-40"
+        >
+          Download backup
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => fileRef.current?.click()}
+          className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm disabled:opacity-40"
+        >
+          Restore from file
+        </button>
+        <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={restore} />
+      </div>
+    </section>
+  )
 }
 
 function ACMEPanel() {

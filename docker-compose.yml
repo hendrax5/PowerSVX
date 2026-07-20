@@ -9,7 +9,8 @@ services:
       - API_TOKEN=${API_TOKEN:-dev-token}
       - TZ=Asia/Jakarta
     volumes:
-      - ./data/cache:/data/cache
+      # Named volume avoids Windows bind-mount permission denied for USER powersvx
+      - powersvx-cache:/data/cache
       - ./configs/powersvx.docker.toml:/etc/PowerSVX/powersvx.toml:ro
       - ./configs/sample-blocklist.txt:/etc/PowerSVX/sample-blocklist.txt:ro
     ports:
@@ -70,10 +71,14 @@ services:
       - ./data/postgres:/var/lib/postgresql/data
       - ./configs/powersvx.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     ports:
-      - "127.0.0.1:5432:5432"
+      # Avoid clash with other local Postgres (e.g. noc_db on 5432)
+      - "127.0.0.1:5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U PowerSVX -d PowerSVX"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+
+volumes:
+  powersvx-cache:

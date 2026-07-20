@@ -94,6 +94,11 @@ func main() {
 	}
 
 	sec := dnssec.New(dnssec.ParseMode(cfg.Resolver.DNSSECMode, cfg.Resolver.DNSSECValidation))
+	signer := dnssec.NewSigner("./data/dnssec")
+	if cfg.API.AuthType == "token" && cfg.API.APIToken == "" {
+		log.Error("api auth_type=token requires api_token (set API_TOKEN or config)")
+		os.Exit(1)
+	}
 	limiter := ratelimit.New(cfg.RateLimit.Enabled, cfg.RateLimit.DefaultQPS, cfg.RateLimit.DefaultBurst, cfg.RateLimit.BlockDuration, cfg.RateLimit.Whitelist)
 
 	rpzPath := config.RPZPoliciesPath("./data")
@@ -216,7 +221,7 @@ func main() {
 		}
 	}
 	dnsSrv := server.New(cfg, server.Deps{
-		Cache: tier, Res: res, Auth: auth, DNSSEC: sec,
+		Cache: tier, Res: res, Auth: auth, DNSSEC: sec, Signer: signer,
 		Limiter: limiter, RPZ: rpzEng, TSIG: tsigStore,
 		Views: views, Geo: geoRes, TLS: tlsCfg, Events: bus,
 		ACME: acmeStore, Stats: stats, Anomaly: anom, Plugins: plugins, QLog: qlog,

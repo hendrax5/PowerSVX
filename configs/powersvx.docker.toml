@@ -77,7 +77,8 @@ enabled = false
 [api]
 rest_enabled = true
 rest_bind = "0.0.0.0:5380"
-auth_type = "none"
+# Production: require Bearer token (set API_TOKEN in the environment).
+auth_type = "token"
 api_token = "${API_TOKEN}"
 
 [logging]
