@@ -18,13 +18,13 @@ services:
       - ./configs/powersvx.docker.toml:/etc/PowerSVX/powersvx.toml:ro
       - ./configs/sample-blocklist.txt:/etc/PowerSVX/sample-blocklist.txt:ro
     ports:
-      - "5453:53/udp"
-      - "5453:53/tcp"
-      - "8853:853/tcp"
-      - "8443:443/tcp"
-      - "784:784/udp"
-      - "5380:5380"
-      - "9100:9100"
+      - "0.0.0.0:5453:53/udp"
+      - "0.0.0.0:5453:53/tcp"
+      - "0.0.0.0:8853:853/tcp"
+      - "0.0.0.0:8443:443/tcp"
+      - "0.0.0.0:784:784/udp"
+      - "0.0.0.0:5380:5380"
+      - "0.0.0.0:9100:9100"
     cap_add:
       - NET_BIND_SERVICE
       # For [server] tproxy = true (Linux IP_TRANSPARENT), also add NET_ADMIN
@@ -47,7 +47,7 @@ services:
       - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./configs/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
     ports:
-      - "9090:9090"
+      - "0.0.0.0:9090:9090"
     depends_on:
       - powersvx
     restart: unless-stopped
@@ -63,7 +63,7 @@ services:
       - ./configs/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./data/grafana:/var/lib/grafana
     ports:
-      - "3000:3000"
+      - "0.0.0.0:3000:3000"
     depends_on:
       - prometheus
     restart: unless-stopped
@@ -80,7 +80,7 @@ services:
       - ./configs/powersvx.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     ports:
       # Avoid clash with other local Postgres (e.g. noc_db on 5432)
-      - "127.0.0.1:5433:5432"
+      - "0.0.0.0:5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U PowerSVX -d PowerSVX"]
       interval: 10s

@@ -81,8 +81,7 @@ enabled = false
 
 [metrics]
 prometheus_enabled = true
-# Bind to localhost in production and scrape via SSH tunnel / local Prometheus.
-prometheus_bind = "127.0.0.1:9100"
+prometheus_bind = "0.0.0.0:9100"
 
 [tsig]
 enabled = false
@@ -100,8 +99,7 @@ require_tsig = true
 
 [api]
 rest_enabled = true
-# Prefer localhost + reverse proxy (nginx/Caddy) with TLS in production.
-rest_bind = "127.0.0.1:5380"
+rest_bind = "0.0.0.0:5380"
 auth_type = "token"
 api_token = "${API_TOKEN}"
 # [[api.tokens]]

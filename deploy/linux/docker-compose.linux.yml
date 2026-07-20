@@ -5,18 +5,18 @@
 #   docker compose -f docker-compose.yml -f deploy/linux/docker-compose.linux.yml up -d --build
 #
 # Requires free host port 53 (disable systemd-resolved stub if needed).
+# All published ports bind 0.0.0.0 (all interfaces). Protect with firewall.
 
 services:
   powersvx:
     ports:
-      - "53:53/udp"
-      - "53:53/tcp"
-      - "853:853/tcp"
-      - "443:443/tcp"
-      - "784:784/udp"
-      # API/UI: localhost only
-      - "127.0.0.1:5380:5380"
-      - "127.0.0.1:9100:9100"
+      - "0.0.0.0:53:53/udp"
+      - "0.0.0.0:53:53/tcp"
+      - "0.0.0.0:853:853/tcp"
+      - "0.0.0.0:443:443/tcp"
+      - "0.0.0.0:784:784/udp"
+      - "0.0.0.0:5380:5380"
+      - "0.0.0.0:9100:9100"
     environment:
       - PG_PASSWORD=${PG_PASSWORD:?set PG_PASSWORD in .env}
       - API_TOKEN=${API_TOKEN:?set API_TOKEN in .env}
@@ -29,15 +29,17 @@ services:
       - ./certs:/etc/PowerSVX/certs:ro
 
   postgres:
-    ports: []  # no host publish — only on compose network
+    ports:
+      - "0.0.0.0:5433:5432"
 
   prometheus:
     ports:
-      - "127.0.0.1:9090:9090"
+      # Host :9090 is often already taken; map UI to 9091 instead.
+      - "0.0.0.0:9091:9090"
 
   grafana:
     ports:
-      - "127.0.0.1:3000:3000"
+      - "0.0.0.0:3000:3000"
 
 volumes:
   powersvx-data:

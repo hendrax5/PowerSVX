@@ -51,7 +51,7 @@ Copy `.env.example` → `.env` and set `PG_PASSWORD` / `API_TOKEN` before produc
 
 ## Linux production deploy
 
-See **[deploy/linux/README.md](deploy/linux/README.md)** for systemd install, `configs/powersvx.linux.toml`, secrets env, firewall, and a production Docker Compose override (`53` + localhost API).
+See **[deploy/linux/README.md](deploy/linux/README.md)** for systemd install, `configs/powersvx.linux.toml`, secrets env, firewall, and a production Docker Compose override (port `53`, all services on `0.0.0.0`).
 
 ```bash
 # Bare metal / VM

@@ -65,24 +65,25 @@ journalctl -u powersvx -f
 | `0.0.0.0:853` | DoT |
 | `0.0.0.0:443` | DoH / DoH3 |
 | `0.0.0.0:784` | DoQ |
-| `127.0.0.1:5380` | API + UI (proxy or SSH tunnel) |
-| `127.0.0.1:9100` | Prometheus metrics |
+| `0.0.0.0:5380` | API + UI |
+| `0.0.0.0:9100` | Prometheus metrics |
 
 ### 6. Firewall (example)
 
 ```bash
-# ufw
+# ufw — open only what you need; API has token auth but still lock down if possible
 sudo ufw allow 53/tcp
 sudo ufw allow 53/udp
 sudo ufw allow 853/tcp
 sudo ufw allow 443/tcp
 sudo ufw allow 784/udp
-# Do NOT expose 5380/9100 publicly unless behind auth + TLS proxy
+sudo ufw allow 5380/tcp
+sudo ufw allow 9100/tcp
 ```
 
 ### 7. Reverse proxy for UI (optional)
 
-Point nginx/Caddy to `http://127.0.0.1:5380` with TLS. Keep `auth_type = "token"`.
+Point nginx/Caddy to `http://127.0.0.1:5380` (or the host IP) with TLS. Keep `auth_type = "token"`.
 
 ### 8. Reload runtime settings
 
@@ -120,7 +121,17 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-For production Docker, prefer `configs/powersvx.docker.toml` plus a `.env` with strong secrets. Restrict `[acl] allow_query` and do not publish `5380` on `0.0.0.0` without a firewall.
+For production Docker, prefer `configs/powersvx.docker.toml` plus a `.env` with strong secrets. Ports publish on **0.0.0.0**. Prometheus is on host **9091** (maps to container 9090) because host 9090 is often already in use. Restrict `[acl] allow_query` and firewall unused ports.
+
+| Host port | Service |
+|-----------|---------|
+| 53 | DNS |
+| 853 / 443 / 784 | DoT / DoH / DoQ |
+| 5380 | API + UI |
+| 9100 | App metrics |
+| 9091 | Prometheus UI |
+| 3000 | Grafana |
+| 5433 | Postgres |
 
 Conflict with `systemd-resolved` on port 53:
 
@@ -157,6 +168,6 @@ Fallback without Docker image builds: use the **systemd** path in section A (com
 - [ ] `[acl] allow_query` set for your networks
 - [ ] Real TLS certs (or ACME) replacing install.sh self-signed
 - [ ] Postgres backups
-- [ ] Metrics scrape from localhost only
-- [ ] UI/API not exposed raw on the internet
+- [ ] Firewall limits who can reach UI/metrics/DB
+- [ ] UI/API protected (`API_TOKEN` / admin password)
 - [ ] `systemctl status powersvx` healthy; `dig @127.0.0.1 example.com` works
