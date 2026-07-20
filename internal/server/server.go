@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/powersvx/powersvx/internal/acme"
+	"github.com/powersvx/powersvx/internal/analytics"
 	"github.com/powersvx/powersvx/internal/authoritative"
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
@@ -40,6 +42,8 @@ type Server struct {
 	geo     *geo.Resolver
 	tlsCfg  *tls.Config
 	events  *eventlog.Bus
+	acme    *acme.ChallengeStore
+	stats   *analytics.Collector
 	log     *slog.Logger
 	udp     *dns.Server
 	tcp     *dns.Server
@@ -68,6 +72,8 @@ type Deps struct {
 	Geo     *geo.Resolver
 	TLS     *tls.Config
 	Events  *eventlog.Bus
+	ACME    *acme.ChallengeStore
+	Stats   *analytics.Collector
 }
 
 func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
@@ -87,6 +93,8 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 		geo:     d.Geo,
 		tlsCfg:  d.TLS,
 		events:  d.Events,
+		acme:    d.ACME,
+		stats:   d.Stats,
 		log:     log,
 		started: time.Now(),
 	}
@@ -132,6 +140,24 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	q := req.Question[0]
 	qname := config.NormalizeName(q.Name)
 	qtype := q.Qtype
+	observe := func(code string) {
+		if s.stats != nil {
+			s.stats.Observe(qname, code)
+		}
+	}
+
+	if s.acme != nil && qtype == dns.TypeTXT {
+		if rr := s.acme.TXTAnswer(qname); rr != nil {
+			m := new(dns.Msg)
+			m.SetReply(req)
+			m.Authoritative = true
+			m.Answer = []dns.RR{rr}
+			_ = w.WriteMsg(m)
+			metrics.QueriesTotal.WithLabelValues(proto, "acme").Inc()
+			observe("NOERROR")
+			return
+		}
+	}
 
 	// Split horizon + GeoDNS + ECS scope
 	viewName := "default"
@@ -170,6 +196,11 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			}
 			_ = w.WriteMsg(m)
 			metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
+			if action == rpz.ActionNODATA {
+				observe("NOERROR")
+			} else {
+				observe("NXDOMAIN")
+			}
 			return
 		}
 	}
@@ -180,6 +211,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		_, _ = w.Write(wire)
 		metrics.QueriesTotal.WithLabelValues(proto, "cache").Inc()
 		metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
+		observe(dns.RcodeToString[entry.Rcode])
 		return
 	}
 	metrics.CacheMisses.Inc()
@@ -198,6 +230,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			s.storeAndWriteScoped(w, req, m, ecsKey, viewName, geoTag)
 			metrics.QueriesTotal.WithLabelValues(proto, "auth").Inc()
 			metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
+			observe(dns.RcodeToString[m.Rcode])
 			return
 		}
 	}
@@ -214,6 +247,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		m.Rcode = dns.RcodeServerFailure
 		_ = w.WriteMsg(m)
 		metrics.QueriesTotal.WithLabelValues(proto, "servfail").Inc()
+		observe("SERVFAIL")
 		return
 	}
 
@@ -230,6 +264,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			m.Rcode = dns.RcodeServerFailure
 			_ = w.WriteMsg(m)
 			metrics.QueriesTotal.WithLabelValues(proto, "dnssec_fail").Inc()
+			observe("SERVFAIL")
 			return
 		}
 	}
@@ -237,6 +272,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	s.storeAndWriteScoped(w, req, resp, ecsKey, viewName, geoTag)
 	metrics.QueriesTotal.WithLabelValues(proto, "ok").Inc()
 	metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
+	observe(dns.RcodeToString[resp.Rcode])
 }
 
 func protocolFromWriter(w dns.ResponseWriter) string {
@@ -453,6 +489,8 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 		s.cfg.SplitHorizon.Enabled = f.SplitHorizon
 	}
 }
+
+func (s *Server) Analytics() *analytics.Collector { return s.stats }
 
 func (s *Server) ServeDNSMsg(req *dns.Msg) (*dns.Msg, []byte, error) {
 	rw := &memResponseWriter{}

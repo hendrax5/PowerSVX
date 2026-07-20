@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: powersvx
+    static_configs:
+      - targets: ["powersvx:9100"]

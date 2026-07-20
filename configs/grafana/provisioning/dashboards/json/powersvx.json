@@ -1,0 +1,81 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Query rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(powersvx_queries_total[1m]))",
+          "legendFormat": "qps",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Cache hit ratio",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "rate(powersvx_cache_hits_total[5m]) / clamp_min(rate(powersvx_cache_hits_total[5m]) + rate(powersvx_cache_misses_total[5m]), 1e-9)",
+          "legendFormat": "hit_ratio",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Latency p99",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(powersvx_query_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "RPZ blocked / rate limited",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate(powersvx_rpz_blocked_total[1m])",
+          "legendFormat": "rpz",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(powersvx_rate_limited_total[1m])",
+          "legendFormat": "ratelimit",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "Queries by status",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(powersvx_queries_total[1m]))",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["powersvx", "dns"],
+  "timezone": "browser",
+  "title": "PowerSVX DNS",
+  "uid": "powersvx-dns",
+  "version": 1
+}

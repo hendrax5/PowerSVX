@@ -11,3 +11,4 @@ data/
 web/node_modules/
 web/dist/
 .agents/
+skills-lock.json

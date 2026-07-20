@@ -51,6 +51,9 @@ export const api = {
   settings: () => request('/api/v1/settings'),
   updateSettings: (body) =>
     request('/api/v1/settings', { method: 'PUT', body: JSON.stringify(body) }),
+  analytics: () => request('/api/v1/analytics'),
+  acme: () => request('/api/v1/acme'),
+  acmeObtain: () => request('/api/v1/acme', { method: 'POST', body: '{}' }),
   rpz: () => request('/api/v1/rpz'),
   lookup: (name, type) =>
     request('/api/v1/tools/lookup', { method: 'POST', body: JSON.stringify({ name, type }) }),

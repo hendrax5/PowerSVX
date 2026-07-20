@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/powersvx/powersvx/internal/acme"
 	"github.com/powersvx/powersvx/internal/authoritative"
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
@@ -29,6 +30,7 @@ type API struct {
 	cache    *cache.Tier
 	auth     *authoritative.Store
 	events   *eventlog.Bus
+	acmeMgr  *acme.Manager
 	log      *slog.Logger
 	http     *http.Server
 	start    time.Time
@@ -43,6 +45,7 @@ func New(cfg *config.Config, srv *server.Server, db *database.DB, tier *cache.Ti
 func (a *API) SetWebFS(fsys fs.FS) { a.webFS = fsys }
 func (a *API) SetReloadZones(fn func() error) { a.reloadFn = fn }
 func (a *API) SetEvents(bus *eventlog.Bus) { a.events = bus }
+func (a *API) SetACME(m *acme.Manager) { a.acmeMgr = m }
 
 func (a *API) Start() error {
 	if !a.cfg.API.RESTEnabled {
@@ -72,6 +75,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/tools/lookup", a.withAuth(a.handleLookup))
 	mux.HandleFunc("/api/v1/events", a.withAuth(a.handleEvents))
 	mux.HandleFunc("/api/v1/events/stream", a.withAuth(a.handleEventStream))
+	mux.HandleFunc("/api/v1/analytics", a.withAuth(a.handleAnalytics))
+	mux.HandleFunc("/api/v1/acme", a.withAuth(a.handleACME))
 	if a.webFS != nil {
 		mux.Handle("/", a.spaHandler())
 	}
@@ -476,6 +481,46 @@ func (a *API) handleEvents(w http.ResponseWriter, r *http.Request) {
 		evs = []eventlog.Event{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": evs})
+}
+
+func (a *API) handleAnalytics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	col := a.srv.Analytics()
+	if col == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"top_names": []any{}, "rcodes": []any{}})
+		return
+	}
+	names, rcodes := col.Snapshot(25)
+	writeJSON(w, http.StatusOK, map[string]any{"top_names": names, "rcodes": rcodes})
+}
+
+func (a *API) handleACME(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		if a.acmeMgr == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+			return
+		}
+		writeJSON(w, http.StatusOK, a.acmeMgr.Status())
+	case http.MethodPost:
+		if a.acmeMgr == nil || !a.cfg.ACME.Enabled {
+			http.Error(w, "acme disabled", http.StatusBadRequest)
+			return
+		}
+		if err := a.acmeMgr.Obtain(); err != nil {
+			if a.events != nil {
+				a.events.Emit("error", "acme", "certificate obtain failed", map[string]string{"err": err.Error()})
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, a.acmeMgr.Status())
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func (a *API) handleEventStream(w http.ResponseWriter, r *http.Request) {

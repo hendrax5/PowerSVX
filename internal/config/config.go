@@ -21,6 +21,7 @@ type Config struct {
 	TSIG         TSIGConfig         `toml:"tsig"`
 	GeoDNS       GeoDNSConfig       `toml:"geodns"`
 	SplitHorizon SplitHorizonConfig `toml:"split_horizon"`
+	ACME         ACMEConfig         `toml:"acme"`
 }
 
 type ServerConfig struct {
@@ -147,6 +148,14 @@ type SplitHorizonConfig struct {
 	Views   []SplitViewTOML `toml:"views"`
 }
 
+type ACMEConfig struct {
+	Enabled    bool     `toml:"enabled"`
+	Staging    bool     `toml:"staging"`
+	Email      string   `toml:"email"`
+	Domains    []string `toml:"domains"`
+	StorageDir string   `toml:"storage_dir"`
+}
+
 func Default() *Config {
 	return &Config{
 		Server: ServerConfig{
@@ -194,6 +203,9 @@ func Default() *Config {
 			Enabled: false, DatabasePath: "./data/GeoLite2-City.mmdb", DefaultTag: "default",
 		},
 		SplitHorizon: SplitHorizonConfig{Enabled: false},
+		ACME: ACMEConfig{
+			Enabled: false, Staging: true, StorageDir: "./certs/acme",
+		},
 	}
 }
 

@@ -11,6 +11,31 @@ import {
 } from 'recharts'
 import { api, getToken, setToken } from './api'
 
+function LoadingBlock({ label = 'Loading' }) {
+  return (
+    <div className="space-y-3" role="status" aria-live="polite" aria-busy="true">
+      <span className="sr-only">{label}</span>
+      <div className="h-8 w-48 bg-[var(--bg-panel)] animate-pulse border border-[var(--border)]" />
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="h-20 panel animate-pulse bg-[var(--bg-panel)]" />
+        ))}
+      </div>
+      <div className="h-40 panel animate-pulse bg-[var(--bg-panel)]" />
+    </div>
+  )
+}
+
+function EmptyState({ title, hint, action }) {
+  return (
+    <div className="panel px-4 py-8 text-center" role="status">
+      <p className="text-sm font-medium">{title}</p>
+      {hint ? <p className="text-xs text-[var(--muted)] mt-2 max-w-md mx-auto">{hint}</p> : null}
+      {action || null}
+    </div>
+  )
+}
+
 function Shell({ children }) {
   const [token, setTok] = useState(getToken())
   const links = [
@@ -18,12 +43,22 @@ function Shell({ children }) {
     ['/zones', 'Zones'],
     ['/lookup', 'Lookup'],
     ['/settings', 'Settings'],
+    ['/analytics', 'Analytics'],
   ]
   return (
     <div className="min-h-full flex flex-col md:flex-row">
-      <aside className="md:w-56 shrink-0 border-b md:border-b-0 md:border-r border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-5 flex md:flex-col gap-4 md:gap-6">
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-2 focus:left-2 focus:bg-[var(--accent)] focus:text-[#0e1014] focus:px-3 focus:py-2"
+      >
+        Skip to content
+      </a>
+      <aside
+        className="md:w-56 shrink-0 border-b md:border-b-0 md:border-r border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-5 flex md:flex-col gap-4 md:gap-6 sticky top-0 z-20 md:static"
+        aria-label="Sidebar"
+      >
         <div className="reveal">
-          <div className="text-[clamp(1.35rem,2vw,1.65rem)] font-bold tracking-tight leading-none">
+          <div className="text-[clamp(1.35rem,2vw,1.65rem)] font-bold tracking-tight leading-none" aria-label="PowerSVX">
             <span className="text-[var(--text)]">Power</span>
             <span className="text-[var(--accent)]">SVX</span>
           </div>
@@ -31,7 +66,7 @@ function Shell({ children }) {
             DNS control plane
           </div>
         </div>
-        <nav className="flex md:flex-col gap-1 flex-1 overflow-x-auto">
+        <nav className="flex md:flex-col gap-1 flex-1 overflow-x-auto" aria-label="Primary">
           {links.map(([to, label], i) => (
             <NavLink
               key={to}
@@ -67,7 +102,7 @@ function Shell({ children }) {
           />
         </div>
       </aside>
-      <main className="flex-1 p-5 md:p-8 overflow-auto">{children}</main>
+      <main id="main" tabIndex={-1} className="flex-1 p-5 md:p-8 overflow-auto outline-none">{children}</main>
     </div>
   )
 }
@@ -122,7 +157,7 @@ function Dashboard() {
   }, [])
 
   if (err) return <ErrorBox msg={err} />
-  if (!data) return <p className="text-[var(--muted)]">Loading…</p>
+  if (!data) return <LoadingBlock label="Loading dashboard" />
 
   const s = data.status
   const hitRatio =
@@ -193,7 +228,15 @@ function Dashboard() {
             ))}
           </ul>
         ) : (
-          <p className="text-sm text-[var(--muted)]">No zones yet. Create one under Zones.</p>
+          <EmptyState
+            title="No zones yet"
+            hint="Add an authoritative zone to serve local records."
+            action={
+              <a href="/zones" className="inline-block mt-4 text-sm text-[var(--accent)] underline cursor-pointer">
+                Go to Zones
+              </a>
+            }
+          />
         )}
       </section>
     </div>
@@ -770,6 +813,7 @@ function Settings() {
         ))}
       </dl>
 
+      <ACMEPanel />
       {rpz ? (
         <section className="space-y-2">
           <h2 className="text-sm text-[var(--muted)]">RPZ policies</h2>
@@ -785,6 +829,129 @@ function Settings() {
           </ul>
         </section>
       ) : null}
+    </div>
+  )
+}
+
+function ACMEPanel() {
+  const [st, setSt] = useState(null)
+  const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    api.acme().then(setSt).catch((e) => setErr(e.message))
+  }, [])
+
+  const obtain = async () => {
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const s = await api.acmeObtain()
+      setSt(s)
+      setOk('Certificate obtained — point [server.tls] at certs/acme and restart if needed')
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!st) return null
+  return (
+    <section className="panel p-4 space-y-3">
+      <h2 className="text-sm font-medium">ACME DNS-01</h2>
+      <p className="text-xs text-[var(--muted)]">
+        Issues TLS certs via Let&apos;s Encrypt DNS-01 using this server&apos;s TXT answers.
+        Domain must resolve publicly to this PowerSVX.
+      </p>
+      <dl className="text-sm space-y-1 mono">
+        <div className="flex justify-between"><dt className="text-[var(--muted)]">enabled</dt><dd>{String(st.enabled)}</dd></div>
+        <div className="flex justify-between"><dt className="text-[var(--muted)]">staging</dt><dd>{String(st.staging)}</dd></div>
+        <div className="flex justify-between"><dt className="text-[var(--muted)]">cert</dt><dd>{st.cert_present ? 'present' : 'missing'}</dd></div>
+      </dl>
+      {err ? <ErrorBox msg={err} /> : null}
+      {ok ? (
+        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
+          {ok}
+        </div>
+      ) : null}
+      <button
+        type="button"
+        disabled={busy || !st.enabled}
+        onClick={obtain}
+        className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm disabled:opacity-40"
+      >
+        {busy ? 'Obtaining…' : 'Obtain certificate'}
+      </button>
+    </section>
+  )
+}
+
+function Analytics() {
+  const [data, setData] = useState(null)
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    const load = () =>
+      api
+        .analytics()
+        .then((d) => alive && setData(d))
+        .catch((e) => alive && setErr(e.message))
+    load()
+    const timer = setInterval(load, 5000)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [])
+
+  if (err) return <ErrorBox msg={err} />
+  if (!data) return <LoadingBlock label="Loading analytics" />
+
+  const names = data.top_names || []
+  const rcodes = data.rcodes || []
+
+  return (
+    <div className="space-y-6 max-w-3xl">
+      <header className="reveal">
+        <h1 className="text-2xl font-semibold">Analytics</h1>
+        <p className="text-sm text-[var(--muted)] mt-1">
+          Aggregate counters only — not a live query stream
+        </p>
+      </header>
+      <section className="panel p-4">
+        <h2 className="text-sm text-[var(--muted)] mb-3">Top names</h2>
+        {names.length ? (
+          <ul className="space-y-1 text-sm mono">
+            {names.map((n) => (
+              <li key={n.name} className="flex justify-between border-b border-[var(--border)]/60 py-1.5">
+                <span>{n.name}</span>
+                <span className="text-[var(--accent)]">{n.count}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <EmptyState title="No queries yet" hint="Totals appear after DNS traffic hits this instance." />
+        )}
+      </section>
+      <section className="panel p-4">
+        <h2 className="text-sm text-[var(--muted)] mb-3">RCODEs</h2>
+        {rcodes.length ? (
+          <ul className="space-y-1 text-sm mono">
+            {rcodes.map((r) => (
+              <li key={r.rcode} className="flex justify-between border-b border-[var(--border)]/60 py-1.5">
+                <span>{r.rcode}</span>
+                <span className="text-[var(--accent)]">{r.count}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-[var(--muted)]">No data.</p>
+        )}
+      </section>
     </div>
   )
 }
@@ -813,6 +980,7 @@ export default function App() {
         <Route path="/zones/:name" element={<ZoneDetail />} />
         <Route path="/lookup" element={<Lookup />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/analytics" element={<Analytics />} />
       </Routes>
     </Shell>
   )

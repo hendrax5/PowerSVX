@@ -1,0 +1,7 @@
+# ACME DNS-01 (disabled by default — needs public DNS pointing here)
+# [acme]
+# enabled = true
+# staging = true
+# email = "admin@example.com"
+# domains = ["dns.example.com"]
+# storage_dir = "./certs/acme"

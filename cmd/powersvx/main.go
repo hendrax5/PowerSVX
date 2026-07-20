@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/powersvx/powersvx/internal/acme"
+	"github.com/powersvx/powersvx/internal/analytics"
 	"github.com/powersvx/powersvx/internal/api"
 	"github.com/powersvx/powersvx/internal/authoritative"
 	"github.com/powersvx/powersvx/internal/cache"
@@ -159,14 +161,19 @@ func main() {
 	}
 
 	res := resolver.New(cfg.Resolver)
+	acmeStore := acme.NewChallengeStore()
+	acmeMgr := acme.NewManager(cfg.ACME, acmeStore, log)
+	stats := analytics.New(200)
 	dnsSrv := server.New(cfg, server.Deps{
 		Cache: tier, Res: res, Auth: auth, DNSSEC: sec,
 		Limiter: limiter, RPZ: rpzEng, TSIG: tsigStore,
 		Views: views, Geo: geoRes, TLS: tlsCfg, Events: bus,
+		ACME: acmeStore, Stats: stats,
 	}, log)
 
 	rest := api.New(cfg, dnsSrv, db, tier, auth, log)
 	rest.SetEvents(bus)
+	rest.SetACME(acmeMgr)
 	webDirs := []string{"./web/dist", "/usr/share/PowerSVX/web"}
 	for _, dir := range webDirs {
 		if webFS, err := api.LoadWebDir(dir); err == nil {
@@ -210,6 +217,7 @@ func main() {
 		"geodns", cfg.GeoDNS.Enabled,
 		"split_horizon", cfg.SplitHorizon.Enabled,
 		"tls", cfg.TLSEnabled(),
+		"acme", cfg.ACME.Enabled,
 		"api", cfg.API.RESTBind,
 	)
 
