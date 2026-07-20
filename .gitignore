@@ -10,3 +10,4 @@ data/
 .env
 web/node_modules/
 web/dist/
+.agents/

@@ -20,23 +20,28 @@ function Shell({ children }) {
     ['/settings', 'Settings'],
   ]
   return (
-    <div className="min-h-full flex">
-      <aside className="w-56 shrink-0 border-r border-[var(--border)] bg-[var(--bg-elevated)]/80 backdrop-blur px-4 py-6 flex flex-col gap-6">
-        <div>
-          <div className="text-xl font-bold tracking-tight text-[var(--accent)]">PowerSVX</div>
-          <div className="text-xs text-[var(--muted)] mt-1">DNS control plane</div>
+    <div className="min-h-full flex flex-col md:flex-row">
+      <aside className="md:w-56 shrink-0 border-b md:border-b-0 md:border-r border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-5 flex md:flex-col gap-4 md:gap-6">
+        <div className="reveal">
+          <div className="text-[clamp(1.35rem,2vw,1.65rem)] font-bold tracking-tight leading-none">
+            <span className="text-[var(--text)]">Power</span>
+            <span className="text-[var(--accent)]">SVX</span>
+          </div>
+          <div className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted)] mt-2 mono">
+            DNS control plane
+          </div>
         </div>
-        <nav className="flex flex-col gap-1">
-          {links.map(([to, label]) => (
+        <nav className="flex md:flex-col gap-1 flex-1 overflow-x-auto">
+          {links.map(([to, label], i) => (
             <NavLink
               key={to}
               to={to}
               end={to === '/'}
               className={({ isActive }) =>
-                `px-3 py-2 rounded-md text-sm transition ${
+                `relative px-3 py-2 text-sm transition cursor-pointer whitespace-nowrap reveal reveal-delay-${Math.min(i + 1, 4)} ${
                   isActive
-                    ? 'bg-[var(--bg-panel)] text-[var(--accent)]'
-                    : 'text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-panel)]/60'
+                    ? 'text-[var(--accent)] bg-[var(--accent-soft)] border-l-2 border-[var(--accent)] md:pl-[10px]'
+                    : 'text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-panel)] border-l-2 border-transparent'
                 }`
               }
             >
@@ -44,10 +49,14 @@ function Shell({ children }) {
             </NavLink>
           ))}
         </nav>
-        <div className="mt-auto space-y-2">
-          <label className="text-xs text-[var(--muted)]">API token</label>
+        <div className="space-y-1.5 md:mt-auto w-full max-w-xs">
+          <label className="text-[11px] uppercase tracking-wide text-[var(--muted)]" htmlFor="api-token">
+            API token
+          </label>
           <input
-            className="w-full rounded-md bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-xs mono"
+            id="api-token"
+            className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-xs mono text-[var(--text)] focus:border-[var(--accent)]"
+            style={{ borderRadius: 'var(--radius)' }}
             type="password"
             placeholder="optional"
             value={token}
@@ -58,17 +67,21 @@ function Shell({ children }) {
           />
         </div>
       </aside>
-      <main className="flex-1 p-6 md:p-8 overflow-auto">{children}</main>
+      <main className="flex-1 p-5 md:p-8 overflow-auto">{children}</main>
     </div>
   )
 }
 
 function Stat({ label, value, sub }) {
   return (
-    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-panel)]/70 px-4 py-3">
-      <div className="text-xs uppercase tracking-wide text-[var(--muted)]">{label}</div>
-      <div className="text-2xl font-semibold mt-1 mono">{value}</div>
-      {sub ? <div className="text-xs text-[var(--muted)] mt-1">{sub}</div> : null}
+    <div
+      className="panel px-3 py-3 border-l-2 border-l-[var(--accent)] hover:border-[var(--border-strong)] transition-colors"
+    >
+      <div className="text-[10px] uppercase tracking-[0.12em] text-[var(--muted)]">{label}</div>
+      <div className="text-[clamp(1.35rem,2.2vw,1.75rem)] font-semibold mt-1 mono leading-none tabular-nums">
+        {value}
+      </div>
+      {sub ? <div className="text-[11px] text-[var(--muted)] mt-2">{sub}</div> : null}
     </div>
   )
 }
@@ -76,13 +89,14 @@ function Stat({ label, value, sub }) {
 function Badge({ on, label }) {
   return (
     <span
-      className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded border ${
+      className={`inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wide px-2 py-1 border mono ${
         on
-          ? 'border-[var(--accent-dim)] text-[var(--accent)] bg-[var(--accent)]/10'
+          ? 'border-[var(--accent)]/50 text-[var(--accent)] bg-[var(--accent-soft)]'
           : 'border-[var(--border)] text-[var(--muted)]'
       }`}
+      style={{ borderRadius: 'var(--radius)' }}
     >
-      <span className={`h-1.5 w-1.5 rounded-full ${on ? 'bg-[var(--accent)]' : 'bg-[var(--muted)]'}`} />
+      <span className={`h-1.5 w-1.5 ${on ? 'bg-[var(--accent)]' : 'bg-[var(--muted)]'}`} />
       {label}
     </span>
   )
@@ -124,7 +138,7 @@ function Dashboard() {
 
   return (
     <div className="space-y-6 max-w-5xl">
-      <header>
+      <header className="reveal">
         <h1 className="text-2xl font-semibold">Dashboard</h1>
         <p className="text-[var(--muted)] text-sm mt-1">
           v{s.version} · uptime {formatUptime(s.uptime_seconds)} · mode {s.mode}
@@ -149,7 +163,7 @@ function Dashboard() {
 
       <LiveErrorLog />
 
-      <section className="rounded-lg border border-[var(--border)] bg-[var(--bg-panel)]/50 p-4 h-64">
+      <section className="panel p-4 h-64">
         <h2 className="text-sm text-[var(--muted)] mb-3">Traffic snapshot</h2>
         <ResponsiveContainer width="100%" height="85%">
           <BarChart data={chart}>
@@ -157,9 +171,9 @@ function Dashboard() {
             <XAxis dataKey="name" stroke="#8fa3b8" fontSize={12} />
             <YAxis stroke="#8fa3b8" fontSize={12} />
             <Tooltip
-              contentStyle={{ background: '#1a2433', border: '1px solid #2a3a4f', borderRadius: 8 }}
+              contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
             />
-            <Bar dataKey="value" fill="#2dd4a8" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="value" fill="var(--accent)" radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </section>
@@ -171,7 +185,7 @@ function Dashboard() {
             {data.zones.map((z) => (
               <li
                 key={z.name}
-                className="flex justify-between border border-[var(--border)] rounded-md px-3 py-2 text-sm"
+                className="flex justify-between border border-[var(--border)] px-3 py-2 text-sm panel"
               >
                 <span className="mono">{z.name}</span>
                 <span className="text-[var(--muted)]">{z.record_count} records</span>
@@ -236,7 +250,7 @@ function LiveErrorLog() {
   }, [])
 
   return (
-    <section className="rounded-lg border border-[var(--border)] bg-[var(--bg-panel)]/50 p-4">
+    <section className="panel p-4">
       <div className="flex items-center justify-between gap-3 mb-3">
         <div>
           <h2 className="text-sm font-medium">Live errors</h2>
@@ -246,7 +260,7 @@ function LiveErrorLog() {
         </div>
         <div className="flex items-center gap-2">
           <span
-            className={`text-xs px-2 py-1 rounded border ${
+            className={`text-xs px-2 py-1 border ${
               live
                 ? 'border-[var(--accent-dim)] text-[var(--accent)]'
                 : 'border-[var(--border)] text-[var(--muted)]'
@@ -256,14 +270,14 @@ function LiveErrorLog() {
           </span>
           <button
             type="button"
-            className="text-xs px-2 py-1 rounded border border-[var(--border)] text-[var(--muted)] hover:text-[var(--text)]"
+            className="text-xs px-2 py-1 border border-[var(--border)] text-[var(--muted)] hover:text-[var(--text)]"
             onClick={() => setPaused((p) => !p)}
           >
             {paused ? 'Resume' : 'Pause'}
           </button>
           <button
             type="button"
-            className="text-xs px-2 py-1 rounded border border-[var(--border)] text-[var(--muted)] hover:text-[var(--text)]"
+            className="text-xs px-2 py-1 border border-[var(--border)] text-[var(--muted)] hover:text-[var(--text)]"
             onClick={() => setEvents([])}
           >
             Clear
@@ -277,7 +291,7 @@ function LiveErrorLog() {
           events.map((e) => (
             <div
               key={e.id}
-              className={`rounded border px-2.5 py-1.5 ${
+              className={`border px-2.5 py-1.5 ${
                 e.level === 'error'
                   ? 'border-[var(--danger)]/40 bg-[var(--danger)]/10'
                   : 'border-[var(--warn)]/30 bg-[var(--warn)]/5'
@@ -362,7 +376,7 @@ function Zones() {
       {err ? <ErrorBox msg={err} /> : null}
       <form onSubmit={create} className="flex gap-2">
         <input
-          className="flex-1 rounded-md bg-[var(--bg)] border border-[var(--border)] px-3 py-2 text-sm mono"
+          className="flex-1 bg-[var(--bg)] border border-[var(--border)] cursor-text px-3 py-2 text-sm mono"
           placeholder="example.com"
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -370,7 +384,7 @@ function Zones() {
         />
         <button
           type="submit"
-          className="rounded-md bg-[var(--accent)] text-[#0c1219] font-medium px-4 py-2 text-sm hover:opacity-90"
+          className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm hover:opacity-90"
         >
           Add zone
         </button>
@@ -379,7 +393,7 @@ function Zones() {
         {zones.map((z) => (
           <li
             key={z.name}
-            className="flex items-center justify-between border border-[var(--border)] rounded-lg px-4 py-3 bg-[var(--bg-panel)]/40"
+            className="flex items-center justify-between panel px-4 py-3"
           >
             <button className="text-left" onClick={() => nav(`/zones/${encodeURIComponent(z.name)}`)}>
               <div className="mono font-medium">{z.name}</div>
@@ -460,12 +474,12 @@ function ZoneDetail() {
       </header>
       {err ? <ErrorBox msg={err} /> : null}
 
-      <form onSubmit={add} className="grid grid-cols-2 md:grid-cols-3 gap-2 border border-[var(--border)] rounded-lg p-4 bg-[var(--bg-panel)]/40">
+      <form onSubmit={add} className="grid grid-cols-2 md:grid-cols-3 gap-2 panel p-4">
         {['name', 'type', 'content', 'ttl', 'prio', 'view', 'geo_tag'].map((k) => (
           <label key={k} className="text-xs text-[var(--muted)] flex flex-col gap-1">
             {k}
             <input
-              className="rounded-md bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
+              className="bg-[var(--bg)] border border-[var(--border)] cursor-text px-2 py-1.5 text-sm mono text-[var(--text)]"
               value={form[k]}
               onChange={(e) => setForm({ ...form, [k]: e.target.value })}
               required={k === 'name' || k === 'content' || k === 'type'}
@@ -473,7 +487,7 @@ function ZoneDetail() {
           </label>
         ))}
         <div className="col-span-2 md:col-span-3">
-          <button type="submit" className="rounded-md bg-[var(--accent)] text-[#0c1219] font-medium px-4 py-2 text-sm">
+          <button type="submit" className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm">
             Add record
           </button>
         </div>
@@ -539,12 +553,12 @@ function Lookup() {
       </header>
       <form onSubmit={run} className="flex flex-wrap gap-2">
         <input
-          className="flex-1 min-w-[12rem] rounded-md bg-[var(--bg)] border border-[var(--border)] px-3 py-2 text-sm mono"
+          className="flex-1 min-w-[12rem] bg-[var(--bg)] border border-[var(--border)] cursor-text px-3 py-2 text-sm mono"
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
         <select
-          className="rounded-md bg-[var(--bg)] border border-[var(--border)] px-3 py-2 text-sm"
+          className="bg-[var(--bg)] border border-[var(--border)] cursor-text px-3 py-2 text-sm"
           value={type}
           onChange={(e) => setType(e.target.value)}
         >
@@ -557,14 +571,14 @@ function Lookup() {
         <button
           type="submit"
           disabled={busy}
-          className="rounded-md bg-[var(--accent)] text-[#0c1219] font-medium px-4 py-2 text-sm disabled:opacity-50"
+          className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm disabled:opacity-50"
         >
           {busy ? '…' : 'Query'}
         </button>
       </form>
       {err ? <ErrorBox msg={err} /> : null}
       {result ? (
-        <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-panel)]/50 p-4 space-y-2">
+        <div className="panel p-4 space-y-2">
           <div className="text-sm">
             RCODE <span className="mono text-[var(--accent)]">{result.rcode}</span>
             {result.ad ? <span className="ml-2 text-xs text-[var(--accent)]">AD</span> : null}
@@ -680,7 +694,7 @@ function Settings() {
             type="button"
             disabled={!dirty || busy}
             onClick={discard}
-            className="rounded-md border border-[var(--border)] px-3 py-2 text-sm text-[var(--muted)] disabled:opacity-40 hover:text-[var(--text)]"
+            className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm text-[var(--muted)] disabled:opacity-40 hover:text-[var(--text)]"
           >
             Discard
           </button>
@@ -688,7 +702,7 @@ function Settings() {
             type="button"
             disabled={!dirty || busy}
             onClick={save}
-            className="rounded-md bg-[var(--accent)] text-[#0c1219] font-medium px-4 py-2 text-sm disabled:opacity-40"
+            className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm disabled:opacity-40"
           >
             {busy ? 'Saving…' : 'Save changes'}
           </button>
@@ -696,17 +710,17 @@ function Settings() {
       </header>
       {err ? <ErrorBox msg={err} /> : null}
       {ok ? (
-        <div className="rounded-md border border-[var(--accent-dim)] bg-[var(--accent)]/10 text-[var(--accent)] text-sm px-3 py-2">
+        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
           {ok}
         </div>
       ) : null}
       {dirty ? (
-        <div className="rounded-md border border-[var(--warn)]/40 bg-[var(--warn)]/10 text-[var(--warn)] text-sm px-3 py-2">
+        <div className="border border-[var(--warn)]/40 bg-[var(--warn)]/10 text-[var(--warn)] text-sm px-3 py-2">
           Unsaved changes — not applied until you save
         </div>
       ) : null}
 
-      <section className="rounded-lg border border-[var(--border)] divide-y divide-[var(--border)]">
+      <section className="panel divide-y divide-[var(--border)]">
         {toggles.map(([key, label, hint]) => (
           <div key={key} className="flex items-center justify-between gap-4 px-4 py-3">
             <div>
@@ -725,22 +739,24 @@ function Settings() {
               type="button"
               disabled={busy}
               onClick={() => toggle(key)}
-              className={`shrink-0 relative h-7 w-12 rounded-full transition ${
+              className={`shrink-0 relative h-7 w-12 transition cursor-pointer ${
                 draft[key] ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'
               } disabled:opacity-50`}
+              style={{ borderRadius: 'var(--radius)' }}
               aria-pressed={!!draft[key]}
             >
               <span
-                className={`absolute top-0.5 h-6 w-6 rounded-full bg-white transition ${
+                className={`absolute top-0.5 h-6 w-6 bg-[var(--bg)] transition ${
                   draft[key] ? 'left-5' : 'left-0.5'
                 }`}
+                style={{ borderRadius: 1 }}
               />
             </button>
           </div>
         ))}
       </section>
 
-      <dl className="rounded-lg border border-[var(--border)] divide-y divide-[var(--border)] text-sm">
+      <dl className="panel divide-y divide-[var(--border)] text-sm">
         {[
           ['resolver_mode', saved.resolver_mode],
           ['dnssec_mode', saved.dnssec_mode],
@@ -775,7 +791,7 @@ function Settings() {
 
 function ErrorBox({ msg }) {
   return (
-    <div className="rounded-md border border-[var(--danger)]/40 bg-[var(--danger)]/10 text-[var(--danger)] text-sm px-3 py-2">
+    <div className="border border-[var(--danger)]/40 bg-[var(--danger)]/10 text-[var(--danger)] text-sm px-3 py-2">
       {msg}
     </div>
   )
