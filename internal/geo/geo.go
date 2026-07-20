@@ -49,7 +49,24 @@ func New(enabled bool, dbPath, defaultTag string) (*Resolver, error) {
 	return r, nil
 }
 
-func (r *Resolver) Enabled() bool { return r != nil && r.enabled }
+func (r *Resolver) Enabled() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.enabled
+}
+
+// SetEnabled toggles GeoDNS at runtime (MMDB optional; overrides still apply when on).
+func (r *Resolver) SetEnabled(on bool) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.enabled = on
+	r.mu.Unlock()
+}
 
 func (r *Resolver) Close() error {
 	if r == nil || r.db == nil {
@@ -87,7 +104,7 @@ func preferTag(country, continent, def string) string {
 // Lookup returns geo info for IP; never fails hard — returns default tag.
 func (r *Resolver) Lookup(ipStr string) Info {
 	def := Info{Tag: "default"}
-	if r == nil || !r.enabled {
+	if r == nil || !r.Enabled() {
 		return def
 	}
 	def.Tag = r.defaultTag

@@ -400,6 +400,60 @@ func (s *Server) RPZCount() int64 {
 	return s.rpz.Count()
 }
 
+// RuntimeFlags are feature toggles editable via the API/UI.
+type RuntimeFlags struct {
+	GeoDNS       bool `json:"geodns"`
+	RPZ          bool `json:"rpz_enabled"`
+	RateLimit    bool `json:"rate_limit"`
+	ECS          bool `json:"ecs_enabled"`
+	SplitHorizon bool `json:"split_horizon"`
+}
+
+func (s *Server) RuntimeFlags() RuntimeFlags {
+	f := RuntimeFlags{}
+	if s.geo != nil {
+		f.GeoDNS = s.geo.Enabled()
+	}
+	if s.rpz != nil {
+		f.RPZ = s.rpz.Enabled()
+	}
+	if s.limiter != nil {
+		f.RateLimit = s.limiter.Enabled()
+	}
+	if s.res != nil {
+		f.ECS = s.res.ECSEnabled
+	}
+	if s.views != nil {
+		f.SplitHorizon = s.views.Enabled()
+	}
+	return f
+}
+
+func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
+	if s.geo != nil {
+		s.geo.SetEnabled(f.GeoDNS)
+	}
+	if s.rpz != nil {
+		s.rpz.SetEnabled(f.RPZ)
+	}
+	if s.limiter != nil {
+		s.limiter.SetEnabled(f.RateLimit)
+	}
+	if s.res != nil {
+		s.res.SetECSEnabled(f.ECS)
+	}
+	if s.views != nil {
+		s.views.SetEnabled(f.SplitHorizon)
+	}
+	if s.cfg != nil {
+		s.cfg.GeoDNS.Enabled = f.GeoDNS
+		s.cfg.RPZ.Enabled = f.RPZ
+		s.cfg.RateLimit.Enabled = f.RateLimit
+		s.cfg.Resolver.ECSEnabled = f.ECS
+		s.cfg.SplitHorizon.Enabled = f.SplitHorizon
+	}
+}
+
 func (s *Server) ServeDNSMsg(req *dns.Msg) (*dns.Msg, []byte, error) {
 	rw := &memResponseWriter{}
 	s.ServeDNS(rw, req)

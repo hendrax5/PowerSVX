@@ -26,6 +26,13 @@ type Resolver struct {
 	client      *dns.Client
 }
 
+func (r *Resolver) SetECSEnabled(on bool) {
+	if r == nil {
+		return
+	}
+	r.ECSEnabled = on
+}
+
 func New(cfg config.ResolverConfig) *Resolver {
 	timeout := time.Duration(cfg.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {

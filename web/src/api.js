@@ -49,6 +49,8 @@ export const api = {
     return request(`/api/v1/zones/${encodeURIComponent(zone)}/records?${q}`, { method: 'DELETE' })
   },
   settings: () => request('/api/v1/settings'),
+  updateSettings: (body) =>
+    request('/api/v1/settings', { method: 'PUT', body: JSON.stringify(body) }),
   rpz: () => request('/api/v1/rpz'),
   lookup: (name, type) =>
     request('/api/v1/tools/lookup', { method: 'POST', body: JSON.stringify({ name, type }) }),

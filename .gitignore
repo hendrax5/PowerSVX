@@ -1,5 +1,7 @@
 certs/
 data/
+!data/.gitkeep
+
 *.exe
 *.test
 .idea/

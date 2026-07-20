@@ -41,6 +41,10 @@ func main() {
 		log.Error("config load failed", "err", err)
 		os.Exit(1)
 	}
+	if rs, err := config.LoadRuntimeSettings(config.RuntimeSettingsPath("./data")); err == nil {
+		cfg.ApplyRuntimeSettings(rs)
+		log.Info("runtime settings loaded", "path", config.RuntimeSettingsPath("./data"))
+	}
 
 	l1Max := cfg.Cache.MaxSizeMB * 1024
 	if l1Max <= 0 {

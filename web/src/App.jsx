@@ -582,38 +582,112 @@ function Settings() {
   const [settings, setSettings] = useState(null)
   const [rpz, setRpz] = useState(null)
   const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
+  const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
+  const load = () =>
     Promise.all([api.settings(), api.rpz()])
       .then(([s, r]) => {
         setSettings(s)
         setRpz(r)
       })
       .catch((e) => setErr(e.message))
+
+  useEffect(() => {
+    load()
   }, [])
 
-  if (err) return <ErrorBox msg={err} />
+  const toggle = async (key) => {
+    if (!settings) return
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const next = { [key]: !settings[key] }
+      const s = await api.updateSettings(next)
+      setSettings(s)
+      setOk(`Updated ${key}`)
+      const r = await api.rpz()
+      setRpz(r)
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (err && !settings) return <ErrorBox msg={err} />
   if (!settings) return <p className="text-[var(--muted)]">Loading…</p>
 
-  const rows = Object.entries(settings)
+  const toggles = [
+    ['geodns', 'GeoDNS', 'Route answers by client country/continent (needs MMDB or IP overrides)'],
+    ['rpz_enabled', 'RPZ / blocklist', 'Block domains from policy files'],
+    ['rate_limit', 'Rate limit', 'Token-bucket per client IP'],
+    ['ecs_enabled', 'ECS', 'EDNS Client Subnet on upstream queries'],
+    ['split_horizon', 'Split horizon', 'Different answers by client network / view'],
+  ]
 
   return (
     <div className="space-y-6 max-w-2xl">
       <header>
         <h1 className="text-2xl font-semibold">Settings</h1>
-        <p className="text-sm text-[var(--muted)] mt-1">Read-only snapshot from config</p>
+        <p className="text-sm text-[var(--muted)] mt-1">
+          Toggle features from the UI — saved to <span className="mono">data/runtime-settings.json</span>
+        </p>
       </header>
-      <dl className="rounded-lg border border-[var(--border)] divide-y divide-[var(--border)]">
-        {rows.map(([k, v]) => (
-          <div key={k} className="flex justify-between gap-4 px-4 py-2.5 text-sm">
+      {err ? <ErrorBox msg={err} /> : null}
+      {ok ? (
+        <div className="rounded-md border border-[var(--accent-dim)] bg-[var(--accent)]/10 text-[var(--accent)] text-sm px-3 py-2">
+          {ok}
+        </div>
+      ) : null}
+
+      <section className="rounded-lg border border-[var(--border)] divide-y divide-[var(--border)]">
+        {toggles.map(([key, label, hint]) => (
+          <div key={key} className="flex items-center justify-between gap-4 px-4 py-3">
+            <div>
+              <div className="text-sm font-medium">{label}</div>
+              <div className="text-xs text-[var(--muted)] mt-0.5">{hint}</div>
+              {key === 'geodns' && settings.geodns_db ? (
+                <div className="text-xs mono text-[var(--muted)] mt-1">{settings.geodns_db}</div>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => toggle(key)}
+              className={`shrink-0 relative h-7 w-12 rounded-full transition ${
+                settings[key] ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'
+              } disabled:opacity-50`}
+              aria-pressed={!!settings[key]}
+            >
+              <span
+                className={`absolute top-0.5 h-6 w-6 rounded-full bg-white transition ${
+                  settings[key] ? 'left-5' : 'left-0.5'
+                }`}
+              />
+            </button>
+          </div>
+        ))}
+      </section>
+
+      <dl className="rounded-lg border border-[var(--border)] divide-y divide-[var(--border)] text-sm">
+        {[
+          ['resolver_mode', settings.resolver_mode],
+          ['dnssec_mode', settings.dnssec_mode],
+          ['udp_addr', settings.udp_addr],
+          ['forwarders', (settings.forwarders || []).join(', ')],
+        ].map(([k, v]) => (
+          <div key={k} className="flex justify-between gap-4 px-4 py-2.5">
             <dt className="text-[var(--muted)]">{k}</dt>
-            <dd className="mono text-right break-all">{Array.isArray(v) ? v.join(', ') : String(v)}</dd>
+            <dd className="mono text-right break-all">{String(v)}</dd>
           </div>
         ))}
       </dl>
+
       {rpz ? (
         <section className="space-y-2">
-          <h2 className="text-sm text-[var(--muted)]">RPZ</h2>
+          <h2 className="text-sm text-[var(--muted)]">RPZ policies</h2>
           <p className="text-sm">
             {rpz.enabled ? 'Enabled' : 'Disabled'} · {rpz.entries} entries
           </p>

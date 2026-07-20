@@ -52,6 +52,13 @@ func FromConfig(enabled bool, defaultView string, named map[string][]string) *Ma
 
 func (m *Matcher) Enabled() bool { return m != nil && m.enabled }
 
+func (m *Matcher) SetEnabled(on bool) {
+	if m == nil {
+		return
+	}
+	m.enabled = on
+}
+
 func (m *Matcher) Match(ipStr string) string {
 	if !m.Enabled() {
 		return m.def

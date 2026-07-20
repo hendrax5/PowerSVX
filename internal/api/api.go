@@ -180,6 +180,7 @@ func (a *API) statusPayload() map[string]any {
 	if a.auth != nil {
 		zones = a.auth.ZoneCount()
 	}
+	flags := a.srv.RuntimeFlags()
 	return map[string]any{
 		"version": Version, "uptime_seconds": int(uptime.Seconds()),
 		"mode": a.cfg.Resolver.Mode, "dnssec_mode": a.srv.DNSSECMode(),
@@ -188,10 +189,10 @@ func (a *API) statusPayload() map[string]any {
 		"queries_total": queries, "rate_limited": a.srv.Blocked(),
 		"cache_hits": hits, "cache_misses": misses, "cache_l1_size": size,
 		"rpz_entries": a.srv.RPZCount(), "zones": zones, "udp_addr": a.srv.UDPAddr(),
-		"ratelimit_enabled": a.cfg.RateLimit.Enabled, "rpz_enabled": a.cfg.RPZ.Enabled,
-		"ecs_enabled": a.cfg.Resolver.ECSEnabled,
-		"geodns_enabled": a.cfg.GeoDNS.Enabled,
-		"split_horizon_enabled": a.cfg.SplitHorizon.Enabled,
+		"ratelimit_enabled": flags.RateLimit, "rpz_enabled": flags.RPZ,
+		"ecs_enabled": flags.ECS,
+		"geodns_enabled": flags.GeoDNS,
+		"split_horizon_enabled": flags.SplitHorizon,
 	}
 }
 
@@ -356,27 +357,70 @@ func recordsDTO(recs []authoritative.Record) []recordDTO {
 }
 
 func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, a.settingsPayload())
+	case http.MethodPut, http.MethodPatch:
+		var body struct {
+			GeoDNS       *bool `json:"geodns"`
+			RPZ          *bool `json:"rpz_enabled"`
+			RateLimit    *bool `json:"rate_limit"`
+			ECS          *bool `json:"ecs_enabled"`
+			SplitHorizon *bool `json:"split_horizon"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		cur := a.srv.RuntimeFlags()
+		if body.GeoDNS != nil {
+			cur.GeoDNS = *body.GeoDNS
+		}
+		if body.RPZ != nil {
+			cur.RPZ = *body.RPZ
+		}
+		if body.RateLimit != nil {
+			cur.RateLimit = *body.RateLimit
+		}
+		if body.ECS != nil {
+			cur.ECS = *body.ECS
+		}
+		if body.SplitHorizon != nil {
+			cur.SplitHorizon = *body.SplitHorizon
+		}
+		a.srv.ApplyRuntimeFlags(cur)
+		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath("./data"), config.RuntimeSettings{
+			GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
+			ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
+		})
+		writeJSON(w, http.StatusOK, a.settingsPayload())
+	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+}
+
+func (a *API) settingsPayload() map[string]any {
+	f := a.srv.RuntimeFlags()
+	return map[string]any{
 		"resolver_mode": a.cfg.Resolver.Mode,
 		"forwarders":    a.cfg.Resolver.Forwarders,
 		"dnssec_mode":   a.cfg.Resolver.DNSSECMode,
-		"ecs_enabled":   a.cfg.Resolver.ECSEnabled,
-		"rpz_enabled":   a.cfg.RPZ.Enabled,
-		"geodns":        a.cfg.GeoDNS.Enabled,
-		"split_horizon": a.cfg.SplitHorizon.Enabled,
-		"rate_limit":    a.cfg.RateLimit.Enabled,
+		"ecs_enabled":   f.ECS,
+		"rpz_enabled":   f.RPZ,
+		"geodns":        f.GeoDNS,
+		"split_horizon": f.SplitHorizon,
+		"rate_limit":    f.RateLimit,
 		"udp_addr":      a.srv.UDPAddr(),
-	})
+		"geodns_db":     a.cfg.GeoDNS.DatabasePath,
+		"editable":      []string{"geodns", "rpz_enabled", "rate_limit", "ecs_enabled", "split_horizon"},
+		"note":          "Toggles apply immediately and persist to data/runtime-settings.json",
+	}
 }
 
 func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled": a.cfg.RPZ.Enabled,
-		"entries": a.srv.RPZCount(),
+		"enabled":  a.srv.RuntimeFlags().RPZ,
+		"entries":  a.srv.RPZCount(),
 		"policies": a.cfg.RPZ.Policies,
 	})
 }

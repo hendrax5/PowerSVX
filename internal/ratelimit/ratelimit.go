@@ -59,11 +59,33 @@ func New(enabled bool, qps, burst int, blockSeconds int, whitelistCIDRs []string
 	return l
 }
 
-func (l *Limiter) Enabled() bool { return l != nil && l.enabled }
+func (l *Limiter) Enabled() bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.enabled
+}
+
+func (l *Limiter) SetEnabled(on bool) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.enabled = on
+	l.mu.Unlock()
+}
 
 // Allow returns false if the client should be refused.
 func (l *Limiter) Allow(ipStr string) bool {
-	if !l.Enabled() {
+	if l == nil {
+		return true
+	}
+	l.mu.Lock()
+	on := l.enabled
+	l.mu.Unlock()
+	if !on {
 		return true
 	}
 	ip := net.ParseIP(ipStr)

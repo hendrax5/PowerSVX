@@ -39,7 +39,23 @@ func New(enabled bool) *Engine {
 	}
 }
 
-func (e *Engine) Enabled() bool { return e != nil && e.enabled }
+func (e *Engine) Enabled() bool {
+	if e == nil {
+		return false
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.enabled
+}
+
+func (e *Engine) SetEnabled(on bool) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.enabled = on
+	e.mu.Unlock()
+}
 
 func (e *Engine) Count() int64 {
 	if e == nil {

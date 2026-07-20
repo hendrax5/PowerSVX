@@ -15,6 +15,7 @@ import (
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/eventlog"
+	"github.com/powersvx/powersvx/internal/geo"
 	"github.com/powersvx/powersvx/internal/server"
 )
 
@@ -110,5 +111,35 @@ func TestEventsRecent(t *testing.T) {
 	}
 	if len(body.Events) != 1 || body.Events[0]["message"] != "hello" {
 		t.Fatalf("%s", rr.Body.String())
+	}
+}
+
+func TestSettingsToggle(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.API.RESTEnabled = true
+	cfg.GeoDNS.Enabled = true
+	cfg.Resolver.Mode = "forward"
+	auth := authoritative.NewStore()
+	tier := cache.NewTier(cache.NewL1(100), nil, time.Minute, time.Minute)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	geoRes, _ := geo.New(true, "", "default")
+	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth, Geo: geoRes}, log)
+	a := api.New(cfg, srv, nil, tier, auth, log)
+	h := a.Handler()
+
+	body := bytes.NewBufferString(`{"geodns":false}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings", body)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	if geoRes.Enabled() {
+		t.Fatal("geodns should be off")
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if out["geodns"] != false {
+		t.Fatalf("%v", out)
 	}
 }
