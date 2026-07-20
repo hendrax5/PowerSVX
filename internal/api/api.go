@@ -255,8 +255,16 @@ func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 	checks["cache"] = map[string]any{"status": "pass", "hit_ratio": ratio, "l1_size": size}
 	checks["rpz"] = map[string]any{"status": "pass", "entries": a.srv.RPZCount()}
 
+	authInfo := map[string]any{
+		"auth_type": a.cfg.API.AuthType,
+	}
+	if a.users != nil {
+		authInfo["users"] = a.users.Count()
+		authInfo["admin_password_from_env"] = a.users.EnvAdminPasswordSet()
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status": status, "checks": checks, "uptime_seconds": int(time.Since(a.start).Seconds()),
+		"status": status, "checks": checks, "auth": authInfo, "uptime_seconds": int(time.Since(a.start).Seconds()),
 	})
 }
 

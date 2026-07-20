@@ -13,10 +13,11 @@ import (
 
 // UserStore merges TOML-configured users with optional data/users.json overrides.
 type UserStore struct {
-	mu       sync.RWMutex
-	path     string
-	base     map[string]User // from TOML (immutable base)
-	override map[string]User // from disk (CRUD)
+	mu         sync.RWMutex
+	path       string
+	base       map[string]User // from TOML (immutable base)
+	override   map[string]User // from disk (CRUD)
+	envAdminPW string          // plaintext from ADMIN_PASSWORD (Docker); wins for user "admin"
 }
 
 type User struct {
@@ -104,7 +105,11 @@ func (s *UserStore) saveDiskLocked() error {
 func (s *UserStore) Count() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.mergedLocked())
+	n := len(s.mergedLocked())
+	if n == 0 && s.envAdminPW != "" {
+		return 1
+	}
+	return n
 }
 
 func (s *UserStore) mergedLocked() map[string]User {
@@ -119,13 +124,37 @@ func (s *UserStore) mergedLocked() map[string]User {
 }
 
 func (s *UserStore) Authenticate(username, password string) (Principal, bool) {
+	username = strings.TrimSpace(username)
+	password = NormalizePassword(password)
+	if username == "" || password == "" {
+		return Principal{}, false
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	u, ok := s.mergedLocked()[strings.ToLower(strings.TrimSpace(username))]
+	// ADMIN_PASSWORD from the process environment always works for "admin"
+	// (avoids stale users.json / failed volume writes in Docker).
+	if s.envAdminPW != "" && strings.EqualFold(username, "admin") && PasswordEqual(password, s.envAdminPW) {
+		return Principal{Name: "admin", Role: RoleAdmin}, true
+	}
+	u, ok := s.mergedLocked()[strings.ToLower(username)]
 	if !ok || !CheckPassword(u.PasswordHash, password) {
 		return Principal{}, false
 	}
 	return Principal{Name: u.Name, Role: u.Role}, true
+}
+
+// SetEnvAdminPassword stores the live ADMIN_PASSWORD for direct login checks.
+func (s *UserStore) SetEnvAdminPassword(password string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.envAdminPW = NormalizePassword(password)
+}
+
+// EnvAdminPasswordSet reports whether ADMIN_PASSWORD is configured (not the value).
+func (s *UserStore) EnvAdminPasswordSet() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.envAdminPW != ""
 }
 
 func (s *UserStore) List() []User {
@@ -182,10 +211,11 @@ func (s *UserStore) Delete(name string) error {
 }
 
 // EnsureBootstrap creates or updates the admin account from ADMIN_PASSWORD.
-// When the store is empty it creates admin; when admin already exists it syncs
-// the password so changing .env + restart actually works for Docker deploys.
+// The env password is always kept in memory for login, even if users.json cannot be written.
 func (s *UserStore) EnsureBootstrap(adminPassword string) (created bool, err error) {
-	if strings.TrimSpace(adminPassword) == "" {
+	adminPassword = NormalizePassword(adminPassword)
+	s.SetEnvAdminPassword(adminPassword)
+	if adminPassword == "" {
 		return false, nil
 	}
 	s.mu.Lock()
@@ -201,9 +231,6 @@ func (s *UserStore) EnsureBootstrap(adminPassword string) (created bool, err err
 		}
 		s.override[key] = User{Name: "admin", PasswordHash: hash, Role: RoleAdmin}
 		return false, s.saveDiskLocked()
-	}
-	if len(s.mergedLocked()) > 0 {
-		// Other users exist but no admin — still create admin from env.
 	}
 	hash, err := HashPassword(adminPassword)
 	if err != nil {

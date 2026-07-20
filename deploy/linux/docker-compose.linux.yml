@@ -20,8 +20,11 @@ services:
     environment:
       - PG_PASSWORD=${PG_PASSWORD:?set PG_PASSWORD in .env}
       - API_TOKEN=${API_TOKEN:?set API_TOKEN in .env}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
       - TZ=${TZ:-UTC}
+    env_file:
+      - path: .env
+        required: true
     volumes: !override
       - powersvx-cache:/data/cache
       - powersvx-data:/data

@@ -118,18 +118,20 @@ func main() {
 			log.Error("user store", "err", err)
 			os.Exit(1)
 		}
-		if created, err := userStore.EnsureBootstrap(os.Getenv("ADMIN_PASSWORD")); err != nil {
-			log.Error("admin bootstrap", "err", err)
-			os.Exit(1)
+		adminPW := apiauth.NormalizePassword(os.Getenv("ADMIN_PASSWORD"))
+		if created, err := userStore.EnsureBootstrap(adminPW); err != nil {
+			log.Warn("users.json persist failed; ADMIN_PASSWORD still used for login", "err", err)
 		} else if created {
 			log.Info("bootstrapped local admin user from ADMIN_PASSWORD")
-		} else if strings.TrimSpace(os.Getenv("ADMIN_PASSWORD")) != "" {
-			log.Info("admin password checked/synced from ADMIN_PASSWORD")
 		}
 		if userStore.Count() == 0 {
-			log.Error("auth_type=local requires [[api.users]] or ADMIN_PASSWORD bootstrap")
+			log.Error("auth_type=local requires [[api.users]] or ADMIN_PASSWORD in environment")
 			os.Exit(1)
 		}
+		log.Info("local auth ready",
+			"users", userStore.Count(),
+			"admin_password_from_env", userStore.EnvAdminPasswordSet(),
+		)
 		// Session cookies: Secure only when the browser uses HTTPS (see SetCookie).
 		// Do not tie this to DoT/DoH TLS — UI is usually plain HTTP :5380.
 		sessStore = apiauth.NewSessionStore(*dataDir, apiauth.DefaultTTL, false)

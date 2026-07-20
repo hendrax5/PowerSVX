@@ -7,6 +7,9 @@ services:
       # make Alpine/Debian package mirrors look "temporarily" unavailable.
       network: host
     container_name: powersvx
+    env_file:
+      - path: .env
+        required: false
     environment:
       - PG_PASSWORD=${PG_PASSWORD:-PowerSVXDevPass}
       - API_TOKEN=${API_TOKEN:-dev-token}
