@@ -1,0 +1,52 @@
+# PowerSVX Phase 3 smoke — RPZ + rate limit (no TLS)
+
+[server]
+bind_address = "127.0.0.1"
+udp_port = 5456
+tcp_port = 5456
+dot_port = 0
+doh_port = 0
+doq_port = 0
+
+[server.tls]
+enabled = false
+
+[database]
+enabled = false
+
+[cache]
+path = "./data/cache-p3"
+max_size_mb = 32
+ttl_seconds = 60
+negative_ttl = 30
+
+[resolver]
+mode = "forward"
+forwarders = ["1.1.1.1:53"]
+dnssec_mode = "off"
+timeout_ms = 3000
+
+[rate_limit]
+enabled = true
+default_qps = 50
+default_burst = 100
+block_duration = 60
+whitelist = ["127.0.0.1/32", "::1/128"]
+
+[rpz]
+enabled = true
+policies = [
+  { name = "sample", source = "./configs/sample-blocklist.txt", format = "hosts", action = "nxdomain" }
+]
+
+[metrics]
+prometheus_enabled = true
+prometheus_bind = "127.0.0.1:9101"
+
+[api]
+rest_enabled = true
+rest_bind = "127.0.0.1:5384"
+
+[logging]
+level = "info"
+format = "json"

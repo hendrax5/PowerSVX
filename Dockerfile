@@ -21,6 +21,6 @@ RUN mkdir -p /data/cache /etc/PowerSVX/certs /var/log/PowerSVX \
          -addext "subjectAltName=DNS:localhost,DNS:powersvx,IP:127.0.0.1" \
     && chown -R powersvx:powersvx /data /var/log/PowerSVX /etc/PowerSVX
 USER powersvx
-EXPOSE 53/udp 53/tcp 853/tcp 443/tcp 5380/tcp
+EXPOSE 53/udp 53/tcp 853/tcp 443/tcp 784/udp 5380/tcp 9100/tcp
 ENTRYPOINT ["/usr/local/bin/powersvx"]
 CMD ["--config", "/etc/PowerSVX/powersvx.toml"]

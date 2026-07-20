@@ -1,4 +1,4 @@
-# PowerSVX — local / standalone (Phase 2)
+# PowerSVX — local (Phase 3)
 
 [server]
 bind_address = "0.0.0.0"
@@ -6,6 +6,7 @@ udp_port = 5353
 tcp_port = 5353
 dot_port = 8853
 doh_port = 8443
+doq_port = 784
 workers = 0
 
 [server.tls]
@@ -15,16 +16,8 @@ key_file = "./certs/privkey.pem"
 
 [database]
 enabled = false
-type = "postgres"
-host = "localhost"
-port = 5432
-database = "PowerSVX"
-user = "PowerSVX"
-password = "${PG_PASSWORD}"
-max_connections = 20
 
 [cache]
-type = "badger"
 path = "./data/cache"
 max_size_mb = 512
 ttl_seconds = 300
@@ -33,21 +26,34 @@ negative_ttl = 60
 [resolver]
 mode = "forward"
 forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
-dnssec_validation = false
 dnssec_mode = "off"
-qname_minimization = true
-edns_buffer_size = 1232
 timeout_ms = 3000
+
+[rate_limit]
+enabled = true
+default_qps = 100
+default_burst = 200
+block_duration = 300
+whitelist = ["127.0.0.1/32", "::1/128"]
+
+[rpz]
+enabled = true
+update_interval = 3600
+policies = [
+  { name = "sample", source = "./configs/sample-blocklist.txt", format = "hosts", action = "nxdomain" }
+]
+
+[metrics]
+prometheus_enabled = true
+prometheus_bind = "0.0.0.0:9100"
+
+[tsig]
+enabled = false
 
 [api]
 rest_enabled = true
 rest_bind = "0.0.0.0:5380"
-auth_type = "none"
-api_token = "${API_TOKEN}"
 
 [logging]
 level = "info"
 format = "json"
-query_log_enabled = false
-query_log_destination = "postgresql"
-query_log_retention_days = 30

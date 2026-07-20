@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -16,9 +17,13 @@ import (
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/database"
 	"github.com/powersvx/powersvx/internal/dnssec"
+	"github.com/powersvx/powersvx/internal/metrics"
+	"github.com/powersvx/powersvx/internal/ratelimit"
 	"github.com/powersvx/powersvx/internal/resolver"
+	"github.com/powersvx/powersvx/internal/rpz"
 	"github.com/powersvx/powersvx/internal/server"
 	"github.com/powersvx/powersvx/internal/tlsutil"
+	"github.com/powersvx/powersvx/internal/tsig"
 )
 
 func main() {
@@ -38,21 +43,18 @@ func main() {
 		l1Max = 100_000
 	}
 	l1 := cache.NewL1(l1Max)
-
 	var l2 *cache.L2
 	l2, err = cache.NewL2(cfg.Cache.Path)
 	if err != nil {
 		log.Warn("L2 BadgerDB unavailable, continuing with L1 only", "err", err)
 	}
-	tier := cache.NewTier(
-		l1, l2,
+	tier := cache.NewTier(l1, l2,
 		time.Duration(cfg.Cache.TTLSeconds)*time.Second,
 		time.Duration(cfg.Cache.NegativeTTL)*time.Second,
 	)
 	defer func() { _ = tier.Close() }()
 
 	auth := authoritative.NewStore()
-
 	var db *database.DB
 	if cfg.Database.Enabled {
 		db, err = database.Connect(cfg.Database, log)
@@ -77,8 +79,34 @@ func main() {
 		}
 	}
 
-	secMode := dnssec.ParseMode(cfg.Resolver.DNSSECMode, cfg.Resolver.DNSSECValidation)
-	sec := dnssec.New(secMode)
+	sec := dnssec.New(dnssec.ParseMode(cfg.Resolver.DNSSECMode, cfg.Resolver.DNSSECValidation))
+	limiter := ratelimit.New(cfg.RateLimit.Enabled, cfg.RateLimit.DefaultQPS, cfg.RateLimit.DefaultBurst, cfg.RateLimit.BlockDuration, cfg.RateLimit.Whitelist)
+
+	rpzEng := rpz.New(cfg.RPZ.Enabled)
+	if cfg.RPZ.Enabled && len(cfg.RPZ.Policies) > 0 {
+		var policies []rpz.PolicyConfig
+		for _, p := range cfg.RPZ.Policies {
+			policies = append(policies, rpz.PolicyConfig{
+				Name: p.Name, Source: p.Source, Format: p.Format, Action: rpz.Action(p.Action),
+			})
+		}
+		n, err := rpzEng.LoadPolicies(policies, 60*time.Second)
+		if err != nil {
+			log.Warn("rpz load failed", "err", err)
+		} else {
+			log.Info("rpz loaded", "entries", n)
+		}
+	}
+
+	tsigStore := tsig.New()
+	if cfg.TSIG.Enabled {
+		for _, k := range cfg.TSIG.Keys {
+			if err := tsigStore.Set(k.Name, k.Secret); err != nil {
+				log.Warn("tsig key", "name", k.Name, "err", err)
+			}
+		}
+		log.Info("tsig keys loaded", "count", tsigStore.Len())
+	}
 
 	var tlsCfg *tls.Config
 	if cfg.TLSEnabled() {
@@ -87,11 +115,30 @@ func main() {
 			log.Error("tls load failed", "err", err)
 			os.Exit(1)
 		}
-		log.Info("TLS enabled for DoT/DoH", "cert", cfg.Server.TLS.CertFile)
+		log.Info("TLS enabled", "cert", cfg.Server.TLS.CertFile)
+	}
+
+	if cfg.Metrics.PrometheusEnabled {
+		bind := cfg.Metrics.PrometheusBind
+		if bind == "" {
+			bind = "0.0.0.0:9100"
+		}
+		go func() {
+			mux := http.NewServeMux()
+			mux.Handle("/metrics", metrics.Handler())
+			log.Info("Prometheus metrics", "addr", bind)
+			if err := http.ListenAndServe(bind, mux); err != nil {
+				log.Error("metrics server", "err", err)
+			}
+		}()
 	}
 
 	res := resolver.New(cfg.Resolver)
-	dnsSrv := server.New(cfg, tier, res, auth, sec, tlsCfg, log)
+	dnsSrv := server.New(cfg, server.Deps{
+		Cache: tier, Res: res, Auth: auth, DNSSEC: sec,
+		Limiter: limiter, RPZ: rpzEng, TSIG: tsigStore, TLS: tlsCfg,
+	}, log)
+
 	rest := api.New(cfg, dnsSrv, db, tier, auth, log)
 	if err := rest.Start(); err != nil {
 		log.Error("api start failed", "err", err)
@@ -105,12 +152,13 @@ func main() {
 		}
 	}()
 
-	log.Info("PowerSVX Phase 2 started",
+	log.Info("PowerSVX started",
 		"udp", cfg.ListenAddr(cfg.Server.UDPPort),
 		"mode", cfg.Resolver.Mode,
-		"dnssec", string(secMode),
-		"dot", cfg.TLSEnabled(),
-		"doh", cfg.TLSEnabled(),
+		"dnssec", cfg.Resolver.DNSSECMode,
+		"rpz", cfg.RPZ.Enabled,
+		"ratelimit", cfg.RateLimit.Enabled,
+		"tls", cfg.TLSEnabled(),
 		"api", cfg.API.RESTBind,
 	)
 

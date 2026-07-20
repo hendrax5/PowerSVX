@@ -1,4 +1,4 @@
-# PowerSVX — Docker Compose (Phase 2)
+# PowerSVX — Docker Compose (Phase 3)
 
 [server]
 bind_address = "0.0.0.0"
@@ -6,6 +6,7 @@ udp_port = 53
 tcp_port = 53
 dot_port = 853
 doh_port = 443
+doq_port = 784
 workers = 0
 
 [server.tls]
@@ -33,11 +34,30 @@ negative_ttl = 60
 [resolver]
 mode = "forward"
 forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
-dnssec_validation = true
 dnssec_mode = "opportunistic"
-qname_minimization = true
 edns_buffer_size = 1232
 timeout_ms = 3000
+
+[rate_limit]
+enabled = true
+default_qps = 200
+default_burst = 400
+block_duration = 300
+whitelist = ["127.0.0.1/32", "::1/128", "172.16.0.0/12"]
+
+[rpz]
+enabled = true
+update_interval = 3600
+policies = [
+  { name = "sample", source = "/etc/PowerSVX/sample-blocklist.txt", format = "hosts", action = "nxdomain" }
+]
+
+[metrics]
+prometheus_enabled = true
+prometheus_bind = "0.0.0.0:9100"
+
+[tsig]
+enabled = false
 
 [api]
 rest_enabled = true
@@ -48,6 +68,3 @@ api_token = "${API_TOKEN}"
 [logging]
 level = "info"
 format = "json"
-query_log_enabled = false
-query_log_destination = "postgresql"
-query_log_retention_days = 30

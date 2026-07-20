@@ -14,40 +14,67 @@ import (
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/dnssec"
+	"github.com/powersvx/powersvx/internal/metrics"
+	"github.com/powersvx/powersvx/internal/ratelimit"
 	"github.com/powersvx/powersvx/internal/resolver"
+	"github.com/powersvx/powersvx/internal/rpz"
+	"github.com/powersvx/powersvx/internal/tsig"
+	"github.com/quic-go/quic-go"
 )
 
 // Server is the DNS request pipeline.
 type Server struct {
-	cfg      *config.Config
-	cache    *cache.Tier
-	res      *resolver.Resolver
-	auth     *authoritative.Store
-	dnssec   *dnssec.Validator
-	tlsCfg   *tls.Config
-	log      *slog.Logger
-	udp      *dns.Server
-	tcp      *dns.Server
-	dot      *dns.Server
-	dohHTTP  *http.Server
-	queries  atomic.Uint64
-	started  time.Time
-	dotOn    bool
-	dohOn    bool
+	cfg     *config.Config
+	cache   *cache.Tier
+	res     *resolver.Resolver
+	auth    *authoritative.Store
+	dnssec  *dnssec.Validator
+	limiter *ratelimit.Limiter
+	rpz     *rpz.Engine
+	tsig    *tsig.Store
+	tlsCfg  *tls.Config
+	log     *slog.Logger
+	udp     *dns.Server
+	tcp     *dns.Server
+	dot     *dns.Server
+	dohHTTP *http.Server
+	doqLn   *quic.Listener
+	doqCtx  context.Context
+	doqCancel context.CancelFunc
+	queries atomic.Uint64
+	blocked atomic.Uint64
+	started time.Time
+	dotOn   bool
+	dohOn   bool
+	doqOn   bool
 }
 
-func New(cfg *config.Config, tier *cache.Tier, res *resolver.Resolver, auth *authoritative.Store, sec *dnssec.Validator, tlsCfg *tls.Config, log *slog.Logger) *Server {
+type Deps struct {
+	Cache   *cache.Tier
+	Res     *resolver.Resolver
+	Auth    *authoritative.Store
+	DNSSEC  *dnssec.Validator
+	Limiter *ratelimit.Limiter
+	RPZ     *rpz.Engine
+	TSIG    *tsig.Store
+	TLS     *tls.Config
+}
+
+func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Server{
-		cfg:    cfg,
-		cache:  tier,
-		res:    res,
-		auth:   auth,
-		dnssec: sec,
-		tlsCfg: tlsCfg,
-		log:    log,
+		cfg:     cfg,
+		cache:   d.Cache,
+		res:     d.Res,
+		auth:    d.Auth,
+		dnssec:  d.DNSSEC,
+		limiter: d.Limiter,
+		rpz:     d.RPZ,
+		tsig:    d.TSIG,
+		tlsCfg:  d.TLS,
+		log:     log,
 		started: time.Now(),
 	}
 }
@@ -55,11 +82,33 @@ func New(cfg *config.Config, tier *cache.Tier, res *resolver.Resolver, auth *aut
 func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	start := time.Now()
 	s.queries.Add(1)
+	proto := protocolFromWriter(w)
+
+	clientIP := ""
+	if ra := w.RemoteAddr(); ra != nil {
+		host, _, err := net.SplitHostPort(ra.String())
+		if err == nil {
+			clientIP = host
+		} else {
+			clientIP = ra.String()
+		}
+	}
+
+	if s.limiter != nil && clientIP != "" && !s.limiter.Allow(clientIP) {
+		s.blocked.Add(1)
+		metrics.RateLimited.Inc()
+		metrics.QueriesTotal.WithLabelValues(proto, "ratelimited").Inc()
+		m := new(dns.Msg)
+		m.SetRcode(req, dns.RcodeRefused)
+		_ = w.WriteMsg(m)
+		return
+	}
 
 	if len(req.Question) == 0 {
 		m := new(dns.Msg)
 		m.SetRcode(req, dns.RcodeFormatError)
 		_ = w.WriteMsg(m)
+		metrics.QueriesTotal.WithLabelValues(proto, "formerr").Inc()
 		return
 	}
 
@@ -67,15 +116,36 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	qname := config.NormalizeName(q.Name)
 	qtype := q.Qtype
 
-	// L1/L2 cache hit — rewrite message ID and send pre-encoded wire.
-	if entry, ok := s.cache.Get(qname, qtype); ok {
-		wire := resolver.RewriteID(entry.Wire, req.Id)
-		_, _ = w.Write(wire)
-		s.log.Debug("cache hit", "name", qname, "type", dns.TypeToString[qtype], "ms", time.Since(start).Milliseconds())
-		return
+	// RPZ before cache so blocks always apply
+	if s.rpz != nil {
+		if action, hit := s.rpz.Lookup(qname); hit {
+			metrics.RPZBlocked.Inc()
+			metrics.QueriesTotal.WithLabelValues(proto, "blocked").Inc()
+			m := new(dns.Msg)
+			m.SetReply(req)
+			m.RecursionAvailable = true
+			switch action {
+			case rpz.ActionNODATA:
+				m.Rcode = dns.RcodeSuccess
+			default:
+				m.Rcode = dns.RcodeNameError
+			}
+			_ = w.WriteMsg(m)
+			metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
+			return
+		}
 	}
 
-	// Authoritative in-memory lookup
+	if entry, ok := s.cache.Get(qname, qtype); ok {
+		metrics.CacheHits.Inc()
+		wire := resolver.RewriteID(entry.Wire, req.Id)
+		_, _ = w.Write(wire)
+		metrics.QueriesTotal.WithLabelValues(proto, "cache").Inc()
+		metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
+		return
+	}
+	metrics.CacheMisses.Inc()
+
 	if s.auth != nil {
 		if rrs, inZone := s.auth.Lookup(qname, qtype); inZone {
 			m := new(dns.Msg)
@@ -88,6 +158,8 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 				m.Answer = rrs
 			}
 			s.storeAndWrite(w, req, m)
+			metrics.QueriesTotal.WithLabelValues(proto, "auth").Inc()
+			metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
 			return
 		}
 	}
@@ -103,6 +175,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		m.RecursionAvailable = true
 		m.Rcode = dns.RcodeServerFailure
 		_ = w.WriteMsg(m)
+		metrics.QueriesTotal.WithLabelValues(proto, "servfail").Inc()
 		return
 	}
 
@@ -118,12 +191,26 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			m.RecursionAvailable = true
 			m.Rcode = dns.RcodeServerFailure
 			_ = w.WriteMsg(m)
+			metrics.QueriesTotal.WithLabelValues(proto, "dnssec_fail").Inc()
 			return
 		}
 	}
 
 	s.storeAndWrite(w, req, resp)
-	s.log.Debug("resolved", "name", qname, "type", dns.TypeToString[qtype], "rcode", resp.Rcode, "ad", resp.AuthenticatedData, "ms", time.Since(start).Milliseconds())
+	metrics.QueriesTotal.WithLabelValues(proto, "ok").Inc()
+	metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
+}
+
+func protocolFromWriter(w dns.ResponseWriter) string {
+	if w == nil || w.LocalAddr() == nil {
+		return "udp"
+	}
+	switch w.LocalAddr().Network() {
+	case "tcp", "tcp4", "tcp6":
+		return "tcp"
+	default:
+		return "udp"
+	}
 }
 
 func (s *Server) storeAndWrite(w dns.ResponseWriter, req, resp *dns.Msg) {
@@ -139,13 +226,19 @@ func (s *Server) storeAndWrite(w dns.ResponseWriter, req, resp *dns.Msg) {
 
 func (s *Server) ListenAndServe() error {
 	handler := dns.HandlerFunc(s.ServeDNS)
+	tsigMap := map[string]string(nil)
+	if s.tsig != nil {
+		tsigMap = s.tsig.Map()
+	}
+
 	udpAddr := s.cfg.ListenAddr(s.cfg.Server.UDPPort)
 	tcpAddr := s.cfg.ListenAddr(s.cfg.Server.TCPPort)
 
-	s.udp = &dns.Server{Addr: udpAddr, Net: "udp", Handler: handler, UDPSize: 1232}
-	s.tcp = &dns.Server{Addr: tcpAddr, Net: "tcp", Handler: handler}
+	s.udp = &dns.Server{Addr: udpAddr, Net: "udp", Handler: handler, UDPSize: 1232, TsigSecret: tsigMap}
+	s.tcp = &dns.Server{Addr: tcpAddr, Net: "tcp", Handler: handler, TsigSecret: tsigMap}
 
-	errCh := make(chan error, 4)
+	errCh := make(chan error, 5)
+	s.doqCtx, s.doqCancel = context.WithCancel(context.Background())
 
 	go func() {
 		s.log.Info("UDP listener starting", "addr", udpAddr)
@@ -160,12 +253,7 @@ func (s *Server) ListenAndServe() error {
 		dotAddr := s.cfg.ListenAddr(s.cfg.Server.DoTPort)
 		dotTLS := s.tlsCfg.Clone()
 		dotTLS.NextProtos = []string{"dot"}
-		s.dot = &dns.Server{
-			Addr:      dotAddr,
-			Net:       "tcp-tls",
-			Handler:   handler,
-			TLSConfig: dotTLS,
-		}
+		s.dot = &dns.Server{Addr: dotAddr, Net: "tcp-tls", Handler: handler, TLSConfig: dotTLS, TsigSecret: tsigMap}
 		s.dotOn = true
 		go func() {
 			s.log.Info("DoT listener starting", "addr", dotAddr)
@@ -185,23 +273,33 @@ func (s *Server) ListenAndServe() error {
 		}()
 	}
 
+	if s.tlsCfg != nil && s.cfg.Server.DoQPort > 0 {
+		doqAddr := s.cfg.ListenAddr(s.cfg.Server.DoQPort)
+		if err := s.startDoQ(s.doqCtx, doqAddr); err != nil {
+			s.log.Error("DoQ start failed", "err", err)
+		} else {
+			s.log.Info("DoQ listener starting", "addr", doqAddr)
+		}
+	}
+
 	return <-errCh
 }
 
 func (s *Server) Shutdown() error {
+	if s.doqCancel != nil {
+		s.doqCancel()
+	}
+	if s.doqLn != nil {
+		_ = s.doqLn.Close()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var err error
-	if s.udp != nil {
-		err = s.udp.ShutdownContext(ctx)
-	}
-	if s.tcp != nil {
-		if e := s.tcp.ShutdownContext(ctx); e != nil && err == nil {
-			err = e
+	for _, srv := range []*dns.Server{s.udp, s.tcp, s.dot} {
+		if srv == nil {
+			continue
 		}
-	}
-	if s.dot != nil {
-		if e := s.dot.ShutdownContext(ctx); e != nil && err == nil {
+		if e := srv.ShutdownContext(ctx); e != nil && err == nil {
 			err = e
 		}
 	}
@@ -217,9 +315,9 @@ func (s *Server) Stats() (queries uint64, uptime time.Duration) {
 	return s.queries.Load(), time.Since(s.started)
 }
 
-func (s *Server) UDPAddr() string {
-	return s.cfg.ListenAddr(s.cfg.Server.UDPPort)
-}
+func (s *Server) Blocked() uint64 { return s.blocked.Load() }
+
+func (s *Server) UDPAddr() string { return s.cfg.ListenAddr(s.cfg.Server.UDPPort) }
 
 func (s *Server) DoTAddr() string {
 	if !s.dotOn {
@@ -235,8 +333,16 @@ func (s *Server) DoHAddr() string {
 	return s.cfg.ListenAddr(s.cfg.Server.DoHPort)
 }
 
+func (s *Server) DoQAddr() string {
+	if !s.doqOn {
+		return ""
+	}
+	return s.cfg.ListenAddr(s.cfg.Server.DoQPort)
+}
+
 func (s *Server) DoTEnabled() bool { return s.dotOn }
 func (s *Server) DoHEnabled() bool { return s.dohOn }
+func (s *Server) DoQEnabled() bool { return s.doqOn }
 
 func (s *Server) DNSSECMode() string {
 	if s.dnssec == nil {
@@ -245,7 +351,13 @@ func (s *Server) DNSSECMode() string {
 	return string(s.dnssec.Mode)
 }
 
-// ServeDNSMsg runs the pipeline and returns a packed response (for DoH).
+func (s *Server) RPZCount() int64 {
+	if s.rpz == nil {
+		return 0
+	}
+	return s.rpz.Count()
+}
+
 func (s *Server) ServeDNSMsg(req *dns.Msg) (*dns.Msg, []byte, error) {
 	rw := &memResponseWriter{}
 	s.ServeDNS(rw, req)
@@ -268,11 +380,14 @@ type memResponseWriter struct {
 	wire []byte
 }
 
-func (m *memResponseWriter) LocalAddr() net.Addr                { return &net.UDPAddr{IP: net.IPv4zero, Port: 0} }
-func (m *memResponseWriter) RemoteAddr() net.Addr               { return &net.UDPAddr{IP: net.IPv4zero, Port: 0} }
-func (m *memResponseWriter) WriteMsg(msg *dns.Msg) error        { m.msg = msg; return nil }
-func (m *memResponseWriter) Write(b []byte) (int, error)        { m.wire = append([]byte(nil), b...); return len(b), nil }
-func (m *memResponseWriter) Close() error                       { return nil }
-func (m *memResponseWriter) TsigStatus() error                  { return nil }
-func (m *memResponseWriter) TsigTimersOnly(bool)                {}
-func (m *memResponseWriter) Hijack()                            {}
+func (m *memResponseWriter) LocalAddr() net.Addr         { return &net.UDPAddr{IP: net.IPv4zero, Port: 0} }
+func (m *memResponseWriter) RemoteAddr() net.Addr        { return &net.UDPAddr{IP: net.IPv4zero, Port: 0} }
+func (m *memResponseWriter) WriteMsg(msg *dns.Msg) error { m.msg = msg; return nil }
+func (m *memResponseWriter) Write(b []byte) (int, error) {
+	m.wire = append([]byte(nil), b...)
+	return len(b), nil
+}
+func (m *memResponseWriter) Close() error        { return nil }
+func (m *memResponseWriter) TsigStatus() error   { return nil }
+func (m *memResponseWriter) TsigTimersOnly(bool) {}
+func (m *memResponseWriter) Hijack()             {}

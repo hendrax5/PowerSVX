@@ -9,12 +9,16 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig   `toml:"server"`
-	Database DatabaseConfig `toml:"database"`
-	Cache    CacheConfig    `toml:"cache"`
-	Resolver ResolverConfig `toml:"resolver"`
-	API      APIConfig      `toml:"api"`
-	Logging  LoggingConfig  `toml:"logging"`
+	Server     ServerConfig     `toml:"server"`
+	Database   DatabaseConfig   `toml:"database"`
+	Cache      CacheConfig      `toml:"cache"`
+	Resolver   ResolverConfig   `toml:"resolver"`
+	API        APIConfig        `toml:"api"`
+	Logging    LoggingConfig    `toml:"logging"`
+	RateLimit  RateLimitConfig  `toml:"rate_limit"`
+	RPZ        RPZConfig        `toml:"rpz"`
+	Metrics    MetricsConfig    `toml:"metrics"`
+	TSIG       TSIGConfig       `toml:"tsig"`
 }
 
 type ServerConfig struct {
@@ -23,6 +27,7 @@ type ServerConfig struct {
 	TCPPort     int       `toml:"tcp_port"`
 	DoTPort     int       `toml:"dot_port"`
 	DoHPort     int       `toml:"doh_port"`
+	DoQPort     int       `toml:"doq_port"`
 	Workers     int       `toml:"workers"`
 	TLS         TLSConfig `toml:"tls"`
 }
@@ -53,10 +58,10 @@ type CacheConfig struct {
 }
 
 type ResolverConfig struct {
-	Mode              string   `toml:"mode"` // recursive | forward
+	Mode              string   `toml:"mode"`
 	Forwarders        []string `toml:"forwarders"`
 	DNSSECValidation  bool     `toml:"dnssec_validation"`
-	DNSSECMode        string   `toml:"dnssec_mode"` // off | validate | opportunistic
+	DNSSECMode        string   `toml:"dnssec_mode"`
 	QNameMinimization bool     `toml:"qname_minimization"`
 	EDNSBufferSize    uint16   `toml:"edns_buffer_size"`
 	TimeoutMS         int      `toml:"timeout_ms"`
@@ -77,6 +82,42 @@ type LoggingConfig struct {
 	QueryLogRetentionDays int    `toml:"query_log_retention_days"`
 }
 
+type RateLimitConfig struct {
+	Enabled       bool     `toml:"enabled"`
+	DefaultQPS    int      `toml:"default_qps"`
+	DefaultBurst  int      `toml:"default_burst"`
+	BlockDuration int      `toml:"block_duration"`
+	Whitelist     []string `toml:"whitelist"`
+}
+
+type RPZPolicyTOML struct {
+	Name   string `toml:"name"`
+	Source string `toml:"source"`
+	Format string `toml:"format"`
+	Action string `toml:"action"`
+}
+
+type RPZConfig struct {
+	Enabled        bool            `toml:"enabled"`
+	Policies       []RPZPolicyTOML `toml:"policies"`
+	UpdateInterval int             `toml:"update_interval"`
+}
+
+type MetricsConfig struct {
+	PrometheusEnabled bool   `toml:"prometheus_enabled"`
+	PrometheusBind    string `toml:"prometheus_bind"`
+}
+
+type TSIGKeyTOML struct {
+	Name   string `toml:"name"`
+	Secret string `toml:"secret"`
+}
+
+type TSIGConfig struct {
+	Enabled bool          `toml:"enabled"`
+	Keys    []TSIGKeyTOML `toml:"keys"`
+}
+
 func Default() *Config {
 	return &Config{
 		Server: ServerConfig{
@@ -85,6 +126,7 @@ func Default() *Config {
 			TCPPort:     5353,
 			DoTPort:     853,
 			DoHPort:     8443,
+			DoQPort:     784,
 			Workers:     0,
 			TLS: TLSConfig{
 				Enabled:  false,
@@ -93,43 +135,31 @@ func Default() *Config {
 			},
 		},
 		Database: DatabaseConfig{
-			Type:           "postgres",
-			Host:           "localhost",
-			Port:           5432,
-			Database:       "PowerSVX",
-			User:           "PowerSVX",
-			Password:       "",
-			MaxConnections: 20,
-			Enabled:        false,
+			Type: "postgres", Host: "localhost", Port: 5432,
+			Database: "PowerSVX", User: "PowerSVX", MaxConnections: 20,
 		},
 		Cache: CacheConfig{
-			Type:        "badger",
-			Path:        "./data/cache",
-			MaxSizeMB:   512,
-			TTLSeconds:  300,
-			NegativeTTL: 60,
+			Type: "badger", Path: "./data/cache", MaxSizeMB: 512,
+			TTLSeconds: 300, NegativeTTL: 60,
 		},
 		Resolver: ResolverConfig{
-			Mode:              "forward",
-			Forwarders:        []string{"1.1.1.1:53", "8.8.8.8:53"},
-			DNSSECValidation:  false,
-			DNSSECMode:        "off",
-			QNameMinimization: true,
-			EDNSBufferSize:    1232,
-			TimeoutMS:         3000,
+			Mode: "forward",
+			Forwarders: []string{"1.1.1.1:53", "8.8.8.8:53"},
+			DNSSECMode: "off", QNameMinimization: true,
+			EDNSBufferSize: 1232, TimeoutMS: 3000,
 		},
-		API: APIConfig{
-			RESTEnabled: true,
-			RESTBind:    "0.0.0.0:5380",
-			AuthType:    "none",
+		API: APIConfig{RESTEnabled: true, RESTBind: "0.0.0.0:5380", AuthType: "none"},
+		Logging: LoggingConfig{Level: "info", Format: "json"},
+		RateLimit: RateLimitConfig{
+			Enabled: false, DefaultQPS: 100, DefaultBurst: 200, BlockDuration: 300,
+			Whitelist: []string{"127.0.0.1/32", "::1/128"},
 		},
-		Logging: LoggingConfig{
-			Level:                 "info",
-			Format:                "json",
-			QueryLogEnabled:       false,
-			QueryLogDestination:   "postgresql",
-			QueryLogRetentionDays: 30,
+		RPZ: RPZConfig{Enabled: false, UpdateInterval: 3600},
+		Metrics: MetricsConfig{
+			PrometheusEnabled: true,
+			PrometheusBind:    "0.0.0.0:9100",
 		},
+		TSIG: TSIGConfig{Enabled: false},
 	}
 }
 
@@ -138,11 +168,9 @@ func Load(path string) (*Config, error) {
 	if path == "" {
 		return cfg, nil
 	}
-	meta, err := toml.DecodeFile(path, cfg)
-	if err != nil {
+	if _, err := toml.DecodeFile(path, cfg); err != nil {
 		return nil, fmt.Errorf("load config %s: %w", path, err)
 	}
-	_ = meta
 	expandEnv(cfg)
 	normalizeDNSSEC(cfg)
 	return cfg, nil
@@ -151,6 +179,9 @@ func Load(path string) (*Config, error) {
 func expandEnv(cfg *Config) {
 	cfg.Database.Password = os.ExpandEnv(cfg.Database.Password)
 	cfg.API.APIToken = os.ExpandEnv(cfg.API.APIToken)
+	for i := range cfg.TSIG.Keys {
+		cfg.TSIG.Keys[i].Secret = os.ExpandEnv(cfg.TSIG.Keys[i].Secret)
+	}
 }
 
 func normalizeDNSSEC(cfg *Config) {
@@ -170,10 +201,9 @@ func normalizeDNSSEC(cfg *Config) {
 }
 
 func (c *Config) DSN() string {
-	pw := c.Database.Password
 	return fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-		c.Database.Host, c.Database.Port, c.Database.User, pw, c.Database.Database,
+		c.Database.Host, c.Database.Port, c.Database.User, c.Database.Password, c.Database.Database,
 	)
 }
 
@@ -185,9 +215,7 @@ func (c *Config) ListenAddr(port int) string {
 	return fmt.Sprintf("%s:%d", host, port)
 }
 
-func (c *Config) TLSEnabled() bool {
-	return c.Server.TLS.Enabled
-}
+func (c *Config) TLSEnabled() bool { return c.Server.TLS.Enabled }
 
 func NormalizeName(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))

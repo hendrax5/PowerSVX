@@ -1,0 +1,31 @@
+﻿[server]
+bind_address = "127.0.0.1"
+udp_port = 5457
+tcp_port = 5457
+dot_port = 8854
+doh_port = 8444
+doq_port = 785
+[server.tls]
+enabled = true
+cert_file = "./certs/fullchain.pem"
+key_file = "./certs/privkey.pem"
+[database]
+enabled = false
+[cache]
+path = "./data/cache-doq"
+[resolver]
+mode = "forward"
+forwarders = ["1.1.1.1:53"]
+dnssec_mode = "opportunistic"
+[rate_limit]
+enabled = false
+[rpz]
+enabled = false
+[metrics]
+prometheus_enabled = false
+[api]
+rest_enabled = true
+rest_bind = "127.0.0.1:5385"
+[logging]
+level = "info"
+format = "json"
