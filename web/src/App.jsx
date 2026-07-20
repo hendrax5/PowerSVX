@@ -206,7 +206,11 @@ function LoginPage() {
             <span className="text-[var(--text)]">Power</span>
             <span className="text-[var(--accent)]">SVX</span>
           </div>
-          <p className="text-sm text-[var(--muted)] mt-2">Sign in with username and password</p>
+          <p className="text-sm text-[var(--muted)] mt-2">
+            Username <span className="mono text-[var(--text)]">admin</span> · password from{' '}
+            <span className="mono text-[var(--text)]">ADMIN_PASSWORD</span> in <span className="mono">.env</span>
+            {' '}(not API_TOKEN)
+          </p>
         </div>
         {err ? <ErrorBox msg={err} detail={errDetail !== err ? errDetail : undefined} /> : null}
         <label className="text-xs text-[var(--muted)] flex flex-col gap-1">

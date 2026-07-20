@@ -181,21 +181,35 @@ func (s *UserStore) Delete(name string) error {
 	return s.saveDiskLocked()
 }
 
-// EnsureBootstrap creates admin from plain password when store is empty.
+// EnsureBootstrap creates or updates the admin account from ADMIN_PASSWORD.
+// When the store is empty it creates admin; when admin already exists it syncs
+// the password so changing .env + restart actually works for Docker deploys.
 func (s *UserStore) EnsureBootstrap(adminPassword string) (created bool, err error) {
 	if strings.TrimSpace(adminPassword) == "" {
 		return false, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	key := "admin"
+	if existing, ok := s.mergedLocked()[key]; ok {
+		if CheckPassword(existing.PasswordHash, adminPassword) {
+			return false, nil
+		}
+		hash, err := HashPassword(adminPassword)
+		if err != nil {
+			return false, err
+		}
+		s.override[key] = User{Name: "admin", PasswordHash: hash, Role: RoleAdmin}
+		return false, s.saveDiskLocked()
+	}
 	if len(s.mergedLocked()) > 0 {
-		return false, nil
+		// Other users exist but no admin — still create admin from env.
 	}
 	hash, err := HashPassword(adminPassword)
 	if err != nil {
 		return false, err
 	}
-	s.override["admin"] = User{Name: "admin", PasswordHash: hash, Role: RoleAdmin}
+	s.override[key] = User{Name: "admin", PasswordHash: hash, Role: RoleAdmin}
 	if err := s.saveDiskLocked(); err != nil {
 		return false, err
 	}

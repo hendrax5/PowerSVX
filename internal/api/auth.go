@@ -115,7 +115,7 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session error", http.StatusInternalServerError)
 		return
 	}
-	a.sessions.SetCookie(w, id)
+	a.sessions.SetCookie(w, r, id)
 	if a.audit != nil {
 		a.audit.Record(audit.Event{Actor: p.Name, Role: p.Role, Action: "login", Path: r.URL.Path, Status: http.StatusOK})
 	}
@@ -130,7 +130,7 @@ func (a *API) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if a.sessions != nil {
 		id := apiauth.ReadSessionCookie(r)
 		a.sessions.Delete(id)
-		a.sessions.ClearCookie(w)
+		a.sessions.ClearCookie(w, r)
 	}
 	if p, ok := apiauth.PrincipalFrom(r.Context()); ok && a.audit != nil {
 		a.audit.Record(audit.Event{Actor: p.Name, Role: p.Role, Action: "logout", Path: r.URL.Path, Status: http.StatusOK})

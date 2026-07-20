@@ -123,13 +123,16 @@ func main() {
 			os.Exit(1)
 		} else if created {
 			log.Info("bootstrapped local admin user from ADMIN_PASSWORD")
+		} else if strings.TrimSpace(os.Getenv("ADMIN_PASSWORD")) != "" {
+			log.Info("admin password checked/synced from ADMIN_PASSWORD")
 		}
 		if userStore.Count() == 0 {
 			log.Error("auth_type=local requires [[api.users]] or ADMIN_PASSWORD bootstrap")
 			os.Exit(1)
 		}
-		secureCookie := cfg.TLSEnabled()
-		sessStore = apiauth.NewSessionStore(*dataDir, apiauth.DefaultTTL, secureCookie)
+		// Session cookies: Secure only when the browser uses HTTPS (see SetCookie).
+		// Do not tie this to DoT/DoH TLS — UI is usually plain HTTP :5380.
+		sessStore = apiauth.NewSessionStore(*dataDir, apiauth.DefaultTTL, false)
 	}
 	limiter := ratelimit.New(cfg.RateLimit.Enabled, cfg.RateLimit.DefaultQPS, cfg.RateLimit.DefaultBurst, cfg.RateLimit.BlockDuration, cfg.RateLimit.Whitelist)
 

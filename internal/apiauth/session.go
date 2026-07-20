@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -139,26 +140,38 @@ func (s *SessionStore) Delete(id string) {
 	s.persistLocked()
 }
 
-func (s *SessionStore) SetCookie(w http.ResponseWriter, id string) {
+func (s *SessionStore) SetCookie(w http.ResponseWriter, r *http.Request, id string) {
+	secure := s.secure
+	if r != nil {
+		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+			secure = true
+		}
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookie,
 		Value:    id,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   s.secure,
+		Secure:   secure,
 		MaxAge:   int(s.ttl.Seconds()),
 	})
 }
 
-func (s *SessionStore) ClearCookie(w http.ResponseWriter) {
+func (s *SessionStore) ClearCookie(w http.ResponseWriter, r *http.Request) {
+	secure := s.secure
+	if r != nil {
+		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+			secure = true
+		}
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookie,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   s.secure,
+		Secure:   secure,
 		MaxAge:   -1,
 	})
 }
