@@ -1,6 +1,18 @@
 # Stage 1: Go build
 FROM golang:1.26-alpine AS builder
-RUN apk add --no-cache git ca-certificates
+RUN set -eux; \
+    ver=$(cut -d. -f1,2 /etc/alpine-release); \
+    ok=0; \
+    for mirror in \
+      https://dl-cdn.alpinelinux.org/alpine \
+      https://mirror.rackspace.com/alpine \
+      https://mirrors.edge.kernel.org/alpine \
+      https://alpine.global.ssl.fastly.net/alpine; do \
+      printf '%s\n' "${mirror}/v${ver}/main" "${mirror}/v${ver}/community" > /etc/apk/repositories; \
+      if apk update --no-cache && apk add --no-cache git ca-certificates; then ok=1; break; fi; \
+      echo "apk mirror failed: $mirror — retrying…"; sleep 2; \
+    done; \
+    test "$ok" = 1
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
@@ -19,7 +31,20 @@ RUN npm run build
 
 # Stage 3: Runtime
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata wget openssl
+# Alpine CDN is flaky in some networks; try mirrors before failing the build.
+RUN set -eux; \
+    ver=$(cut -d. -f1,2 /etc/alpine-release); \
+    ok=0; \
+    for mirror in \
+      https://dl-cdn.alpinelinux.org/alpine \
+      https://mirror.rackspace.com/alpine \
+      https://mirrors.edge.kernel.org/alpine \
+      https://alpine.global.ssl.fastly.net/alpine; do \
+      printf '%s\n' "${mirror}/v${ver}/main" "${mirror}/v${ver}/community" > /etc/apk/repositories; \
+      if apk update --no-cache && apk add --no-cache ca-certificates tzdata wget openssl; then ok=1; break; fi; \
+      echo "apk mirror failed: $mirror — retrying…"; sleep 2; \
+    done; \
+    test "$ok" = 1
 RUN adduser -D -H -s /sbin/nologin powersvx
 COPY --from=builder /build/powersvx /usr/local/bin/powersvx
 COPY --from=web-builder /web/dist /usr/share/PowerSVX/web

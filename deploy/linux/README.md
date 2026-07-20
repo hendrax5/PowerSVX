@@ -131,6 +131,23 @@ sudo systemctl restart systemd-resolved
 # or disable stub and point resolv.conf carefully
 ```
 
+### Build fails on `apk add` (Alpine CDN)
+
+If you see `temporary error (try again later)` / `ca-certificates (no such package)` while building, the Alpine package index fetch failed (network/CDN), not a missing package. The Dockerfile retries alternate mirrors automatically — pull the latest tree and rebuild:
+
+```bash
+git pull
+docker compose build --no-cache powersvx
+docker compose up -d
+```
+
+Quick host check:
+
+```bash
+curl -I https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/APKINDEX.tar.gz
+curl -I https://mirror.rackspace.com/alpine/v3.20/main/x86_64/APKINDEX.tar.gz
+```
+
 ---
 
 ## Checklist before go-live
