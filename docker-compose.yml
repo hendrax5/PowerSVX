@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Host network during build avoids Docker-bridge DNS/NAT issues that
+      # make Alpine/Debian package mirrors look "temporarily" unavailable.
+      network: host
     container_name: powersvx
     environment:
       - PG_PASSWORD=${PG_PASSWORD:-PowerSVXDevPass}

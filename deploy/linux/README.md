@@ -131,22 +131,23 @@ sudo systemctl restart systemd-resolved
 # or disable stub and point resolv.conf carefully
 ```
 
-### Build fails on `apk add` (Alpine CDN)
+### Build fails on `apk add` / Alpine CDN
 
-If you see `temporary error (try again later)` / `ca-certificates (no such package)` while building, the Alpine package index fetch failed (network/CDN), not a missing package. The Dockerfile retries alternate mirrors automatically — pull the latest tree and rebuild:
+PowerSVX images use **Debian bookworm** (not Alpine) so builds do not depend on `dl-cdn.alpinelinux.org`. Compose also sets `build.network: host` to avoid flaky Docker-bridge DNS.
 
 ```bash
-git pull
+git pull origin main
 docker compose build --no-cache powersvx
-docker compose up -d
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.linux.yml up -d
 ```
 
-Quick host check:
+If `apt-get` still fails, check host egress/DNS, then retry with an explicit host-network build:
 
 ```bash
-curl -I https://dl-cdn.alpinelinux.org/alpine/v3.20/main/x86_64/APKINDEX.tar.gz
-curl -I https://mirror.rackspace.com/alpine/v3.20/main/x86_64/APKINDEX.tar.gz
+docker build --network=host -t powersvx-powersvx .
 ```
+
+Fallback without Docker image builds: use the **systemd** path in section A (compile binary on a machine that can reach `proxy.golang.org` / `registry.npmjs.org`).
 
 ---
 
