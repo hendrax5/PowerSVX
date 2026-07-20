@@ -413,7 +413,7 @@ func (a *API) settingsPayload() map[string]any {
 		"udp_addr":      a.srv.UDPAddr(),
 		"geodns_db":     a.cfg.GeoDNS.DatabasePath,
 		"editable":      []string{"geodns", "rpz_enabled", "rate_limit", "ecs_enabled", "split_horizon"},
-		"note":          "Toggles apply immediately and persist to data/runtime-settings.json",
+		"note":          "Edit toggles, then Save to apply and persist (data/runtime-settings.json). No restart required.",
 	}
 }
 
