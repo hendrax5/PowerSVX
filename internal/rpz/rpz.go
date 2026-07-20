@@ -23,20 +23,103 @@ const (
 	ActionPass     Action = "pass"
 )
 
-// Engine is an in-memory RPZ / blocklist (Phase 3 MVP: exact + suffix wildcard).
+// Engine is RPZ / blocklist with label-reversed radix + optional Badger snapshot.
 type Engine struct {
-	mu      sync.RWMutex
-	exact   map[string]Action // fqdn -> action
-	enabled bool
-	count   atomic.Int64
-	hits    atomic.Uint64
+	mu         sync.RWMutex
+	tree       *trie
+	store      *Store
+	enabled    bool
+	count      atomic.Int64
+	hits       atomic.Uint64
+	loading    atomic.Bool
+	lastErr    atomic.Value // string
+	lastLoaded atomic.Value // time.Time
+	fromDisk   atomic.Bool
+}
+
+// LoadStatus is exposed to the API/UI while feeds sync.
+type LoadStatus struct {
+	Loading    bool   `json:"loading"`
+	Error      string `json:"error,omitempty"`
+	LastLoaded string `json:"last_loaded,omitempty"`
+	FromDisk   bool   `json:"from_disk,omitempty"`
 }
 
 func New(enabled bool) *Engine {
-	return &Engine{
-		exact:   make(map[string]Action),
+	e := &Engine{
+		tree:    newTrie(),
 		enabled: enabled,
 	}
+	e.lastErr.Store("")
+	e.lastLoaded.Store(time.Time{})
+	return e
+}
+
+// OpenDisk attaches Badger at path for restart-safe snapshots.
+func (e *Engine) OpenDisk(path string) error {
+	if e == nil {
+		return nil
+	}
+	s, err := OpenStore(path)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	if e.store != nil {
+		_ = e.store.Close()
+	}
+	e.store = s
+	e.mu.Unlock()
+	return nil
+}
+
+func (e *Engine) Close() error {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.store == nil {
+		return nil
+	}
+	err := e.store.Close()
+	e.store = nil
+	return err
+}
+
+// TryBeginLoad marks a reload in progress. Returns false if already loading.
+func (e *Engine) TryBeginLoad() bool {
+	if e == nil {
+		return false
+	}
+	return e.loading.CompareAndSwap(false, true)
+}
+
+func (e *Engine) EndLoad(err error) {
+	if e == nil {
+		return
+	}
+	if err != nil {
+		e.lastErr.Store(err.Error())
+	} else {
+		e.lastErr.Store("")
+		e.lastLoaded.Store(time.Now().UTC())
+	}
+	e.loading.Store(false)
+}
+
+func (e *Engine) LoadStatus() LoadStatus {
+	if e == nil {
+		return LoadStatus{}
+	}
+	st := LoadStatus{Loading: e.loading.Load(), FromDisk: e.fromDisk.Load()}
+	if s, ok := e.lastErr.Load().(string); ok {
+		st.Error = s
+	}
+	if t, ok := e.lastLoaded.Load().(time.Time); ok && !t.IsZero() {
+		st.LastLoaded = t.Format(time.RFC3339)
+	}
+	return st
 }
 
 func (e *Engine) Enabled() bool {
@@ -76,44 +159,91 @@ func (e *Engine) Lookup(name string) (Action, bool) {
 	if !e.Enabled() {
 		return ActionPass, false
 	}
-	name = config.NormalizeName(name)
 	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	if a, ok := e.exact[name]; ok {
+	tree := e.tree
+	e.mu.RUnlock()
+	if tree == nil {
+		return ActionPass, false
+	}
+	a, ok := tree.lookup(name)
+	if ok {
 		e.hits.Add(1)
-		return a, true
 	}
-	// suffix walk: ads.tracker.example.com. → tracker.example.com. → example.com. → com.
-	labels := strings.Split(strings.TrimSuffix(name, "."), ".")
-	for i := 1; i < len(labels); i++ {
-		suf := "*." + strings.Join(labels[i:], ".") + "."
-		if a, ok := e.exact[suf]; ok {
-			e.hits.Add(1)
-			return a, true
-		}
-	}
-	return ActionPass, false
+	return a, ok
 }
 
-func (e *Engine) Replace(entries map[string]Action) {
+func (e *Engine) replaceTree(t *trie, fromDisk bool) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.exact = entries
-	e.count.Store(int64(len(entries)))
+	e.tree = t
+	e.mu.Unlock()
+	if t == nil {
+		e.count.Store(0)
+	} else {
+		e.count.Store(int64(t.count))
+	}
+	e.fromDisk.Store(fromDisk)
+}
+
+// Replace installs a map into the radix (tests / small lists).
+func (e *Engine) Replace(entries map[string]Action) {
+	t := newTrie()
+	for k, v := range entries {
+		t.insert(k, v)
+	}
+	e.replaceTree(t, false)
 }
 
 func (e *Engine) Add(name string, action Action) {
-	name = config.NormalizeName(name)
 	if action == "" {
 		action = ActionNXDOMAIN
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if _, ok := e.exact[name]; !ok {
+	if e.tree == nil {
+		e.tree = newTrie()
+	}
+	before := e.tree.count
+	e.tree.insert(name, action)
+	after := e.tree.count
+	e.mu.Unlock()
+	if after > before {
 		e.count.Add(1)
 	}
-	e.exact[name] = action
+}
+
+// TryLoadDisk loads Badger snapshot when fingerprint matches current policies.
+func (e *Engine) TryLoadDisk(policies []PolicyConfig) (bool, int, error) {
+	if e == nil {
+		return false, 0, nil
+	}
+	e.mu.RLock()
+	store := e.store
+	e.mu.RUnlock()
+	if store == nil {
+		return false, 0, nil
+	}
+	fp := PoliciesFingerprint(policies)
+	got, err := store.Fingerprint()
+	if err != nil || got != fp {
+		return false, 0, nil
+	}
+	t, n, err := store.LoadTrie()
+	if err != nil {
+		return false, 0, err
+	}
+	e.replaceTree(t, true)
+	e.lastLoaded.Store(time.Now().UTC())
+	e.lastErr.Store("")
+	return true, n, nil
+}
+
+func (e *Engine) persist(t *trie, policies []PolicyConfig) error {
+	e.mu.RLock()
+	store := e.store
+	e.mu.RUnlock()
+	if store == nil || t == nil {
+		return nil
+	}
+	return store.ReplaceAll(t, PoliciesFingerprint(policies))
 }
 
 // LoadHostsFile parses hosts-format (0.0.0.0 domain or 127.0.0.1 domain).
@@ -140,10 +270,21 @@ func LoadHostsURL(url string, action Action, timeout time.Duration) (map[string]
 }
 
 func parseHosts(r io.Reader, action Action) (map[string]Action, error) {
+	t := newTrie()
+	if err := streamHosts(r, action, t); err != nil {
+		return nil, err
+	}
+	out := make(map[string]Action, t.count)
+	t.walk(func(name string, a Action) {
+		out[name] = a
+	})
+	return out, nil
+}
+
+func streamHosts(r io.Reader, action Action, t *trie) error {
 	if action == "" {
 		action = ActionNXDOMAIN
 	}
-	out := make(map[string]Action)
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
@@ -160,7 +301,6 @@ func parseHosts(r io.Reader, action Action) (map[string]Action, error) {
 		case 1:
 			domain = fields[0]
 		default:
-			// ip domain ...
 			domain = fields[1]
 		}
 		domain = strings.ToLower(domain)
@@ -170,12 +310,12 @@ func parseHosts(r io.Reader, action Action) (map[string]Action, error) {
 		if !strings.Contains(domain, ".") && domain != "*" {
 			continue
 		}
-		out[config.NormalizeName(domain)] = action
+		t.insert(config.NormalizeName(domain), action)
 	}
-	return out, sc.Err()
+	return sc.Err()
 }
 
-// PolicyConfig is one feed from TOML.
+// PolicyConfig is one feed from TOML / UI.
 type PolicyConfig struct {
 	Name   string
 	Source string // file path or URL
@@ -183,31 +323,48 @@ type PolicyConfig struct {
 	Action Action
 }
 
-// LoadPolicies merges all policies into the engine.
+// LoadPolicies merges all policies into the radix and snapshots to Badger when configured.
 func (e *Engine) LoadPolicies(policies []PolicyConfig, timeout time.Duration) (int, error) {
-	merged := make(map[string]Action)
+	merged := newTrie()
 	for _, p := range policies {
 		action := p.Action
 		if action == "" {
 			action = ActionNXDOMAIN
 		}
-		var (
-			m   map[string]Action
-			err error
-		)
 		src := p.Source
+		var err error
 		if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
-			m, err = LoadHostsURL(src, action, timeout)
+			err = streamHostsURL(src, action, timeout, merged)
 		} else {
-			m, err = LoadHostsFile(src, action)
+			err = streamHostsFile(src, action, merged)
 		}
 		if err != nil {
 			return 0, fmt.Errorf("policy %s: %w", p.Name, err)
 		}
-		for k, v := range m {
-			merged[k] = v
-		}
 	}
-	e.Replace(merged)
-	return len(merged), nil
+	e.replaceTree(merged, false)
+	_ = e.persist(merged, policies)
+	return merged.count, nil
+}
+
+func streamHostsFile(path string, action Action, t *trie) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return streamHosts(f, action, t)
+}
+
+func streamHostsURL(url string, action Action, timeout time.Duration, t *trie) error {
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("http %d", resp.StatusCode)
+	}
+	return streamHosts(resp.Body, action, t)
 }

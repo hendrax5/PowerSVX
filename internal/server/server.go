@@ -436,6 +436,19 @@ func (s *Server) RPZCount() int64 {
 	return s.rpz.Count()
 }
 
+func (s *Server) RPZ() *rpz.Engine { return s.rpz }
+
+// ReloadRPZ replaces the in-memory blocklist from policy sources (file or HTTP).
+func (s *Server) ReloadRPZ(policies []rpz.PolicyConfig, timeout time.Duration) (int, error) {
+	if s.rpz == nil {
+		return 0, nil
+	}
+	if timeout <= 0 {
+		timeout = 15 * time.Minute
+	}
+	return s.rpz.LoadPolicies(policies, timeout)
+}
+
 // RuntimeFlags are feature toggles editable via the API/UI.
 type RuntimeFlags struct {
 	GeoDNS       bool `json:"geodns"`

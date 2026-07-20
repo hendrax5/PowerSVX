@@ -97,10 +97,10 @@ type RateLimitConfig struct {
 }
 
 type RPZPolicyTOML struct {
-	Name   string `toml:"name"`
-	Source string `toml:"source"`
-	Format string `toml:"format"`
-	Action string `toml:"action"`
+	Name   string `toml:"name" json:"name"`
+	Source string `toml:"source" json:"source"`
+	Format string `toml:"format" json:"format"`
+	Action string `toml:"action" json:"action"`
 }
 
 type RPZConfig struct {

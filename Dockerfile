@@ -11,7 +11,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags='-w -s' -o /build/powersvx ./cmd/
 FROM node:22-alpine AS web-builder
 WORKDIR /web
 COPY web/package.json web/package-lock.json* ./
-RUN npm ci
+# npm install (not ci): lockfile is often regenerated on Windows and omits
+# Linux-only optional deps (@emnapi/*), which makes npm ci fail in this stage.
+RUN npm install --no-audit --no-fund
 COPY web/ ./
 RUN npm run build
 

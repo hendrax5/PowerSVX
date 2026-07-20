@@ -43,7 +43,6 @@ function Shell({ children }) {
     ['/zones', 'Zones'],
     ['/lookup', 'Lookup'],
     ['/settings', 'Settings'],
-    ['/analytics', 'Analytics'],
   ]
   return (
     <div className="min-h-full flex flex-col md:flex-row">
@@ -149,10 +148,10 @@ function Dashboard() {
         .then((d) => alive && setData(d))
         .catch((e) => alive && setErr(e.message))
     load()
-    const t = setInterval(load, 5000)
+    const timer = setInterval(load, 5000)
     return () => {
       alive = false
-      clearInterval(t)
+      clearInterval(timer)
     }
   }, [])
 
@@ -160,19 +159,22 @@ function Dashboard() {
   if (!data) return <LoadingBlock label="Loading dashboard" />
 
   const s = data.status
+  const names = data.top_names || []
+  const rcodes = data.rcodes || []
   const hitRatio =
     s.cache_hits + s.cache_misses > 0
       ? ((100 * s.cache_hits) / (s.cache_hits + s.cache_misses)).toFixed(1)
       : '—'
-  const chart = [
+  const trafficChart = [
     { name: 'Hits', value: s.cache_hits },
     { name: 'Misses', value: s.cache_misses },
     { name: 'Queries', value: s.queries_total },
     { name: 'Limited', value: s.rate_limited },
   ]
+  const rcodeChart = rcodes.map((r) => ({ name: r.rcode, value: r.count }))
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-6 max-w-6xl">
       <header className="reveal">
         <h1 className="text-2xl font-semibold">Dashboard</h1>
         <p className="text-[var(--muted)] text-sm mt-1">
@@ -189,56 +191,95 @@ function Dashboard() {
         </div>
       </header>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 reveal reveal-delay-1">
         <Stat label="Queries" value={s.queries_total} />
         <Stat label="Cache hit %" value={hitRatio} sub={`L1 size ${s.cache_l1_size}`} />
         <Stat label="Zones" value={s.zones} />
-        <Stat label="RPZ entries" value={s.rpz_entries} sub={`blocked ${s.rate_limited}`} />
+        <Stat label="RPZ / limited" value={s.rpz_entries} sub={`rate-limited ${s.rate_limited}`} />
       </div>
 
-      <LiveErrorLog />
+      <div className="grid md:grid-cols-2 gap-4 reveal reveal-delay-2">
+        <section className="panel p-4 h-64">
+          <h2 className="text-sm text-[var(--muted)] mb-3">Traffic snapshot</h2>
+          <ResponsiveContainer width="100%" height="85%">
+            <BarChart data={trafficChart}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2c3340" />
+              <XAxis dataKey="name" stroke="#8b939e" fontSize={12} />
+              <YAxis stroke="#8b939e" fontSize={12} />
+              <Tooltip
+                contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
+              />
+              <Bar dataKey="value" fill="var(--accent)" radius={[2, 2, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </section>
+        <section className="panel p-4 h-64">
+          <h2 className="text-sm text-[var(--muted)] mb-3">RCODE distribution</h2>
+          {rcodeChart.length ? (
+            <ResponsiveContainer width="100%" height="85%">
+              <BarChart data={rcodeChart}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#2c3340" />
+                <XAxis dataKey="name" stroke="#8b939e" fontSize={11} />
+                <YAxis stroke="#8b939e" fontSize={12} />
+                <Tooltip
+                  contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
+                />
+                <Bar dataKey="value" fill="#94a3b8" radius={[2, 2, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="text-sm text-[var(--muted)] pt-8 text-center">No query aggregates yet</p>
+          )}
+        </section>
+      </div>
 
-      <section className="panel p-4 h-64">
-        <h2 className="text-sm text-[var(--muted)] mb-3">Traffic snapshot</h2>
-        <ResponsiveContainer width="100%" height="85%">
-          <BarChart data={chart}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#2a3a4f" />
-            <XAxis dataKey="name" stroke="#8fa3b8" fontSize={12} />
-            <YAxis stroke="#8fa3b8" fontSize={12} />
-            <Tooltip
-              contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
+      <div className="grid md:grid-cols-2 gap-4 reveal reveal-delay-3">
+        <section className="panel p-4">
+          <h2 className="text-sm text-[var(--muted)] mb-3">Top queried names</h2>
+          {names.length ? (
+            <ul className="space-y-1 text-sm mono max-h-56 overflow-auto">
+              {names.map((n) => (
+                <li key={n.name} className="flex justify-between gap-3 border-b border-[var(--border)]/50 py-1.5">
+                  <span className="truncate">{n.name}</span>
+                  <span className="text-[var(--accent)] shrink-0">{n.count}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyState title="No queries yet" hint="Totals appear after DNS traffic hits this instance." />
+          )}
+        </section>
+        <section>
+          <h2 className="text-sm text-[var(--muted)] mb-2">Zones</h2>
+          {data.zones?.length ? (
+            <ul className="space-y-1">
+              {data.zones.map((z) => (
+                <li
+                  key={z.name}
+                  className="flex justify-between border border-[var(--border)] px-3 py-2 text-sm panel"
+                >
+                  <span className="mono">{z.name}</span>
+                  <span className="text-[var(--muted)]">{z.record_count} records</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyState
+              title="No zones yet"
+              hint="Add an authoritative zone to serve local records."
+              action={
+                <a href="/zones" className="inline-block mt-4 text-sm text-[var(--accent)] underline cursor-pointer">
+                  Go to Zones
+                </a>
+              }
             />
-            <Bar dataKey="value" fill="var(--accent)" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </section>
+          )}
+        </section>
+      </div>
 
-      <section>
-        <h2 className="text-sm text-[var(--muted)] mb-2">Zones</h2>
-        {data.zones?.length ? (
-          <ul className="space-y-1">
-            {data.zones.map((z) => (
-              <li
-                key={z.name}
-                className="flex justify-between border border-[var(--border)] px-3 py-2 text-sm panel"
-              >
-                <span className="mono">{z.name}</span>
-                <span className="text-[var(--muted)]">{z.record_count} records</span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <EmptyState
-            title="No zones yet"
-            hint="Add an authoritative zone to serve local records."
-            action={
-              <a href="/zones" className="inline-block mt-4 text-sm text-[var(--accent)] underline cursor-pointer">
-                Go to Zones
-              </a>
-            }
-          />
-        )}
-      </section>
+      <div className="reveal reveal-delay-4">
+        <LiveErrorLog />
+      </div>
     </div>
   )
 }
@@ -724,7 +765,7 @@ function Settings() {
   ]
 
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="space-y-6 max-w-3xl">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Settings</h1>
@@ -814,23 +855,247 @@ function Settings() {
       </dl>
 
       <ACMEPanel />
-      {rpz ? (
-        <section className="space-y-2">
-          <h2 className="text-sm text-[var(--muted)]">RPZ policies</h2>
-          <p className="text-sm">
-            {rpz.enabled ? 'Enabled' : 'Disabled'} · {rpz.entries} entries
-          </p>
-          <ul className="text-sm space-y-1">
-            {(rpz.policies || []).map((p) => (
-              <li key={p.name} className="mono text-[var(--muted)]">
-                {p.name} · {p.action} · {p.source}
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
+      <RPZPanel initial={rpz} onChange={setRpz} />
     </div>
   )
+}
+
+function RPZPanel({ initial, onChange }) {
+  const [policies, setPolicies] = useState(() => clonePolicies(initial?.policies))
+  const [intervalSec, setIntervalSec] = useState(() => Number(initial?.update_interval) || 0)
+  const [status, setStatus] = useState(initial)
+  const [name, setName] = useState('trustpositif')
+  const [source, setSource] = useState('https://trustpositif.komdigi.go.id/assets/db/domains_isp')
+  const [action, setAction] = useState('nxdomain')
+  const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    setPolicies(clonePolicies(initial?.policies))
+    setIntervalSec(Number(initial?.update_interval) || 0)
+    setStatus(initial)
+  }, [initial])
+
+  useEffect(() => {
+    if (!status?.loading) return undefined
+    const t = setInterval(() => {
+      api
+        .rpz()
+        .then((r) => {
+          setStatus(r)
+          onChange?.(r)
+          if (!r.loading) {
+            setOk(r.error ? '' : `Synced · ${r.entries} entries`)
+            if (r.error) setErr(r.error)
+          }
+        })
+        .catch((e) => setErr(e.message))
+    }, 2000)
+    return () => clearInterval(t)
+  }, [status?.loading, onChange])
+
+  const add = () => {
+    setErr('')
+    setOk('')
+    const n = name.trim()
+    const s = source.trim()
+    if (!n || !s) {
+      setErr('Name and source (URL or file path) are required')
+      return
+    }
+    if (policies.some((p) => p.name === n)) {
+      setErr(`Policy "${n}" already exists`)
+      return
+    }
+    setPolicies((p) => [...p, { name: n, source: s, format: 'hosts', action }])
+  }
+
+  const remove = (n) => {
+    setErr('')
+    setOk('')
+    setPolicies((p) => p.filter((x) => x.name !== n))
+  }
+
+  const saveSync = async () => {
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const sec = Math.max(0, Number(intervalSec) || 0)
+      const r = await api.updateRPZ(policies, false, sec)
+      setStatus(r)
+      setPolicies(clonePolicies(r.policies))
+      setIntervalSec(Number(r.update_interval) || 0)
+      onChange?.(r)
+      setOk(r.loading ? 'Saved — syncing feeds in background…' : `Saved · ${r.entries} entries`)
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const resync = async () => {
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const r = await api.reloadRPZ()
+      setStatus(r)
+      onChange?.(r)
+      setOk('Re-sync started…')
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const loading = !!status?.loading
+
+  return (
+    <section className="panel p-4 space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-medium">RPZ feeds</h2>
+          <p className="text-xs text-[var(--muted)] mt-1">
+            HTTP URL or local file · hosts format · radix lookup + Badger snapshot on disk
+          </p>
+          <p className="text-sm mt-2">
+            {status?.enabled ? 'Enabled' : 'Disabled'} · {status?.entries ?? 0} entries
+            {loading ? ' · syncing…' : null}
+            {status?.from_disk ? ' · from disk' : null}
+            {status?.last_loaded ? (
+              <span className="text-[var(--muted)]"> · last {status.last_loaded}</span>
+            ) : null}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={busy || loading}
+            onClick={resync}
+            className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm text-[var(--muted)] disabled:opacity-40 hover:text-[var(--text)]"
+          >
+            Re-sync
+          </button>
+          <button
+            type="button"
+            disabled={busy || loading}
+            onClick={saveSync}
+            className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-3 py-2 text-sm disabled:opacity-40"
+          >
+            {busy ? 'Saving…' : 'Save & sync'}
+          </button>
+        </div>
+      </div>
+
+      {err ? <ErrorBox msg={err} /> : null}
+      {ok ? (
+        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
+          {ok}
+        </div>
+      ) : null}
+      {loading ? (
+        <div className="border border-[var(--warn)]/40 bg-[var(--warn)]/10 text-[var(--warn)] text-sm px-3 py-2">
+          Large feeds (e.g. TrustPositif ~9M domains) can take several minutes. Snapshot is written to
+          data/rpz-store for faster restarts.
+        </div>
+      ) : null}
+
+      <label className="text-xs text-[var(--muted)] space-y-1 block max-w-xs">
+        Auto-refresh interval (seconds, 0 = off)
+        <input
+          type="number"
+          min={0}
+          step={60}
+          className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
+          value={intervalSec}
+          onChange={(e) => setIntervalSec(e.target.value)}
+        />
+      </label>
+
+      <ul className="space-y-2 text-sm">
+        {policies.length ? (
+          policies.map((p) => (
+            <li
+              key={p.name}
+              className="flex flex-wrap items-start justify-between gap-2 border-b border-[var(--border)]/60 pb-2"
+            >
+              <div className="min-w-0">
+                <div className="font-medium">{p.name}</div>
+                <div className="mono text-xs text-[var(--muted)] break-all">{p.source}</div>
+                <div className="text-xs text-[var(--muted)] mt-0.5">
+                  {p.format || 'hosts'} · {p.action || 'nxdomain'}
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={busy || loading}
+                onClick={() => remove(p.name)}
+                className="text-[var(--danger)] text-xs cursor-pointer disabled:opacity-40"
+              >
+                Remove
+              </button>
+            </li>
+          ))
+        ) : (
+          <li className="text-sm text-[var(--muted)]">No feeds yet — add one below.</li>
+        )}
+      </ul>
+
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="text-xs text-[var(--muted)] space-y-1">
+          Name
+          <input
+            className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm text-[var(--text)]"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="trustpositif"
+          />
+        </label>
+        <label className="text-xs text-[var(--muted)] space-y-1">
+          Action
+          <select
+            className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm text-[var(--text)]"
+            value={action}
+            onChange={(e) => setAction(e.target.value)}
+          >
+            <option value="nxdomain">nxdomain</option>
+            <option value="nodata">nodata</option>
+            <option value="pass">pass</option>
+          </select>
+        </label>
+        <label className="text-xs text-[var(--muted)] space-y-1 sm:col-span-2">
+          Source (HTTPS URL or file path)
+          <input
+            className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
+            value={source}
+            onChange={(e) => setSource(e.target.value)}
+            placeholder="https://…"
+          />
+        </label>
+      </div>
+      <button
+        type="button"
+        disabled={busy || loading}
+        onClick={add}
+        className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm disabled:opacity-40 hover:border-[var(--accent)]"
+      >
+        Add feed to list
+      </button>
+    </section>
+  )
+}
+
+function clonePolicies(list) {
+  return (list || []).map((p) => ({
+    name: p.name || '',
+    source: p.source || '',
+    format: p.format || 'hosts',
+    action: p.action || 'nxdomain',
+  }))
 }
 
 function ACMEPanel() {
@@ -889,73 +1154,6 @@ function ACMEPanel() {
   )
 }
 
-function Analytics() {
-  const [data, setData] = useState(null)
-  const [err, setErr] = useState('')
-
-  useEffect(() => {
-    let alive = true
-    const load = () =>
-      api
-        .analytics()
-        .then((d) => alive && setData(d))
-        .catch((e) => alive && setErr(e.message))
-    load()
-    const timer = setInterval(load, 5000)
-    return () => {
-      alive = false
-      clearInterval(timer)
-    }
-  }, [])
-
-  if (err) return <ErrorBox msg={err} />
-  if (!data) return <LoadingBlock label="Loading analytics" />
-
-  const names = data.top_names || []
-  const rcodes = data.rcodes || []
-
-  return (
-    <div className="space-y-6 max-w-3xl">
-      <header className="reveal">
-        <h1 className="text-2xl font-semibold">Analytics</h1>
-        <p className="text-sm text-[var(--muted)] mt-1">
-          Aggregate counters only — not a live query stream
-        </p>
-      </header>
-      <section className="panel p-4">
-        <h2 className="text-sm text-[var(--muted)] mb-3">Top names</h2>
-        {names.length ? (
-          <ul className="space-y-1 text-sm mono">
-            {names.map((n) => (
-              <li key={n.name} className="flex justify-between border-b border-[var(--border)]/60 py-1.5">
-                <span>{n.name}</span>
-                <span className="text-[var(--accent)]">{n.count}</span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <EmptyState title="No queries yet" hint="Totals appear after DNS traffic hits this instance." />
-        )}
-      </section>
-      <section className="panel p-4">
-        <h2 className="text-sm text-[var(--muted)] mb-3">RCODEs</h2>
-        {rcodes.length ? (
-          <ul className="space-y-1 text-sm mono">
-            {rcodes.map((r) => (
-              <li key={r.rcode} className="flex justify-between border-b border-[var(--border)]/60 py-1.5">
-                <span>{r.rcode}</span>
-                <span className="text-[var(--accent)]">{r.count}</span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-sm text-[var(--muted)]">No data.</p>
-        )}
-      </section>
-    </div>
-  )
-}
-
 function ErrorBox({ msg }) {
   return (
     <div className="border border-[var(--danger)]/40 bg-[var(--danger)]/10 text-[var(--danger)] text-sm px-3 py-2">
@@ -980,7 +1178,7 @@ export default function App() {
         <Route path="/zones/:name" element={<ZoneDetail />} />
         <Route path="/lookup" element={<Lookup />} />
         <Route path="/settings" element={<Settings />} />
-        <Route path="/analytics" element={<Analytics />} />
+        <Route path="/analytics" element={<Dashboard />} />
       </Routes>
     </Shell>
   )

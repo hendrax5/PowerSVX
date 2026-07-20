@@ -55,6 +55,16 @@ export const api = {
   acme: () => request('/api/v1/acme'),
   acmeObtain: () => request('/api/v1/acme', { method: 'POST', body: '{}' }),
   rpz: () => request('/api/v1/rpz'),
+  updateRPZ: (policies, sync = false, updateInterval) =>
+    request('/api/v1/rpz', {
+      method: 'PUT',
+      body: JSON.stringify({
+        policies,
+        sync,
+        ...(updateInterval === undefined ? {} : { update_interval: updateInterval }),
+      }),
+    }),
+  reloadRPZ: () => request('/api/v1/rpz', { method: 'POST', body: '{}' }),
   lookup: (name, type) =>
     request('/api/v1/tools/lookup', { method: 'POST', body: JSON.stringify({ name, type }) }),
   events: () => request('/api/v1/events'),

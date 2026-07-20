@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -18,6 +19,7 @@ import (
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/database"
 	"github.com/powersvx/powersvx/internal/eventlog"
+	"github.com/powersvx/powersvx/internal/rpz"
 	"github.com/powersvx/powersvx/internal/server"
 )
 
@@ -36,6 +38,9 @@ type API struct {
 	start    time.Time
 	webFS    fs.FS
 	reloadFn func() error
+
+	rpzAutoMu   sync.Mutex
+	rpzAutoStop chan struct{}
 }
 
 func New(cfg *config.Config, srv *server.Server, db *database.DB, tier *cache.Tier, auth *authoritative.Store, log *slog.Logger) *API {
@@ -206,10 +211,27 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"status": a.statusPayload(),
 		"zones":  a.auth.ListZones(),
-	})
+	}
+	if col := a.srv.Analytics(); col != nil {
+		names, rcodes := col.Snapshot(15)
+		if names == nil {
+			payload["top_names"] = []any{}
+		} else {
+			payload["top_names"] = names
+		}
+		if rcodes == nil {
+			payload["rcodes"] = []any{}
+		} else {
+			payload["rcodes"] = rcodes
+		}
+	} else {
+		payload["top_names"] = []any{}
+		payload["rcodes"] = []any{}
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (a *API) handleZones(w http.ResponseWriter, r *http.Request) {
@@ -423,11 +445,202 @@ func (a *API) settingsPayload() map[string]any {
 }
 
 func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":  a.srv.RuntimeFlags().RPZ,
-		"entries":  a.srv.RPZCount(),
-		"policies": a.cfg.RPZ.Policies,
-	})
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, a.rpzPayload())
+	case http.MethodPut:
+		var body struct {
+			Policies       []config.RPZPolicyTOML `json:"policies"`
+			UpdateInterval *int                   `json:"update_interval"`
+			Sync           *bool                  `json:"sync"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		pols, err := normalizeRPZPolicies(body.Policies)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		interval := a.cfg.RPZ.UpdateInterval
+		if body.UpdateInterval != nil {
+			if *body.UpdateInterval < 0 {
+				http.Error(w, "update_interval must be >= 0", http.StatusBadRequest)
+				return
+			}
+			interval = *body.UpdateInterval
+		}
+		eng := a.srv.RPZ()
+		if eng != nil && eng.LoadStatus().Loading {
+			http.Error(w, "rpz sync already in progress", http.StatusConflict)
+			return
+		}
+		path := config.RPZPoliciesPath("./data")
+		if err := config.SaveRPZPoliciesFile(path, config.RPZPoliciesFile{
+			Policies: pols, UpdateInterval: interval,
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		a.cfg.RPZ.Policies = pols
+		a.cfg.RPZ.UpdateInterval = interval
+		a.StartRPZAutoUpdate()
+		sync := body.Sync != nil && *body.Sync
+		if err := a.startRPZReload(sync); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, http.StatusOK, a.rpzPayload())
+	case http.MethodPost:
+		if a.srv.RPZ() != nil && a.srv.RPZ().LoadStatus().Loading {
+			http.Error(w, "rpz sync already in progress", http.StatusConflict)
+			return
+		}
+		if err := a.startRPZReload(false); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, a.rpzPayload())
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *API) rpzPayload() map[string]any {
+	st := rpz.LoadStatus{}
+	if eng := a.srv.RPZ(); eng != nil {
+		st = eng.LoadStatus()
+	}
+	pols := a.cfg.RPZ.Policies
+	if pols == nil {
+		pols = []config.RPZPolicyTOML{}
+	}
+	return map[string]any{
+		"enabled":         a.srv.RuntimeFlags().RPZ,
+		"entries":         a.srv.RPZCount(),
+		"policies":        pols,
+		"update_interval": a.cfg.RPZ.UpdateInterval,
+		"loading":         st.Loading,
+		"error":           st.Error,
+		"last_loaded":     st.LastLoaded,
+		"from_disk":       st.FromDisk,
+		"note":            "PUT policies + update_interval. Large feeds sync in background; radix+Badger snapshot skips re-download on restart.",
+	}
+}
+
+func normalizeRPZPolicies(in []config.RPZPolicyTOML) ([]config.RPZPolicyTOML, error) {
+	if in == nil {
+		in = []config.RPZPolicyTOML{}
+	}
+	seen := map[string]bool{}
+	out := make([]config.RPZPolicyTOML, 0, len(in))
+	for _, p := range in {
+		p.Name = strings.TrimSpace(p.Name)
+		p.Source = strings.TrimSpace(p.Source)
+		p.Format = strings.TrimSpace(strings.ToLower(p.Format))
+		p.Action = strings.TrimSpace(strings.ToLower(p.Action))
+		if p.Name == "" {
+			return nil, errRPZ("policy name required")
+		}
+		if p.Source == "" {
+			return nil, errRPZ("policy source required for " + p.Name)
+		}
+		if seen[p.Name] {
+			return nil, errRPZ("duplicate policy name: " + p.Name)
+		}
+		seen[p.Name] = true
+		if p.Format == "" {
+			p.Format = "hosts"
+		}
+		if p.Format != "hosts" {
+			return nil, errRPZ("unsupported format (use hosts): " + p.Format)
+		}
+		if p.Action == "" {
+			p.Action = "nxdomain"
+		}
+		switch p.Action {
+		case "nxdomain", "nodata", "pass":
+		default:
+			return nil, errRPZ("unsupported action: " + p.Action)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+type rpzError string
+
+func (e rpzError) Error() string { return string(e) }
+func errRPZ(s string) error      { return rpzError(s) }
+
+func (a *API) startRPZReload(sync bool) error {
+	eng := a.srv.RPZ()
+	if eng == nil {
+		return nil
+	}
+	if !eng.TryBeginLoad() {
+		return errRPZ("rpz sync already in progress")
+	}
+	var policies []rpz.PolicyConfig
+	for _, p := range a.cfg.RPZ.Policies {
+		policies = append(policies, rpz.PolicyConfig{
+			Name: p.Name, Source: p.Source, Format: p.Format, Action: rpz.Action(p.Action),
+		})
+	}
+	run := func() {
+		n, err := a.srv.ReloadRPZ(policies, 15*time.Minute)
+		eng.EndLoad(err)
+		if err != nil {
+			a.log.Warn("rpz reload failed", "err", err)
+			return
+		}
+		a.log.Info("rpz reloaded", "entries", n)
+	}
+	if sync {
+		run()
+		return nil
+	}
+	go run()
+	return nil
+}
+
+// StartRPZAutoUpdate reloads feeds on update_interval (seconds). 0 disables.
+func (a *API) StartRPZAutoUpdate() {
+	a.rpzAutoMu.Lock()
+	defer a.rpzAutoMu.Unlock()
+	if a.rpzAutoStop != nil {
+		close(a.rpzAutoStop)
+		a.rpzAutoStop = nil
+	}
+	sec := a.cfg.RPZ.UpdateInterval
+	if sec <= 0 {
+		a.log.Info("rpz auto-update disabled")
+		return
+	}
+	stop := make(chan struct{})
+	a.rpzAutoStop = stop
+	interval := time.Duration(sec) * time.Second
+	a.log.Info("rpz auto-update enabled", "interval_sec", sec)
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				if a.srv.RPZ() != nil && a.srv.RPZ().LoadStatus().Loading {
+					continue
+				}
+				if err := a.startRPZReload(false); err != nil {
+					a.log.Debug("rpz auto-update skip", "err", err)
+				} else {
+					a.log.Info("rpz auto-update started")
+				}
+			}
+		}
+	}()
 }
 
 func (a *API) handleLookup(w http.ResponseWriter, r *http.Request) {

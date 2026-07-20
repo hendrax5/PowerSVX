@@ -92,19 +92,43 @@ func main() {
 	sec := dnssec.New(dnssec.ParseMode(cfg.Resolver.DNSSECMode, cfg.Resolver.DNSSECValidation))
 	limiter := ratelimit.New(cfg.RateLimit.Enabled, cfg.RateLimit.DefaultQPS, cfg.RateLimit.DefaultBurst, cfg.RateLimit.BlockDuration, cfg.RateLimit.Whitelist)
 
-	rpzEng := rpz.New(cfg.RPZ.Enabled)
-	if cfg.RPZ.Enabled && len(cfg.RPZ.Policies) > 0 {
-		var policies []rpz.PolicyConfig
-		for _, p := range cfg.RPZ.Policies {
-			policies = append(policies, rpz.PolicyConfig{
-				Name: p.Name, Source: p.Source, Format: p.Format, Action: rpz.Action(p.Action),
-			})
+	rpzPath := config.RPZPoliciesPath("./data")
+	if file, err := config.LoadRPZPoliciesFile(rpzPath); err == nil {
+		cfg.RPZ.Policies = file.Policies
+		if file.UpdateInterval > 0 {
+			cfg.RPZ.UpdateInterval = file.UpdateInterval
 		}
-		n, err := rpzEng.LoadPolicies(policies, 60*time.Second)
-		if err != nil {
-			log.Warn("rpz load failed", "err", err)
-		} else {
-			log.Info("rpz loaded", "entries", n)
+		log.Info("rpz policies loaded", "path", rpzPath, "count", len(file.Policies), "update_interval", cfg.RPZ.UpdateInterval)
+	}
+
+	rpzEng := rpz.New(cfg.RPZ.Enabled)
+	if err := rpzEng.OpenDisk("./data/rpz-store"); err != nil {
+		log.Warn("rpz disk store unavailable", "err", err)
+	}
+	defer func() { _ = rpzEng.Close() }()
+
+	var policies []rpz.PolicyConfig
+	for _, p := range cfg.RPZ.Policies {
+		policies = append(policies, rpz.PolicyConfig{
+			Name: p.Name, Source: p.Source, Format: p.Format, Action: rpz.Action(p.Action),
+		})
+	}
+	if len(policies) > 0 {
+		if ok, n, err := rpzEng.TryLoadDisk(policies); err != nil {
+			log.Warn("rpz disk load failed", "err", err)
+		} else if ok {
+			log.Info("rpz loaded from disk", "entries", n)
+		} else if rpzEng.TryBeginLoad() {
+			// Large HTTP feeds must not block API/DNS bind.
+			go func() {
+				n, err := rpzEng.LoadPolicies(policies, 15*time.Minute)
+				rpzEng.EndLoad(err)
+				if err != nil {
+					log.Warn("rpz load failed", "err", err)
+					return
+				}
+				log.Info("rpz loaded", "entries", n)
+			}()
 		}
 	}
 
@@ -174,6 +198,7 @@ func main() {
 	rest := api.New(cfg, dnsSrv, db, tier, auth, log)
 	rest.SetEvents(bus)
 	rest.SetACME(acmeMgr)
+	rest.StartRPZAutoUpdate()
 	webDirs := []string{"./web/dist", "/usr/share/PowerSVX/web"}
 	for _, dir := range webDirs {
 		if webFS, err := api.LoadWebDir(dir); err == nil {
