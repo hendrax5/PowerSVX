@@ -3,14 +3,18 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/powersvx/powersvx/internal/acme"
+	"github.com/powersvx/powersvx/internal/acl"
 	"github.com/powersvx/powersvx/internal/analytics"
 	"github.com/powersvx/powersvx/internal/anomaly"
 	"github.com/powersvx/powersvx/internal/authoritative"
@@ -27,6 +31,7 @@ import (
 	"github.com/powersvx/powersvx/internal/ratelimit"
 	"github.com/powersvx/powersvx/internal/resolver"
 	"github.com/powersvx/powersvx/internal/rpz"
+	"github.com/powersvx/powersvx/internal/tproxy"
 	"github.com/powersvx/powersvx/internal/tsig"
 	"github.com/powersvx/powersvx/internal/view"
 	"github.com/quic-go/quic-go"
@@ -54,6 +59,8 @@ type Server struct {
 	plugins *plugin.Registry
 	qlog    *database.QueryLogger
 	log     *slog.Logger
+	queryACLMu sync.RWMutex
+	queryACL   *acl.List
 	udp     *dns.Server
 	tcp     *dns.Server
 	dot     *dns.Server
@@ -95,27 +102,39 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
+	var qacl *acl.List
+	if cfg != nil {
+		var err error
+		qacl, err = acl.Parse(cfg.ACL.AllowQuery, cfg.ACL.DenyQuery)
+		if err != nil {
+			log.Warn("acl parse failed, allowing all", "err", err)
+			qacl = acl.Open()
+		}
+	} else {
+		qacl = acl.Open()
+	}
 	return &Server{
-		cfg:     cfg,
-		cache:   d.Cache,
-		res:     d.Res,
-		auth:    d.Auth,
-		dnssec:  d.DNSSEC,
-		signer:  d.Signer,
-		limiter: d.Limiter,
-		rpz:     d.RPZ,
-		tsig:    d.TSIG,
-		views:   d.Views,
-		geo:     d.Geo,
-		tlsCfg:  d.TLS,
-		events:  d.Events,
-		acme:    d.ACME,
-		stats:   d.Stats,
-		anomaly: d.Anomaly,
-		plugins: d.Plugins,
-		qlog:    d.QLog,
-		log:     log,
-		started: time.Now(),
+		cfg:      cfg,
+		cache:    d.Cache,
+		res:      d.Res,
+		auth:     d.Auth,
+		dnssec:   d.DNSSEC,
+		signer:   d.Signer,
+		limiter:  d.Limiter,
+		rpz:      d.RPZ,
+		tsig:     d.TSIG,
+		views:    d.Views,
+		geo:      d.Geo,
+		tlsCfg:   d.TLS,
+		events:   d.Events,
+		acme:     d.ACME,
+		stats:    d.Stats,
+		anomaly:  d.Anomaly,
+		plugins:  d.Plugins,
+		qlog:     d.QLog,
+		log:      log,
+		queryACL: qacl,
+		started:  time.Now(),
 	}
 }
 
@@ -141,9 +160,13 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		if s.qlog == nil || s.cfg == nil || !s.cfg.Logging.QueryLogEnabled || qname == "" || clientIP == "" {
 			return
 		}
+		ip := clientIP
+		if s.cfg.Logging.QueryLogMaskIP {
+			ip = database.MaskClientIP(ip)
+		}
 		s.qlog.Log(database.QueryLogEntry{
 			Timestamp:    time.Now(),
-			ClientIP:     clientIP,
+			ClientIP:     ip,
 			QueryName:    qname,
 			QueryType:    qtype,
 			ResponseCode: rcode,
@@ -151,6 +174,25 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			Cached:       cached,
 			Protocol:     proto,
 		})
+	}
+
+	s.queryACLMu.RLock()
+	qacl := s.queryACL
+	s.queryACLMu.RUnlock()
+	if qacl != nil && clientIP != "" && !qacl.Allows(clientIP) {
+		metrics.QueriesTotal.WithLabelValues(proto, "acl_denied").Inc()
+		if s.events != nil {
+			s.events.EmitSampled("acl:"+clientIP, 30*time.Second, "warn", "acl",
+				"client denied by query ACL", map[string]string{"client": clientIP, "proto": proto})
+		}
+		m := new(dns.Msg)
+		m.SetRcode(req, dns.RcodeRefused)
+		_ = w.WriteMsg(m)
+		if len(req.Question) > 0 {
+			q := req.Question[0]
+			logQuery(config.NormalizeName(q.Name), dns.TypeToString[q.Qtype], dns.RcodeRefused, false)
+		}
+		return
 	}
 
 	if s.limiter != nil && clientIP != "" && !s.limiter.Allow(clientIP) {
@@ -176,6 +218,10 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		m.SetRcode(req, dns.RcodeFormatError)
 		_ = w.WriteMsg(m)
 		metrics.QueriesTotal.WithLabelValues(proto, "formerr").Inc()
+		return
+	}
+
+	if s.handleTransfer(w, req, clientIP) {
 		return
 	}
 
@@ -251,29 +297,45 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	if s.rpz != nil {
-		if action, hit := s.rpz.Lookup(qname); hit {
-			metrics.RPZBlocked.Inc()
-			metrics.QueriesTotal.WithLabelValues(proto, "blocked").Inc()
-			m := new(dns.Msg)
-			m.SetReply(req)
-			m.RecursionAvailable = true
-			rcode := dns.RcodeNameError
-			switch action {
-			case rpz.ActionNODATA:
-				m.Rcode = dns.RcodeSuccess
-				rcode = dns.RcodeSuccess
-			default:
-				m.Rcode = dns.RcodeNameError
-			}
-			_ = w.WriteMsg(m)
-			metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
-			if action == rpz.ActionNODATA {
-				observe("NOERROR")
+		if hit, ok := s.rpz.Lookup(qname); ok {
+			if hit.Action == rpz.ActionPass {
+				// Explicit allow — continue to cache / auth / recursive.
 			} else {
-				observe("NXDOMAIN")
+				metrics.RPZBlocked.Inc()
+				metrics.QueriesTotal.WithLabelValues(proto, "blocked").Inc()
+				m := new(dns.Msg)
+				m.SetReply(req)
+				m.RecursionAvailable = true
+				rcode := dns.RcodeNameError
+				code := "NXDOMAIN"
+				switch hit.Action {
+				case rpz.ActionNODATA:
+					m.Rcode = dns.RcodeSuccess
+					rcode = dns.RcodeSuccess
+					code = "NOERROR"
+				case rpz.ActionRedirect:
+					m.Rcode = dns.RcodeSuccess
+					rcode = dns.RcodeSuccess
+					code = "NOERROR"
+					if rr := rpzRedirectRR(qname, qtype, hit.Target); rr != nil {
+						m.Answer = []dns.RR{rr}
+					}
+				case rpz.ActionCNAME:
+					m.Rcode = dns.RcodeSuccess
+					rcode = dns.RcodeSuccess
+					code = "NOERROR"
+					if rr := rpzCNAMERR(qname, hit.Target); rr != nil {
+						m.Answer = []dns.RR{rr}
+					}
+				default:
+					m.Rcode = dns.RcodeNameError
+				}
+				_ = w.WriteMsg(m)
+				metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
+				observe(code)
+				logQuery(qname, qtypeStr, rcode, false)
+				return
 			}
-			logQuery(qname, qtypeStr, rcode, false)
-			return
 		}
 	}
 
@@ -302,6 +364,9 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 				s.signer.SignResponse(zone, req, m)
 			} else if len(rrs) == 0 {
 				m.Rcode = dns.RcodeNameError
+				if s.signer != nil && s.signer.Enabled(zone) {
+					s.signer.SignDenial(zone, qname, req, m)
+				}
 			} else {
 				m.Answer = rrs
 				if s.signer != nil && s.signer.Enabled(zone) {
@@ -397,20 +462,41 @@ func (s *Server) ListenAndServe() error {
 	udpAddr := s.cfg.ListenAddr(s.cfg.Server.UDPPort)
 	tcpAddr := s.cfg.ListenAddr(s.cfg.Server.TCPPort)
 
-	s.udp = &dns.Server{Addr: udpAddr, Net: "udp", Handler: handler, UDPSize: 1232, TsigSecret: tsigMap}
-	s.tcp = &dns.Server{Addr: tcpAddr, Net: "tcp", Handler: handler, TsigSecret: tsigMap}
-
 	errCh := make(chan error, 5)
 	s.doqCtx, s.doqCancel = context.WithCancel(context.Background())
 
-	go func() {
-		s.log.Info("UDP listener starting", "addr", udpAddr)
-		errCh <- s.udp.ListenAndServe()
-	}()
-	go func() {
-		s.log.Info("TCP listener starting", "addr", tcpAddr)
-		errCh <- s.tcp.ListenAndServe()
-	}()
+	if s.cfg.Server.TProxy {
+		pc, err := tproxy.ListenUDP("udp", udpAddr)
+		if err != nil {
+			return fmt.Errorf("tproxy udp %s: %w", udpAddr, err)
+		}
+		ln, err := tproxy.ListenTCP("tcp", tcpAddr)
+		if err != nil {
+			_ = pc.Close()
+			return fmt.Errorf("tproxy tcp %s: %w", tcpAddr, err)
+		}
+		s.udp = &dns.Server{PacketConn: pc, Net: "udp", Handler: handler, UDPSize: 1232, TsigSecret: tsigMap}
+		s.tcp = &dns.Server{Listener: ln, Net: "tcp", Handler: handler, TsigSecret: tsigMap}
+		go func() {
+			s.log.Info("UDP listener starting", "addr", udpAddr, "tproxy", true)
+			errCh <- s.udp.ActivateAndServe()
+		}()
+		go func() {
+			s.log.Info("TCP listener starting", "addr", tcpAddr, "tproxy", true)
+			errCh <- s.tcp.ActivateAndServe()
+		}()
+	} else {
+		s.udp = &dns.Server{Addr: udpAddr, Net: "udp", Handler: handler, UDPSize: 1232, TsigSecret: tsigMap}
+		s.tcp = &dns.Server{Addr: tcpAddr, Net: "tcp", Handler: handler, TsigSecret: tsigMap}
+		go func() {
+			s.log.Info("UDP listener starting", "addr", udpAddr)
+			errCh <- s.udp.ListenAndServe()
+		}()
+		go func() {
+			s.log.Info("TCP listener starting", "addr", tcpAddr)
+			errCh <- s.tcp.ListenAndServe()
+		}()
+	}
 
 	if s.tlsCfg != nil && s.cfg.Server.DoTPort > 0 {
 		dotAddr := s.cfg.ListenAddr(s.cfg.Server.DoTPort)
@@ -539,6 +625,47 @@ func (s *Server) RPZCount() int64 {
 
 func (s *Server) RPZ() *rpz.Engine { return s.rpz }
 
+func rpzRedirectRR(qname string, qtype uint16, target string) dns.RR {
+	ip := net.ParseIP(strings.TrimSpace(target))
+	if ip == nil {
+		return nil
+	}
+	name := config.NormalizeName(qname)
+	const ttl = uint32(60)
+	if ip4 := ip.To4(); ip4 != nil {
+		if qtype != dns.TypeA && qtype != dns.TypeANY {
+			return nil
+		}
+		return &dns.A{
+			Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl},
+			A:   ip4,
+		}
+	}
+	if qtype != dns.TypeAAAA && qtype != dns.TypeANY {
+		return nil
+	}
+	return &dns.AAAA{
+		Hdr:  dns.RR_Header{Name: name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl},
+		AAAA: ip.To16(),
+	}
+}
+
+func rpzCNAMERR(qname, target string) dns.RR {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return nil
+	}
+	return &dns.CNAME{
+		Hdr: dns.RR_Header{
+			Name:   config.NormalizeName(qname),
+			Rrtype: dns.TypeCNAME,
+			Class:  dns.ClassINET,
+			Ttl:    60,
+		},
+		Target: config.NormalizeName(target),
+	}
+}
+
 // ReloadRPZ replaces the in-memory blocklist from policy sources (file or HTTP).
 func (s *Server) ReloadRPZ(policies []rpz.PolicyConfig, timeout time.Duration) (int, error) {
 	if s.rpz == nil {
@@ -623,6 +750,31 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 }
 
 func (s *Server) SetQueryLogger(q *database.QueryLogger) { s.qlog = q }
+
+// SetQueryACL replaces the live DNS query ACL (allow/deny CIDRs).
+func (s *Server) SetQueryACL(allow, deny []string) error {
+	l, err := acl.Parse(allow, deny)
+	if err != nil {
+		return err
+	}
+	s.queryACLMu.Lock()
+	s.queryACL = l
+	s.queryACLMu.Unlock()
+	if s.cfg != nil {
+		s.cfg.ACL.AllowQuery = l.AllowCIDRs()
+		s.cfg.ACL.DenyQuery = l.DenyCIDRs()
+	}
+	return nil
+}
+
+func (s *Server) QueryACL() (allow, deny []string) {
+	s.queryACLMu.RLock()
+	defer s.queryACLMu.RUnlock()
+	if s.queryACL == nil {
+		return nil, nil
+	}
+	return s.queryACL.AllowCIDRs(), s.queryACL.DenyCIDRs()
+}
 func (s *Server) QueryLogger() *database.QueryLogger     { return s.qlog }
 
 func (s *Server) Analytics() *analytics.Collector { return s.stats }

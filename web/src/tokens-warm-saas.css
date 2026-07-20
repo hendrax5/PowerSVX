@@ -1,0 +1,61 @@
+/*
+  Warm friendly SaaS palette — Refactoring UI (9 shades per hue).
+  NOT imported by default. To trial: @import "./tokens-warm-saas.css" in index.css
+  and map --accent / --bg from these tokens.
+
+  Usage map:
+    50–100  soft surfaces / chips
+    500     primary CTA
+    600–700 hover / emphasis
+    800–900 headings / body text on light
+    Never use pure #000 — darkest brand is 900.
+
+  Brand hue ~18° (coral-amber). Warm gray hue ~35° (stone).
+*/
+
+:root {
+  /* Brand — coral amber */
+  --saas-brand-50:  #fff7ed;
+  --saas-brand-100: #ffedd5;
+  --saas-brand-200: #fed7aa;
+  --saas-brand-300: #fdba74;
+  --saas-brand-400: #fb923c;
+  --saas-brand-500: #f97316;
+  --saas-brand-600: #ea580c;
+  --saas-brand-700: #c2410c;
+  --saas-brand-800: #9a3412;
+  --saas-brand-900: #7c2d12;
+
+  /* Warm gray — stone-tinted (not pure gray) */
+  --saas-gray-50:  #fafaf9;
+  --saas-gray-100: #f5f5f4;
+  --saas-gray-200: #e7e5e4;
+  --saas-gray-300: #d6d3d1;
+  --saas-gray-400: #a8a29e;
+  --saas-gray-500: #78716c;
+  --saas-gray-600: #57534e;
+  --saas-gray-700: #44403c;
+  --saas-gray-800: #292524;
+  --saas-gray-900: #1c1917;
+
+  /* Semantic */
+  --saas-ok-100:    #d1fae5;
+  --saas-ok-500:    #10b981;
+  --saas-ok-700:    #047857;
+  --saas-warn-100:  #fef3c7;
+  --saas-warn-500:  #f59e0b;
+  --saas-warn-700:  #b45309;
+  --saas-danger-100:#fee2e2;
+  --saas-danger-500:#ef4444;
+  --saas-danger-700:#b91c1c;
+
+  /* Suggested light-theme wiring (optional) */
+  --saas-bg:            var(--saas-gray-50);
+  --saas-bg-elevated:   #ffffff;
+  --saas-bg-panel:      var(--saas-gray-100);
+  --saas-border:        var(--saas-gray-200);
+  --saas-text:          var(--saas-gray-900);
+  --saas-muted:         var(--saas-gray-600);
+  --saas-accent:        var(--saas-brand-500);
+  --saas-accent-soft:   color-mix(in srgb, var(--saas-brand-500) 12%, transparent);
+}

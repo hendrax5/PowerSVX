@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,6 +17,8 @@ import (
 	"github.com/powersvx/powersvx/internal/analytics"
 	"github.com/powersvx/powersvx/internal/anomaly"
 	"github.com/powersvx/powersvx/internal/api"
+	"github.com/powersvx/powersvx/internal/apiauth"
+	"github.com/powersvx/powersvx/internal/audit"
 	"github.com/powersvx/powersvx/internal/authoritative"
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
@@ -37,6 +41,7 @@ import (
 
 func main() {
 	cfgPath := flag.String("config", "configs/powersvx.toml", "path to TOML config")
+	dataDir := flag.String("data-dir", "./data", "directory for runtime settings, DNSSEC keys, RPZ store")
 	flag.Parse()
 
 	bus := eventlog.New(200)
@@ -47,9 +52,14 @@ func main() {
 		log.Error("config load failed", "err", err)
 		os.Exit(1)
 	}
-	if rs, err := config.LoadRuntimeSettings(config.RuntimeSettingsPath("./data")); err == nil {
+	if err := os.MkdirAll(*dataDir, 0o755); err != nil {
+		log.Error("data-dir create failed", "dir", *dataDir, "err", err)
+		os.Exit(1)
+	}
+	rsPath := config.RuntimeSettingsPath(*dataDir)
+	if rs, err := config.LoadRuntimeSettings(rsPath); err == nil {
 		cfg.ApplyRuntimeSettings(rs)
-		log.Info("runtime settings loaded", "path", config.RuntimeSettingsPath("./data"))
+		log.Info("runtime settings loaded", "path", rsPath)
 	}
 
 	l1Max := cfg.Cache.MaxSizeMB * 1024
@@ -94,14 +104,36 @@ func main() {
 	}
 
 	sec := dnssec.New(dnssec.ParseMode(cfg.Resolver.DNSSECMode, cfg.Resolver.DNSSECValidation))
-	signer := dnssec.NewSigner("./data/dnssec")
-	if cfg.API.AuthType == "token" && cfg.API.APIToken == "" {
+	signer := dnssec.NewSigner(filepath.Join(*dataDir, "dnssec"))
+	if cfg.API.AuthType == "token" && cfg.API.APIToken == "" && len(cfg.API.Tokens) == 0 {
 		log.Error("api auth_type=token requires api_token (set API_TOKEN or config)")
 		os.Exit(1)
 	}
+	var userStore *apiauth.UserStore
+	var sessStore *apiauth.SessionStore
+	if strings.EqualFold(cfg.API.AuthType, "local") {
+		var err error
+		userStore, err = apiauth.NewUserStore(*dataDir, cfg.API.Users)
+		if err != nil {
+			log.Error("user store", "err", err)
+			os.Exit(1)
+		}
+		if created, err := userStore.EnsureBootstrap(os.Getenv("ADMIN_PASSWORD")); err != nil {
+			log.Error("admin bootstrap", "err", err)
+			os.Exit(1)
+		} else if created {
+			log.Info("bootstrapped local admin user from ADMIN_PASSWORD")
+		}
+		if userStore.Count() == 0 {
+			log.Error("auth_type=local requires [[api.users]] or ADMIN_PASSWORD bootstrap")
+			os.Exit(1)
+		}
+		secureCookie := cfg.TLSEnabled()
+		sessStore = apiauth.NewSessionStore(*dataDir, apiauth.DefaultTTL, secureCookie)
+	}
 	limiter := ratelimit.New(cfg.RateLimit.Enabled, cfg.RateLimit.DefaultQPS, cfg.RateLimit.DefaultBurst, cfg.RateLimit.BlockDuration, cfg.RateLimit.Whitelist)
 
-	rpzPath := config.RPZPoliciesPath("./data")
+	rpzPath := config.RPZPoliciesPath(*dataDir)
 	if file, err := config.LoadRPZPoliciesFile(rpzPath); err == nil {
 		cfg.RPZ.Policies = file.Policies
 		if file.UpdateInterval > 0 {
@@ -111,7 +143,7 @@ func main() {
 	}
 
 	rpzEng := rpz.New(cfg.RPZ.Enabled)
-	if err := rpzEng.OpenDisk("./data/rpz-store"); err != nil {
+	if err := rpzEng.OpenDisk(filepath.Join(*dataDir, "rpz-store")); err != nil {
 		log.Warn("rpz disk store unavailable", "err", err)
 	}
 	defer func() { _ = rpzEng.Close() }()
@@ -119,7 +151,7 @@ func main() {
 	var policies []rpz.PolicyConfig
 	for _, p := range cfg.RPZ.Policies {
 		policies = append(policies, rpz.PolicyConfig{
-			Name: p.Name, Source: p.Source, Format: p.Format, Action: rpz.Action(p.Action),
+			Name: p.Name, Source: p.Source, Format: p.Format, Action: rpz.Action(p.Action), Target: p.Target,
 		})
 	}
 	if len(policies) > 0 {
@@ -228,9 +260,24 @@ func main() {
 	}, log)
 
 	rest := api.New(cfg, dnsSrv, db, tier, auth, log)
+	rest.SetDataDir(*dataDir)
 	rest.SetEvents(bus)
 	rest.SetACME(acmeMgr)
+	auditLog := audit.New(500, log)
+	rest.SetAudit(auditLog)
+	if userStore != nil {
+		rest.SetUserStore(userStore)
+	}
+	if sessStore != nil {
+		rest.SetSessionStore(sessStore)
+	}
 	rest.StartRPZAutoUpdate()
+	if db != nil && cfg.Logging.QueryLogRetentionDays > 0 {
+		retCtx, retCancel := context.WithCancel(context.Background())
+		defer retCancel()
+		db.StartRetentionLoop(retCtx, cfg.Logging.QueryLogRetentionDays, time.Hour)
+		log.Info("query log retention enabled", "days", cfg.Logging.QueryLogRetentionDays, "mask_ip", cfg.Logging.QueryLogMaskIP)
+	}
 	webDirs := []string{"./web/dist", "/usr/share/PowerSVX/web"}
 	for _, dir := range webDirs {
 		if webFS, err := api.LoadWebDir(dir); err == nil {
@@ -258,7 +305,11 @@ func main() {
 
 	var grpcSrv *grpcapi.Server
 	if cfg.API.GRPCEnabled {
-		grpcSrv, err = grpcapi.Start(cfg.API.GRPCBind, dnsSrv, log)
+		tok := ""
+		if cfg.API.AuthType == "token" {
+			tok = cfg.API.APIToken
+		}
+		grpcSrv, err = grpcapi.Start(cfg.API.GRPCBind, dnsSrv, log, tok)
 		if err != nil {
 			log.Error("grpc start failed", "err", err)
 			os.Exit(1)
@@ -290,9 +341,35 @@ func main() {
 	)
 
 	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-	<-ch
-	log.Info("shutting down")
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	for sig := range ch {
+		if sig == syscall.SIGHUP {
+			log.Info("SIGHUP: reloading runtime settings and plugins")
+			if rs, err := config.LoadRuntimeSettings(config.RuntimeSettingsPath(*dataDir)); err == nil {
+				cfg.ApplyRuntimeSettings(rs)
+				dnsSrv.ApplyRuntimeFlags(server.RuntimeFlags{
+					GeoDNS: cfg.GeoDNS.Enabled, RPZ: cfg.RPZ.Enabled,
+					RateLimit: cfg.RateLimit.Enabled, ECS: cfg.Resolver.ECSEnabled,
+					SplitHorizon: cfg.SplitHorizon.Enabled,
+					ResolverMode: cfg.Resolver.Mode, ForwardOnFail: cfg.Resolver.ForwardOnFail,
+					QueryLog: cfg.Logging.QueryLogEnabled,
+				})
+				if err := dnsSrv.SetQueryACL(cfg.ACL.AllowQuery, cfg.ACL.DenyQuery); err != nil {
+					log.Warn("acl reload failed", "err", err)
+				}
+			}
+			if cfg.Plugins.Enabled && plugins != nil {
+				if err := plugins.Reload(cfg.Plugins.Dir); err != nil {
+					log.Warn("plugin reload failed", "err", err)
+				} else {
+					log.Info("plugins reloaded", "count", plugins.Len())
+				}
+			}
+			continue
+		}
+		log.Info("shutting down")
+		break
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = rest.Shutdown(ctx)

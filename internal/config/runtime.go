@@ -14,8 +14,10 @@ type RuntimeSettings struct {
 	ECS           *bool   `json:"ecs_enabled,omitempty"`
 	SplitHorizon  *bool   `json:"split_horizon,omitempty"`
 	ResolverMode  *string `json:"resolver_mode,omitempty"`
-	ForwardOnFail *bool   `json:"forward_on_fail,omitempty"`
-	QueryLog      *bool   `json:"query_log_enabled,omitempty"`
+	ForwardOnFail *bool    `json:"forward_on_fail,omitempty"`
+	QueryLog      *bool    `json:"query_log_enabled,omitempty"`
+	AllowQuery    []string `json:"allow_query"`
+	DenyQuery     []string `json:"deny_query"`
 }
 
 func RuntimeSettingsPath(dir string) string {
@@ -70,5 +72,13 @@ func (c *Config) ApplyRuntimeSettings(s RuntimeSettings) {
 	}
 	if s.QueryLog != nil {
 		c.Logging.QueryLogEnabled = *s.QueryLog
+	}
+	// Distinguish omitted (nil) vs explicit empty list via JSON null vs [].
+	// When unmarshaling, missing keys leave nil; present arrays are non-nil.
+	if s.AllowQuery != nil {
+		c.ACL.AllowQuery = append([]string(nil), s.AllowQuery...)
+	}
+	if s.DenyQuery != nil {
+		c.ACL.DenyQuery = append([]string(nil), s.DenyQuery...)
 	}
 }

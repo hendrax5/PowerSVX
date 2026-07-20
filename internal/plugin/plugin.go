@@ -110,6 +110,21 @@ func LoadDir(dir string) (*Registry, error) {
 	return reg, nil
 }
 
+// Reload replaces hooks from dir (hot-reload). On error, previous hooks are kept.
+func (r *Registry) Reload(dir string) error {
+	if r == nil {
+		return fmt.Errorf("nil registry")
+	}
+	fresh, err := LoadDir(dir)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.hooks = fresh.hooks
+	r.mu.Unlock()
+	return nil
+}
+
 // ApplyDecision writes a DNS response for a blocking decision.
 func ApplyDecision(w dns.ResponseWriter, req *dns.Msg, d Decision) bool {
 	if d == DecisionContinue {

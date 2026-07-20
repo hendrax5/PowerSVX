@@ -6,6 +6,12 @@ import (
 	"github.com/powersvx/powersvx/internal/config"
 )
 
+// Hit is an RPZ match: action plus optional target (IP for redirect, FQDN for cname).
+type Hit struct {
+	Action Action
+	Target string
+}
+
 // Compact label-reversed radix: shared suffixes (com., co.id., …) cut RAM vs map[string].
 type trie struct {
 	root  *tnode
@@ -13,9 +19,11 @@ type trie struct {
 }
 
 type tnode struct {
-	kids map[string]*tnode
-	term uint8 // exact match action at this suffix
-	wild uint8 // *.suffix action (needs ≥1 label to the left)
+	kids       map[string]*tnode
+	term       uint8  // exact match action at this suffix
+	wild       uint8  // *.suffix action (needs ≥1 label to the left)
+	termTarget string // redirect IP or cname host
+	wildTarget string
 }
 
 func newTrie() *trie {
@@ -28,6 +36,10 @@ func actionCode(a Action) uint8 {
 		return 2
 	case ActionPass:
 		return 3
+	case ActionRedirect:
+		return 4
+	case ActionCNAME:
+		return 5
 	default:
 		return 1 // nxdomain
 	}
@@ -39,17 +51,26 @@ func codeAction(c uint8) Action {
 		return ActionNODATA
 	case 3:
 		return ActionPass
+	case 4:
+		return ActionRedirect
+	case 5:
+		return ActionCNAME
 	default:
 		return ActionNXDOMAIN
 	}
 }
 
 func (t *trie) insert(name string, action Action) {
+	t.insertHit(name, Hit{Action: action})
+}
+
+func (t *trie) insertHit(name string, hit Hit) {
 	if t == nil || t.root == nil {
 		return
 	}
 	name = config.NormalizeName(name)
-	code := actionCode(action)
+	code := actionCode(hit.Action)
+	target := strings.TrimSpace(hit.Target)
 	wild := false
 	if strings.HasPrefix(name, "*.") {
 		wild = true
@@ -59,7 +80,6 @@ func (t *trie) insert(name string, action Action) {
 	if len(labels) == 1 && labels[0] == "" {
 		return
 	}
-	// walk TLD → left
 	n := t.root
 	for i := len(labels) - 1; i >= 0; i-- {
 		lab := labels[i]
@@ -78,62 +98,64 @@ func (t *trie) insert(name string, action Action) {
 			t.count++
 		}
 		n.wild = code
+		n.wildTarget = target
 		return
 	}
 	if n.term == 0 {
 		t.count++
 	}
 	n.term = code
+	n.termTarget = target
 }
 
-func (t *trie) lookup(name string) (Action, bool) {
+func (t *trie) lookup(name string) (Hit, bool) {
 	if t == nil || t.root == nil {
-		return ActionPass, false
+		return Hit{Action: ActionPass}, false
 	}
 	name = config.NormalizeName(name)
 	labels := strings.Split(strings.TrimSuffix(name, "."), ".")
 	if len(labels) == 0 {
-		return ActionPass, false
+		return Hit{Action: ActionPass}, false
 	}
 	n := t.root
 	var wildHit uint8
-	// Walk TLD → left. After finishing suffix S at node n, n.wild matches *.S if more labels remain.
+	var wildTarget string
 	for i := len(labels) - 1; i >= 0; i-- {
 		lab := labels[i]
 		child, ok := n.kids[lab]
 		if !ok {
 			if wildHit != 0 {
-				return codeAction(wildHit), true
+				return Hit{Action: codeAction(wildHit), Target: wildTarget}, true
 			}
-			return ActionPass, false
+			return Hit{Action: ActionPass}, false
 		}
 		n = child
-		// remaining left labels: 0..i-1 → if i > 0 there is ≥1 label under this suffix
 		if n.wild != 0 && i > 0 {
 			wildHit = n.wild
+			wildTarget = n.wildTarget
 		}
 	}
 	if n.term != 0 {
-		return codeAction(n.term), true
+		return Hit{Action: codeAction(n.term), Target: n.termTarget}, true
 	}
 	if wildHit != 0 {
-		return codeAction(wildHit), true
+		return Hit{Action: codeAction(wildHit), Target: wildTarget}, true
 	}
-	return ActionPass, false
+	return Hit{Action: ActionPass}, false
 }
 
 // walk visits every exact and wild rule; name is normalized FQDN or *.fqdn.
-func (t *trie) walk(fn func(name string, action Action)) {
+func (t *trie) walk(fn func(name string, hit Hit)) {
 	if t == nil || t.root == nil {
 		return
 	}
 	var rec func(n *tnode, parts []string)
 	rec = func(n *tnode, parts []string) {
 		if n.term != 0 {
-			fn(joinFQDN(parts), codeAction(n.term))
+			fn(joinFQDN(parts), Hit{Action: codeAction(n.term), Target: n.termTarget})
 		}
 		if n.wild != 0 {
-			fn("*."+joinFQDN(parts), codeAction(n.wild))
+			fn("*."+joinFQDN(parts), Hit{Action: codeAction(n.wild), Target: n.wildTarget})
 		}
 		for lab, child := range n.kids {
 			rec(child, append(parts, lab))
@@ -143,7 +165,6 @@ func (t *trie) walk(fn func(name string, action Action)) {
 }
 
 func joinFQDN(parts []string) string {
-	// parts collected TLD-first; reverse for wire name
 	if len(parts) == 0 {
 		return "."
 	}

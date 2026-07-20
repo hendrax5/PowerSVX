@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { NavLink, Route, Routes, useNavigate, useParams } from 'react-router-dom'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   Bar,
   BarChart,
@@ -9,7 +9,13 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { api, getToken, setToken } from './api'
+import { api, setToken } from './api'
+
+const AuthCtx = createContext({ me: null, refresh: async () => {}, canWrite: true, isAdmin: true })
+
+function useAuth() {
+  return useContext(AuthCtx)
+}
 
 function LoadingBlock({ label = 'Loading' }) {
   return (
@@ -37,19 +43,49 @@ function EmptyState({ title, hint, action }) {
 }
 
 function Shell({ children }) {
-  const [token, setTok] = useState(getToken())
-  const links = [
-    ['/', 'Dashboard'],
-    ['/zones', 'Zones'],
-    ['/logs', 'Query logs'],
-    ['/lookup', 'Lookup'],
-    ['/settings', 'Settings'],
+  const { me, refresh } = useAuth()
+  const nav = useNavigate()
+  const loc = useLocation()
+  const navGroups = [
+    {
+      label: 'Operate',
+      links: [
+        ['/', 'Dashboard'],
+        ['/zones', 'Zones'],
+        ['/lookup', 'Lookup'],
+      ],
+    },
+    {
+      label: 'Observe',
+      links: [
+        ['/logs', 'Query logs'],
+        ['/audit', 'Audit'],
+      ],
+    },
+    {
+      label: 'Configure',
+      links: [['/settings', 'Settings']],
+    },
   ]
+  const hereLabel =
+    navGroups.flatMap((g) => g.links).find(([to]) => (to === '/' ? loc.pathname === '/' : loc.pathname.startsWith(to)))?.[1] ||
+    'Dashboard'
+
+  const logout = async () => {
+    try {
+      await api.logout()
+    } catch {
+      /* ignore */
+    }
+    setToken('')
+    await refresh()
+    nav('/login')
+  }
   return (
     <div className="min-h-full flex flex-col md:flex-row">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-2 focus:left-2 focus:bg-[var(--accent)] focus:text-[#0e1014] focus:px-3 focus:py-2"
+        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-2 focus:left-2 focus:bg-[var(--accent)] focus:text-[#0e1014] focus:px-3 focus:py-2.5"
       >
         Skip to content
       </a>
@@ -62,49 +98,153 @@ function Shell({ children }) {
             <span className="text-[var(--text)]">Power</span>
             <span className="text-[var(--accent)]">SVX</span>
           </div>
-          <div className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted)] mt-2 mono">
-            DNS control plane
+          <div className="text-[11px] text-[var(--muted)] mt-2">
+            <span className="uppercase tracking-[0.14em] mono">DNS</span>
+            <span className="mx-1.5 text-[var(--border-strong)]">·</span>
+            <span aria-current="page">{hereLabel}</span>
           </div>
         </div>
-        <nav className="flex md:flex-col gap-1 flex-1 overflow-x-auto" aria-label="Primary">
-          {links.map(([to, label], i) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={to === '/'}
-              className={({ isActive }) =>
-                `relative px-3 py-2 text-sm transition cursor-pointer whitespace-nowrap reveal reveal-delay-${Math.min(i + 1, 4)} ${
-                  isActive
-                    ? 'text-[var(--accent)] bg-[var(--accent-soft)] border-l-2 border-[var(--accent)] md:pl-[10px]'
-                    : 'text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-panel)] border-l-2 border-transparent'
-                }`
-              }
-            >
-              {label}
-            </NavLink>
+        <nav className="flex md:flex-col gap-3 flex-1 overflow-x-auto" aria-label="Primary">
+          {navGroups.map((group) => (
+            <div key={group.label} className="flex md:flex-col gap-1 shrink-0">
+              <div className="hidden md:block text-[10px] uppercase tracking-[0.12em] text-[var(--muted)] px-3 pt-1 pb-0.5">
+                {group.label}
+              </div>
+              {group.links.map(([to, label]) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  end={to === '/'}
+                  className={({ isActive }) =>
+                    `relative px-3 py-2.5 min-h-[44px] flex items-center text-sm transition cursor-pointer whitespace-nowrap ${
+                      isActive
+                        ? 'text-[var(--accent)] bg-[var(--accent-soft)] border-l-2 border-[var(--accent)] md:pl-[10px]'
+                        : 'text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-panel)] border-l-2 border-transparent'
+                    }`
+                  }
+                >
+                  {label}
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
-        <div className="space-y-1.5 md:mt-auto w-full max-w-xs">
-          <label className="text-[11px] uppercase tracking-wide text-[var(--muted)]" htmlFor="api-token">
-            API token
-          </label>
-          <input
-            id="api-token"
-            className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-xs mono text-[var(--text)] focus:border-[var(--accent)]"
-            style={{ borderRadius: 'var(--radius)' }}
-            type="password"
-            placeholder="optional"
-            value={token}
-            onChange={(e) => {
-              setTok(e.target.value)
-              setToken(e.target.value)
-            }}
-          />
+        <div className="space-y-2 md:mt-auto w-full max-w-xs text-xs">
+          {me?.auth_required ? (
+            <>
+              <div className="text-[var(--muted)]">
+                <span className="text-[var(--text)]">{me.name}</span>
+                <span className="mx-1">·</span>
+                <span className="text-[var(--accent)]">{me.role}</span>
+              </div>
+              <button type="button" onClick={logout} className="btn btn-secondary w-full min-h-[44px]">
+                Log out
+              </button>
+            </>
+          ) : (
+            <div className="text-[var(--muted)]">Open access</div>
+          )}
         </div>
       </aside>
       <main id="main" tabIndex={-1} className="flex-1 p-5 md:p-8 overflow-auto outline-none">{children}</main>
     </div>
   )
+}
+
+function friendlyAuthError(raw) {
+  const m = String(raw || '').toLowerCase()
+  if (m.includes('unauthorized') || m.includes('401') || m.includes('forbidden') || m.includes('invalid credentials')) {
+    return 'Sign-in failed. Check username and password.'
+  }
+  if (m.includes('too many')) {
+    return 'Too many login attempts. Wait a minute and try again.'
+  }
+  if (m.includes('network') || m.includes('failed to fetch')) {
+    return 'Cannot reach the server. Check that PowerSVX is running.'
+  }
+  return raw || 'Sign-in failed'
+}
+
+function LoginPage() {
+  const { me, refresh } = useAuth()
+  const nav = useNavigate()
+  const [username, setUsername] = useState('admin')
+  const [password, setPassword] = useState('')
+  const [err, setErr] = useState('')
+  const [errDetail, setErrDetail] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (me && !me.auth_required) nav('/', { replace: true })
+    if (me?.auth_required && me.name && me.name !== 'anonymous') nav('/', { replace: true })
+  }, [me, nav])
+
+  const submit = async (e) => {
+    e.preventDefault()
+    setBusy(true)
+    setErr('')
+    setErrDetail('')
+    try {
+      setToken('')
+      await api.login(username, password)
+      await refresh()
+      nav('/', { replace: true })
+    } catch (ex) {
+      const raw = ex.message || 'Login failed'
+      setErr(friendlyAuthError(raw))
+      setErrDetail(raw)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="min-h-full flex items-center justify-center p-6">
+      <form onSubmit={submit} className="panel w-full max-w-sm p-6 space-y-4">
+        <div>
+          <div className="text-2xl font-bold tracking-tight">
+            <span className="text-[var(--text)]">Power</span>
+            <span className="text-[var(--accent)]">SVX</span>
+          </div>
+          <p className="text-sm text-[var(--muted)] mt-2">Sign in with username and password</p>
+        </div>
+        {err ? <ErrorBox msg={err} detail={errDetail !== err ? errDetail : undefined} /> : null}
+        <label className="text-xs text-[var(--muted)] flex flex-col gap-1">
+          Username
+          <input
+            className="input"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+            required
+          />
+        </label>
+        <label className="text-xs text-[var(--muted)] flex flex-col gap-1">
+          Password
+          <input
+            type="password"
+            className="input"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+          />
+        </label>
+        <button type="submit" disabled={busy} className="btn btn-primary w-full min-h-[44px]">
+          {busy ? 'Signing in…' : 'Sign in'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
+function RequireAuth({ children }) {
+  const { me, loading } = useAuth()
+  if (loading) return <LoadingBlock label="Checking session" />
+  if (me?.auth_required && (!me.name || me.name === 'anonymous')) {
+    return <Navigate to="/login" replace />
+  }
+  return children
 }
 
 function Stat({ label, value, sub }) {
@@ -501,6 +641,7 @@ function formatEventTime(t) {
 }
 
 function Zones() {
+  const { canWrite } = useAuth()
   const [zones, setZones] = useState([])
   const [name, setName] = useState('')
   const [err, setErr] = useState('')
@@ -545,21 +686,25 @@ function Zones() {
         <p className="text-sm text-[var(--muted)] mt-1">Authoritative zones and records</p>
       </header>
       {err ? <ErrorBox msg={err} /> : null}
-      <form onSubmit={create} className="flex gap-2">
-        <input
-          className="flex-1 bg-[var(--bg)] border border-[var(--border)] cursor-text px-3 py-2 text-sm mono"
-          placeholder="example.com"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          required
-        />
-        <button
-          type="submit"
-          className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm hover:opacity-90"
-        >
-          Add zone
-        </button>
-      </form>
+      {canWrite ? (
+        <form onSubmit={create} className="flex gap-2">
+          <input
+            className="flex-1 bg-[var(--bg)] border border-[var(--border)] cursor-text px-3 py-2 text-sm mono"
+            placeholder="example.com"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+          />
+          <button
+            type="submit"
+            className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm hover:opacity-90"
+          >
+            Add zone
+          </button>
+        </form>
+      ) : (
+        <p className="text-xs text-[var(--muted)]">Read-only role — zone create/delete disabled</p>
+      )}
       <ul className="space-y-2">
         {zones.map((z) => (
           <li
@@ -570,13 +715,15 @@ function Zones() {
               <div className="mono font-medium">{z.name}</div>
               <div className="text-xs text-[var(--muted)]">{z.record_count} records</div>
             </button>
-            <button
-              type="button"
-              className="text-xs text-[var(--danger)] hover:underline"
-              onClick={() => remove(z.name)}
-            >
-              Delete
-            </button>
+            {canWrite ? (
+              <button
+                type="button"
+                className="text-xs text-[var(--danger)] hover:underline"
+                onClick={() => remove(z.name)}
+              >
+                Delete
+              </button>
+            ) : null}
           </li>
         ))}
       </ul>
@@ -941,12 +1088,14 @@ function Lookup() {
 }
 
 function Settings() {
+  const { isAdmin } = useAuth()
   const [saved, setSaved] = useState(null)
   const [draft, setDraft] = useState(null)
   const [rpz, setRpz] = useState(null)
   const [err, setErr] = useState('')
   const [ok, setOk] = useState('')
   const [busy, setBusy] = useState(false)
+  const [section, setSection] = useState('dns')
 
   const toggleKeys = ['geodns', 'rpz_enabled', 'rate_limit', 'ecs_enabled', 'split_horizon', 'forward_on_fail', 'query_log_enabled']
 
@@ -959,7 +1108,22 @@ function Settings() {
     forward_on_fail: !!s.forward_on_fail,
     query_log_enabled: !!s.query_log_enabled,
     resolver_mode: s.resolver_mode === 'recursive' ? 'recursive' : 'forward',
+    allow_query: Array.isArray(s.allow_query) ? s.allow_query.join('\n') : '',
+    deny_query: Array.isArray(s.deny_query) ? s.deny_query.join('\n') : '',
   })
+
+  const linesToList = (text) =>
+    String(text || '')
+      .split(/[\n,]+/)
+      .map((x) => x.trim())
+      .filter(Boolean)
+
+  const sameList = (a, b) => {
+    const aa = linesToList(a)
+    const bb = Array.isArray(b) ? b : linesToList(b)
+    if (aa.length !== bb.length) return false
+    return aa.every((v, i) => v === bb[i])
+  }
 
   const load = () =>
     Promise.all([api.settings(), api.rpz()])
@@ -974,11 +1138,18 @@ function Settings() {
     load()
   }, [])
 
-  const dirty =
+  const dirtyDns =
     saved &&
     draft &&
-    (toggleKeys.some((k) => !!draft[k] !== !!saved[k]) ||
-      draft.resolver_mode !== (saved.resolver_mode === 'recursive' ? 'recursive' : 'forward'))
+    (draft.resolver_mode !== (saved.resolver_mode === 'recursive' ? 'recursive' : 'forward') ||
+      !!draft.forward_on_fail !== !!saved.forward_on_fail)
+  const dirtyFeatures =
+    saved &&
+    draft &&
+    toggleKeys.filter((k) => k !== 'forward_on_fail').some((k) => !!draft[k] !== !!saved[k])
+  const dirtyAcl =
+    saved && draft && (!sameList(draft.allow_query, saved.allow_query) || !sameList(draft.deny_query, saved.deny_query))
+  const dirty = !!(dirtyDns || dirtyFeatures || dirtyAcl)
 
   const toggle = (key) => {
     setOk('')
@@ -999,10 +1170,22 @@ function Settings() {
     setErr('')
     setOk('')
     try {
-      const s = await api.updateSettings(draft)
+      const payload = {
+        geodns: draft.geodns,
+        rpz_enabled: draft.rpz_enabled,
+        rate_limit: draft.rate_limit,
+        ecs_enabled: draft.ecs_enabled,
+        split_horizon: draft.split_horizon,
+        forward_on_fail: draft.forward_on_fail,
+        query_log_enabled: draft.query_log_enabled,
+        resolver_mode: draft.resolver_mode,
+        allow_query: linesToList(draft.allow_query),
+        deny_query: linesToList(draft.deny_query),
+      }
+      const s = await api.updateSettings(payload)
       setSaved(s)
       setDraft(toDraft(s))
-      setOk('Settings saved and applied (no restart)')
+      setOk('Saved — live now')
       setRpz(await api.rpz())
     } catch (ex) {
       setErr(ex.message)
@@ -1012,152 +1195,311 @@ function Settings() {
   }
 
   if (err && !saved) return <ErrorBox msg={err} />
-  if (!saved || !draft) return <p className="text-[var(--muted)]">Loading…</p>
+  if (!saved || !draft) return <LoadingBlock label="Loading settings" />
 
-  const toggles = [
-    ['geodns', 'GeoDNS', 'Route answers by client country/continent (needs MMDB or IP overrides)'],
-    ['rpz_enabled', 'RPZ / blocklist', 'Block domains from policy files'],
-    ['rate_limit', 'Rate limit', 'Token-bucket per client IP'],
-    ['ecs_enabled', 'ECS', 'EDNS Client Subnet on upstream queries'],
-    ['split_horizon', 'Split horizon', 'Different answers by client network / view'],
-    ['forward_on_fail', 'Recursive fallback', 'If root recursion fails, fall back to configured forwarders'],
-    ['query_log_enabled', 'Query log', 'Write per-query rows to PostgreSQL (filterable by client IP)'],
+  const featureToggles = [
+    ['geodns', 'GeoDNS', 'Route by client country'],
+    ['rpz_enabled', 'Blocklist (RPZ)', 'Block domains from feeds'],
+    ['rate_limit', 'Rate limit', 'Cap queries per client IP'],
+    ['ecs_enabled', 'Client subnet (ECS)', 'Send subnet to upstream'],
+    ['split_horizon', 'Split horizon', 'Different answers by network'],
+    ['query_log_enabled', 'Query log', 'Save queries to the database'],
   ]
 
+  const categories = [
+    { id: 'dns', label: 'DNS', hint: 'How lookups work', dirty: dirtyDns },
+    { id: 'features', label: 'Features', hint: 'Optional engines', dirty: dirtyFeatures },
+    { id: 'access', label: 'Access', hint: 'Who may query', dirty: dirtyAcl },
+    { id: 'status', label: 'Status', hint: 'Read-only info', dirty: false },
+    { id: 'tools', label: 'Tools', hint: 'Backup, RPZ, users', dirty: false },
+  ]
+
+  const saveBar = (
+    <div className="flex gap-2">
+      <button
+        type="button"
+        disabled={!dirty || busy || !isAdmin}
+        onClick={discard}
+        className="btn btn-secondary min-h-[44px] disabled:opacity-40"
+      >
+        Discard
+      </button>
+      <button
+        type="button"
+        disabled={!dirty || busy || !isAdmin}
+        onClick={save}
+        className="btn btn-primary min-h-[44px] disabled:opacity-40"
+      >
+        {busy ? 'Saving…' : 'Save'}
+      </button>
+    </div>
+  )
+
+  const sectionTitle = categories.find((c) => c.id === section)
+
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-4 max-w-5xl pb-24">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Settings</h1>
           <p className="text-sm text-[var(--muted)] mt-1">
-            Change toggles, then press <strong>Save</strong> to apply. No restart needed.
+            {sectionTitle?.label}
+            <span className="mx-1.5 text-[var(--border-strong)]">·</span>
+            {sectionTitle?.hint}
           </p>
         </div>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            disabled={!dirty || busy}
-            onClick={discard}
-            className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm text-[var(--muted)] disabled:opacity-40 hover:text-[var(--text)]"
-          >
-            Discard
-          </button>
-          <button
-            type="button"
-            disabled={!dirty || busy}
-            onClick={save}
-            className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm disabled:opacity-40"
-          >
-            {busy ? 'Saving…' : 'Save changes'}
-          </button>
-        </div>
+        {(section === 'dns' || section === 'features' || section === 'access') && isAdmin ? saveBar : null}
       </header>
+
+      {!isAdmin ? (
+        <p className="text-xs text-[var(--muted)]">View only — your role cannot change settings.</p>
+      ) : null}
       {err ? <ErrorBox msg={err} /> : null}
       {ok ? (
-        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
+        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2" role="status">
           {ok}
         </div>
       ) : null}
-      {dirty ? (
-        <div className="border border-[var(--warn)]/40 bg-[var(--warn)]/10 text-[var(--warn)] text-sm px-3 py-2">
-          Unsaved changes — not applied until you save
-        </div>
-      ) : null}
 
-      <section className="panel px-4 py-3 space-y-3">
-        <div>
-          <div className="text-sm font-medium flex items-center gap-2">
-            Resolver mode
-            {draft.resolver_mode !== (saved.resolver_mode === 'recursive' ? 'recursive' : 'forward') ? (
-              <span className="text-[10px] uppercase tracking-wide text-[var(--warn)]">edited</span>
-            ) : null}
-          </div>
-          <p className="text-xs text-[var(--muted)] mt-0.5">
-            <strong>recursive</strong> queries root servers directly; <strong>forward</strong> uses upstream resolvers only.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {['forward', 'recursive'].map((mode) => (
+      <div className="flex flex-col md:flex-row gap-6 items-start">
+        <nav
+          className="w-full md:w-52 shrink-0 flex md:flex-col gap-1 overflow-x-auto md:overflow-visible"
+          aria-label="Settings categories"
+        >
+          {categories.map((c) => (
             <button
-              key={mode}
+              key={c.id}
               type="button"
-              disabled={busy}
               onClick={() => {
+                setSection(c.id)
                 setOk('')
-                setErr('')
-                setDraft((d) => ({ ...d, resolver_mode: mode }))
               }}
-              className={`px-3 py-2 text-sm border cursor-pointer disabled:opacity-50 ${
-                draft.resolver_mode === mode
+              aria-current={section === c.id ? 'page' : undefined}
+              className={`text-left px-3 py-2.5 min-h-[44px] text-sm border-l-2 transition whitespace-nowrap ${
+                section === c.id
                   ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
-                  : 'border-[var(--border)] text-[var(--muted)] hover:text-[var(--text)]'
+                  : 'border-transparent text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-panel)]'
               }`}
             >
-              {mode}
+              <span className="font-medium flex items-center gap-2">
+                {c.label}
+                {c.dirty ? (
+                  <span className="h-1.5 w-1.5 rounded-full bg-[var(--warn)]" title="Unsaved" aria-label="Unsaved" />
+                ) : null}
+              </span>
+              <span className="hidden md:block text-[11px] text-[var(--muted)] mt-0.5 font-normal">{c.hint}</span>
             </button>
           ))}
-        </div>
-      </section>
+        </nav>
 
-      <section className="panel divide-y divide-[var(--border)]">
-        {toggles.map(([key, label, hint]) => (
-          <div key={key} className="flex items-center justify-between gap-4 px-4 py-3">
-            <div>
-              <div className="text-sm font-medium flex items-center gap-2">
-                {label}
-                {!!draft[key] !== !!saved[key] ? (
-                  <span className="text-[10px] uppercase tracking-wide text-[var(--warn)]">edited</span>
-                ) : null}
+        <div className="flex-1 min-w-0 w-full space-y-4">
+          {section === 'dns' ? (
+            <section className="panel divide-y divide-[var(--border)]" aria-labelledby="settings-dns-heading">
+              <div className="px-4 py-3">
+                <h2 id="settings-dns-heading" className="text-sm font-medium">
+                  Lookup mode
+                </h2>
+                <p className="text-xs text-[var(--muted)] mt-1">Pick one. Save to apply.</p>
               </div>
-              <div className="text-xs text-[var(--muted)] mt-0.5">{hint}</div>
-              {key === 'geodns' && saved.geodns_db ? (
-                <div className="text-xs mono text-[var(--muted)] mt-1">{saved.geodns_db}</div>
-              ) : null}
-              {key === 'forward_on_fail' && draft.resolver_mode !== 'recursive' ? (
-                <div className="text-xs text-[var(--muted)] mt-1">Only applies when resolver mode is recursive</div>
-              ) : null}
+              <div className="px-4 py-3 space-y-2">
+                {[
+                  ['forward', 'Forward', 'Send queries to upstream resolvers only'],
+                  ['recursive', 'Recursive', 'Ask the DNS root servers directly'],
+                ].map(([mode, title, desc]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    disabled={busy || !isAdmin}
+                    onClick={() => {
+                      setOk('')
+                      setErr('')
+                      setDraft((d) => ({ ...d, resolver_mode: mode }))
+                    }}
+                    className={`w-full text-left px-3 py-3 min-h-[44px] border transition disabled:opacity-50 ${
+                      draft.resolver_mode === mode
+                        ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                        : 'border-[var(--border)] hover:border-[var(--border-strong)]'
+                    }`}
+                    aria-pressed={draft.resolver_mode === mode}
+                  >
+                    <div className="text-sm font-medium flex items-center gap-2">
+                      {title}
+                      {draft.resolver_mode === mode ? (
+                        <span className="text-[10px] uppercase tracking-wide text-[var(--accent)]">selected</span>
+                      ) : null}
+                    </div>
+                    <div className="text-xs text-[var(--muted)] mt-0.5">{desc}</div>
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center justify-between gap-4 px-4 py-3">
+                <div>
+                  <div className="text-sm font-medium">Fallback to forwarders</div>
+                  <div className="text-xs text-[var(--muted)] mt-0.5">
+                    If recursive fails, try configured forwarders
+                    {draft.resolver_mode !== 'recursive' ? ' (only in recursive mode)' : ''}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy || !isAdmin || draft.resolver_mode !== 'recursive'}
+                  onClick={() => toggle('forward_on_fail')}
+                  className={`shrink-0 relative h-7 w-12 min-h-[44px] min-w-[48px] transition cursor-pointer ${
+                    draft.forward_on_fail ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'
+                  } disabled:opacity-50`}
+                  style={{ borderRadius: 'var(--radius)' }}
+                  aria-pressed={!!draft.forward_on_fail}
+                  aria-label="Fallback to forwarders"
+                >
+                  <span
+                    className={`absolute top-1/2 -translate-y-1/2 h-6 w-6 bg-[var(--bg)] transition ${
+                      draft.forward_on_fail ? 'left-5' : 'left-0.5'
+                    }`}
+                    style={{ borderRadius: 1 }}
+                  />
+                </button>
+              </div>
+            </section>
+          ) : null}
+
+          {section === 'features' ? (
+            <section className="panel divide-y divide-[var(--border)]" aria-labelledby="settings-features-heading">
+              <div className="px-4 py-3">
+                <h2 id="settings-features-heading" className="text-sm font-medium">
+                  Features
+                </h2>
+                <p className="text-xs text-[var(--muted)] mt-1">Turn engines on or off. Save to apply.</p>
+              </div>
+              {featureToggles.map(([key, label, hint]) => (
+                <div key={key} className="flex items-center justify-between gap-4 px-4 py-3">
+                  <div>
+                    <div className="text-sm font-medium flex items-center gap-2">
+                      {label}
+                      {!!draft[key] !== !!saved[key] ? (
+                        <span className="text-[10px] uppercase tracking-wide text-[var(--warn)]">edited</span>
+                      ) : null}
+                    </div>
+                    <div className="text-xs text-[var(--muted)] mt-0.5">{hint}</div>
+                    {key === 'geodns' && saved.geodns_db ? (
+                      <div className="text-xs mono text-[var(--muted)] mt-1">{saved.geodns_db}</div>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busy || !isAdmin}
+                    onClick={() => toggle(key)}
+                    className={`shrink-0 relative h-7 w-12 min-h-[44px] min-w-[48px] transition cursor-pointer ${
+                      draft[key] ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'
+                    } disabled:opacity-50`}
+                    style={{ borderRadius: 'var(--radius)' }}
+                    aria-pressed={!!draft[key]}
+                    aria-label={label}
+                  >
+                    <span
+                      className={`absolute top-1/2 -translate-y-1/2 h-6 w-6 bg-[var(--bg)] transition ${
+                        draft[key] ? 'left-5' : 'left-0.5'
+                      }`}
+                      style={{ borderRadius: 1 }}
+                    />
+                  </button>
+                </div>
+              ))}
+            </section>
+          ) : null}
+
+          {section === 'access' ? (
+            <section className="panel px-4 py-4 space-y-4" aria-labelledby="settings-access-heading">
+              <div>
+                <h2 id="settings-access-heading" className="text-sm font-medium">
+                  Who can query
+                </h2>
+                <p className="text-xs text-[var(--muted)] mt-1">
+                  Leave Allow empty for everyone. Deny always wins. One IP or CIDR per line.
+                </p>
+              </div>
+              <label className="block text-xs text-[var(--muted)] space-y-1">
+                Allow
+                <textarea
+                  rows={5}
+                  disabled={busy || !isAdmin}
+                  value={draft.allow_query}
+                  onChange={(e) => {
+                    setOk('')
+                    setErr('')
+                    setDraft((d) => ({ ...d, allow_query: e.target.value }))
+                  }}
+                  placeholder={'10.0.0.0/8\n192.168.0.0/16\n127.0.0.1'}
+                  className="input mono w-full min-h-[7rem]"
+                />
+              </label>
+              <label className="block text-xs text-[var(--muted)] space-y-1">
+                Deny
+                <textarea
+                  rows={3}
+                  disabled={busy || !isAdmin}
+                  value={draft.deny_query}
+                  onChange={(e) => {
+                    setOk('')
+                    setErr('')
+                    setDraft((d) => ({ ...d, deny_query: e.target.value }))
+                  }}
+                  placeholder="optional"
+                  className="input mono w-full"
+                />
+              </label>
+            </section>
+          ) : null}
+
+          {section === 'status' ? (
+            <section className="panel" aria-labelledby="settings-status-heading">
+              <div className="px-4 py-3 border-b border-[var(--border)]">
+                <h2 id="settings-status-heading" className="text-sm font-medium">
+                  Server status
+                </h2>
+                <p className="text-xs text-[var(--muted)] mt-1">Read-only. Change these in the config file if needed.</p>
+              </div>
+              <dl className="divide-y divide-[var(--border)] text-sm">
+                {[
+                  ['DNSSEC mode', saved.dnssec_mode],
+                  ['DNS listen', saved.udp_addr],
+                  ['Forwarders', (saved.forwarders || []).join(', ') || '—'],
+                  ['API auth', saved.auth_type],
+                  ['Auth required', saved.auth_required ? 'yes' : 'no'],
+                  ['Auth configured', saved.auth_configured ? 'yes' : 'no'],
+                  ['TLS min', saved.tls_min_version],
+                  ['Mask query IPs', saved.query_log_mask_ip ? 'yes' : 'no'],
+                  ['Log retention (days)', saved.query_log_retention_days],
+                  ['AXFR allowed', saved.transfer?.allow_axfr ? 'yes' : 'no'],
+                  ['AXFR requires TSIG', saved.transfer?.require_tsig ? 'yes' : 'no'],
+                  ['NOTIFY targets', (saved.transfer?.notify || []).join(', ') || '—'],
+                  ['AXFR allow from', (saved.transfer?.allow_from || []).join(', ') || '—'],
+                ].map(([k, v]) => (
+                  <div key={k} className="flex justify-between gap-4 px-4 py-2.5">
+                    <dt className="text-[var(--muted)]">{k}</dt>
+                    <dd className="mono text-right break-all">{String(v)}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ) : null}
+
+          {section === 'tools' ? (
+            <div className="space-y-4" aria-label="Tools">
+              <ACMEPanel />
+              <BackupPanel />
+              <UsersPanel />
+              <RPZPanel initial={rpz} onChange={setRpz} />
             </div>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => toggle(key)}
-              className={`shrink-0 relative h-7 w-12 transition cursor-pointer ${
-                draft[key] ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'
-              } disabled:opacity-50`}
-              style={{ borderRadius: 'var(--radius)' }}
-              aria-pressed={!!draft[key]}
-            >
-              <span
-                className={`absolute top-0.5 h-6 w-6 bg-[var(--bg)] transition ${
-                  draft[key] ? 'left-5' : 'left-0.5'
-                }`}
-                style={{ borderRadius: 1 }}
-              />
-            </button>
-          </div>
-        ))}
-      </section>
+          ) : null}
+        </div>
+      </div>
 
-      <dl className="panel divide-y divide-[var(--border)] text-sm">
-        {[
-          ['dnssec_mode', saved.dnssec_mode],
-          ['udp_addr', saved.udp_addr],
-          ['forwarders', (saved.forwarders || []).join(', ')],
-          ['auth_type', saved.auth_type],
-          ['auth_required', saved.auth_required],
-          ['auth_configured', saved.auth_configured],
-          ['tls_min_version', saved.tls_min_version],
-        ].map(([k, v]) => (
-          <div key={k} className="flex justify-between gap-4 px-4 py-2.5">
-            <dt className="text-[var(--muted)]">{k}</dt>
-            <dd className="mono text-right break-all">{String(v)}</dd>
-          </div>
-        ))}
-      </dl>
-
-      <ACMEPanel />
-      <BackupPanel />
-      <RPZPanel initial={rpz} onChange={setRpz} />
+      {dirty && isAdmin ? (
+        <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-8 md:max-w-md z-20 panel px-4 py-3 flex flex-wrap items-center justify-between gap-3 border-[var(--warn)]/50 bg-[var(--bg-elevated)]">
+          <span className="text-sm text-[var(--warn)]">Unsaved changes</span>
+          {saveBar}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -1169,6 +1511,7 @@ function RPZPanel({ initial, onChange }) {
   const [name, setName] = useState('trustpositif')
   const [source, setSource] = useState('https://trustpositif.komdigi.go.id/assets/db/domains_isp')
   const [action, setAction] = useState('nxdomain')
+  const [target, setTarget] = useState('')
   const [err, setErr] = useState('')
   const [ok, setOk] = useState('')
   const [busy, setBusy] = useState(false)
@@ -1202,15 +1545,33 @@ function RPZPanel({ initial, onChange }) {
     setOk('')
     const n = name.trim()
     const s = source.trim()
+    const t = target.trim()
     if (!n || !s) {
       setErr('Name and source (URL or file path) are required')
+      return
+    }
+    if (action === 'redirect' && !t) {
+      setErr('Redirect needs a landing IP (e.g. 10.0.0.1)')
+      return
+    }
+    if (action === 'cname' && !t) {
+      setErr('CNAME needs a landing hostname (e.g. block.local)')
       return
     }
     if (policies.some((p) => p.name === n)) {
       setErr(`Policy "${n}" already exists`)
       return
     }
-    setPolicies((p) => [...p, { name: n, source: s, format: 'hosts', action }])
+    setPolicies((p) => [
+      ...p,
+      {
+        name: n,
+        source: s,
+        format: 'hosts',
+        action,
+        target: action === 'redirect' || action === 'cname' ? t : '',
+      },
+    ])
   }
 
   const remove = (n) => {
@@ -1262,7 +1623,7 @@ function RPZPanel({ initial, onChange }) {
         <div>
           <h2 className="text-sm font-medium">RPZ feeds</h2>
           <p className="text-xs text-[var(--muted)] mt-1">
-            HTTP URL or local file · hosts format · radix lookup + Badger snapshot on disk
+            HTTP URL or local file · hosts format · actions: nxdomain, nodata, pass, redirect (IP), cname
           </p>
           <p className="text-sm mt-2">
             {status?.enabled ? 'Enabled' : 'Disabled'} · {status?.entries ?? 0} entries
@@ -1330,6 +1691,7 @@ function RPZPanel({ initial, onChange }) {
                 <div className="mono text-xs text-[var(--muted)] break-all">{p.source}</div>
                 <div className="text-xs text-[var(--muted)] mt-0.5">
                   {p.format || 'hosts'} · {p.action || 'nxdomain'}
+                  {p.target ? ` → ${p.target}` : ''}
                 </div>
               </div>
               <button
@@ -1367,8 +1729,21 @@ function RPZPanel({ initial, onChange }) {
             <option value="nxdomain">nxdomain</option>
             <option value="nodata">nodata</option>
             <option value="pass">pass</option>
+            <option value="redirect">redirect (sinkhole IP)</option>
+            <option value="cname">cname (landing host)</option>
           </select>
         </label>
+        {action === 'redirect' || action === 'cname' ? (
+          <label className="text-xs text-[var(--muted)] space-y-1 sm:col-span-2">
+            {action === 'redirect' ? 'Landing IP' : 'Landing hostname'}
+            <input
+              className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              placeholder={action === 'redirect' ? '10.0.0.1' : 'block.corp.local'}
+            />
+          </label>
+        ) : null}
         <label className="text-xs text-[var(--muted)] space-y-1 sm:col-span-2">
           Source (HTTPS URL or file path)
           <input
@@ -1397,10 +1772,123 @@ function clonePolicies(list) {
     source: p.source || '',
     format: p.format || 'hosts',
     action: p.action || 'nxdomain',
+    target: p.target || '',
   }))
 }
 
+function UsersPanel() {
+  const { isAdmin, me } = useAuth()
+  const [users, setUsers] = useState([])
+  const [name, setName] = useState('')
+  const [password, setPassword] = useState('')
+  const [role, setRole] = useState('operator')
+  const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const load = () =>
+    api
+      .listUsers()
+      .then((d) => setUsers(d.users || []))
+      .catch((e) => setErr(e.message))
+
+  useEffect(() => {
+    if (!isAdmin || me?.auth_type !== 'local') return undefined
+    load()
+    return undefined
+  }, [isAdmin, me?.auth_type])
+
+  if (!isAdmin || me?.auth_type !== 'local') return null
+
+  const save = async (e) => {
+    e.preventDefault()
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      await api.upsertUser({ name, password, role })
+      setPassword('')
+      setOk('User saved')
+      await load()
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async (n) => {
+    setErr('')
+    try {
+      await api.deleteUser(n)
+      await load()
+    } catch (ex) {
+      setErr(ex.message)
+    }
+  }
+
+  return (
+    <section className="panel p-4 space-y-3">
+      <h2 className="text-sm font-medium">Local users</h2>
+      <p className="text-xs text-[var(--muted)]">
+        Admin / operator / readonly. API tokens for scripts stay in TOML ([[api.tokens]]).
+      </p>
+      {err ? <ErrorBox msg={err} /> : null}
+      {ok ? (
+        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
+          {ok}
+        </div>
+      ) : null}
+      <ul className="text-sm divide-y divide-[var(--border)]">
+        {users.map((u) => (
+          <li key={u.name} className="flex justify-between gap-2 py-2">
+            <span className="mono">
+              {u.name} <span className="text-[var(--muted)]">· {u.role}</span>
+            </span>
+            <button type="button" className="text-xs text-[var(--muted)] hover:text-[var(--accent)]" onClick={() => remove(u.name)}>
+              Delete
+            </button>
+          </li>
+        ))}
+      </ul>
+      <form onSubmit={save} className="grid grid-cols-1 md:grid-cols-3 gap-2">
+        <input
+          className="bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm"
+          placeholder="username"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          required
+        />
+        <input
+          type="password"
+          className="bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm"
+          placeholder="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        <select
+          className="bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm"
+          value={role}
+          onChange={(e) => setRole(e.target.value)}
+        >
+          <option value="admin">admin</option>
+          <option value="operator">operator</option>
+          <option value="readonly">readonly</option>
+        </select>
+        <button
+          type="submit"
+          disabled={busy}
+          className="md:col-span-3 bg-[var(--accent)] text-[#0e1014] font-medium px-4 py-2 text-sm disabled:opacity-40"
+        >
+          Add / update user
+        </button>
+      </form>
+    </section>
+  )
+}
+
 function BackupPanel() {
+  const { isAdmin } = useAuth()
   const [err, setErr] = useState('')
   const [ok, setOk] = useState('')
   const [busy, setBusy] = useState(false)
@@ -1469,7 +1957,7 @@ function BackupPanel() {
         </button>
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || !isAdmin}
           onClick={() => fileRef.current?.click()}
           className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm disabled:opacity-40"
         >
@@ -1477,6 +1965,7 @@ function BackupPanel() {
         </button>
         <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={restore} />
       </div>
+      {!isAdmin ? <p className="text-xs text-[var(--muted)]">Restore requires admin</p> : null}
     </section>
   )
 }
@@ -1537,12 +2026,35 @@ function ACMEPanel() {
   )
 }
 
-function ErrorBox({ msg }) {
+function ErrorBox({ msg, detail, hint }) {
+  const mapped = friendlyApiError(msg)
   return (
-    <div className="border border-[var(--danger)]/40 bg-[var(--danger)]/10 text-[var(--danger)] text-sm px-3 py-2">
-      {msg}
+    <div
+      className="border border-[var(--danger)]/40 bg-[var(--danger)]/10 text-[var(--danger)] text-sm px-3 py-2 space-y-1"
+      role="alert"
+      title={detail || undefined}
+    >
+      <p>{mapped.summary || msg}</p>
+      {mapped.next || hint ? <p className="text-xs opacity-90">{mapped.next || hint}</p> : null}
+      {detail && detail !== msg && detail !== mapped.summary ? (
+        <p className="text-[11px] text-[var(--muted)] mono break-all">{detail}</p>
+      ) : null}
     </div>
   )
+}
+
+function friendlyApiError(raw) {
+  const m = String(raw || '').toLowerCase()
+  if (m.includes('unauthorized') || m.includes('401')) {
+    return { summary: 'Not authorized', next: 'Sign in again with your username and password.' }
+  }
+  if (m.includes('forbidden') || m.includes('403')) {
+    return { summary: 'Permission denied', next: 'Your role cannot perform this action.' }
+  }
+  if (m.includes('failed to fetch') || m.includes('network')) {
+    return { summary: 'Server unreachable', next: 'Confirm PowerSVX is running and reachable.' }
+  }
+  return { summary: raw, next: '' }
 }
 
 function rcodeLabel(code) {
@@ -1554,6 +2066,82 @@ function rcodeLabel(code) {
     5: 'REFUSED',
   }
   return map[code] || String(code)
+}
+
+function AuditLog() {
+  const [events, setEvents] = useState([])
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const load = () => {
+    setBusy(true)
+    setErr('')
+    api
+      .audit()
+      .then((d) => setEvents(Array.isArray(d.events) ? d.events.slice().reverse() : []))
+      .catch((e) => setErr(e.message))
+      .finally(() => setBusy(false))
+  }
+
+  useEffect(() => {
+    load()
+  }, [])
+
+  return (
+    <div className="space-y-6">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Audit</h1>
+          <p className="text-sm text-[var(--muted)] mt-1">
+            Control-plane API mutations and auth failures (in-memory ring).
+          </p>
+        </div>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={load}
+          className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm text-[var(--muted)] disabled:opacity-40"
+        >
+          {busy ? '…' : 'Refresh'}
+        </button>
+      </header>
+      {err ? <ErrorBox msg={err} /> : null}
+      <div className="panel overflow-x-auto">
+        <table className="w-full text-sm text-left">
+          <thead className="text-xs text-[var(--muted)] border-b border-[var(--border)]">
+            <tr>
+              <th className="px-3 py-2 font-medium">Time</th>
+              <th className="px-3 py-2 font-medium">Actor</th>
+              <th className="px-3 py-2 font-medium">Role</th>
+              <th className="px-3 py-2 font-medium">Action</th>
+              <th className="px-3 py-2 font-medium">Path</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="px-3 py-6 text-[var(--muted)]">
+                  No audit events yet.
+                </td>
+              </tr>
+            ) : (
+              events.map((e, i) => (
+                <tr key={`${e.time}-${i}`} className="border-t border-[var(--border)]">
+                  <td className="px-3 py-2 mono text-xs whitespace-nowrap">
+                    {e.time ? new Date(e.time).toLocaleString() : '—'}
+                  </td>
+                  <td className="px-3 py-2 mono text-xs">{e.actor || '—'}</td>
+                  <td className="px-3 py-2 text-xs">{e.role || '—'}</td>
+                  <td className="px-3 py-2 mono text-xs">{e.action || '—'}</td>
+                  <td className="px-3 py-2 mono text-xs break-all">{e.path || '—'}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
 }
 
 function QueryLogs() {
@@ -1740,17 +2328,57 @@ function formatUptime(sec) {
 }
 
 export default function App() {
+  const [me, setMe] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  const refresh = async () => {
+    try {
+      const m = await api.me()
+      setMe(m)
+    } catch {
+      setMe({ auth_required: true, name: '', role: '' })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    refresh()
+  }, [])
+
+  const role = (me?.role || '').toLowerCase()
+  const value = {
+    me,
+    loading,
+    refresh,
+    canWrite: !me?.auth_required || role === 'admin' || role === 'operator',
+    isAdmin: !me?.auth_required || role === 'admin',
+  }
+
   return (
-    <Shell>
+    <AuthCtx.Provider value={value}>
       <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/zones" element={<Zones />} />
-        <Route path="/zones/:name" element={<ZoneDetail />} />
-        <Route path="/lookup" element={<Lookup />} />
-        <Route path="/logs" element={<QueryLogs />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="/analytics" element={<Dashboard />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route
+          path="/*"
+          element={
+            <RequireAuth>
+              <Shell>
+                <Routes>
+                  <Route path="/" element={<Dashboard />} />
+                  <Route path="/zones" element={<Zones />} />
+                  <Route path="/zones/:name" element={<ZoneDetail />} />
+                  <Route path="/lookup" element={<Lookup />} />
+                  <Route path="/logs" element={<QueryLogs />} />
+                  <Route path="/audit" element={<AuditLog />} />
+                  <Route path="/settings" element={<Settings />} />
+                  <Route path="/analytics" element={<Dashboard />} />
+                </Routes>
+              </Shell>
+            </RequireAuth>
+          }
+        />
       </Routes>
-    </Shell>
+    </AuthCtx.Provider>
   )
 }

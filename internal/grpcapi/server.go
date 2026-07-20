@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -54,7 +55,7 @@ type Server struct {
 	log *slog.Logger
 }
 
-func Start(bind string, dnsSrv *server.Server, log *slog.Logger) (*Server, error) {
+func Start(bind string, dnsSrv *server.Server, log *slog.Logger, apiToken string) (*Server, error) {
 	if bind == "" {
 		return nil, nil
 	}
@@ -62,19 +63,51 @@ func Start(bind string, dnsSrv *server.Server, log *slog.Logger) (*Server, error
 	if err != nil {
 		return nil, err
 	}
-	gs := grpc.NewServer()
+	opts := []grpc.ServerOption{}
+	if apiToken != "" {
+		opts = append(opts, grpc.UnaryInterceptor(tokenInterceptor(apiToken)))
+	}
+	gs := grpc.NewServer(opts...)
 	pb.RegisterDNSServer(gs, &DNSService{srv: dnsSrv})
 	hs := health.NewServer()
 	hs.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(gs, hs)
 	s := &Server{gs: gs, ln: ln, log: log}
 	go func() {
-		log.Info("gRPC API starting", "addr", bind)
+		log.Info("gRPC API starting", "addr", bind, "auth", apiToken != "")
 		if err := gs.Serve(ln); err != nil {
 			log.Error("grpc serve", "err", err)
 		}
 	}()
 	return s, nil
+}
+
+func tokenInterceptor(want string) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if strings.HasPrefix(info.FullMethod, "/grpc.health.") {
+			return handler(ctx, req)
+		}
+		md, ok := metadata.FromIncomingContext(ctx)
+		if !ok {
+			return nil, status.Error(codes.Unauthenticated, "missing metadata")
+		}
+		vals := md.Get("authorization")
+		got := ""
+		if len(vals) > 0 {
+			got = vals[0]
+		}
+		got = strings.TrimSpace(strings.TrimPrefix(got, "Bearer "))
+		got = strings.TrimSpace(strings.TrimPrefix(got, "bearer "))
+		if got == "" {
+			if t := md.Get("token"); len(t) > 0 {
+				got = t[0]
+			}
+		}
+		if got != want {
+			return nil, status.Error(codes.Unauthenticated, "unauthorized")
+		}
+		return handler(ctx, req)
+	}
 }
 
 func (s *Server) Stop() {

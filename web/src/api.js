@@ -9,12 +9,22 @@ export function setToken(token) {
   else localStorage.removeItem(TOKEN_KEY)
 }
 
+function redirectToLogin() {
+  if (typeof window === 'undefined') return
+  const path = window.location.pathname || ''
+  if (path === '/login' || path.startsWith('/login')) return
+  window.location.assign('/login')
+}
+
 async function request(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) }
   const token = getToken()
   if (token) headers.Authorization = `Bearer ${token}`
 
-  const res = await fetch(path, { ...opts, headers })
+  const res = await fetch(path, { ...opts, headers, credentials: 'include' })
+  if (res.status === 401 && !opts.skipAuthRedirect && path !== '/api/v1/auth/login') {
+    redirectToLogin()
+  }
   if (res.status === 204) return null
   const text = await res.text()
   let data = null
@@ -31,7 +41,19 @@ async function request(path, opts = {}) {
 }
 
 export const api = {
-  health: () => request('/api/v1/health'),
+  health: () => request('/api/v1/health', { skipAuthRedirect: true }),
+  me: () => request('/api/v1/auth/me', { skipAuthRedirect: true }),
+  login: (username, password) =>
+    request('/api/v1/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+      skipAuthRedirect: true,
+    }),
+  logout: () => request('/api/v1/auth/logout', { method: 'POST', skipAuthRedirect: true }),
+  listUsers: () => request('/api/v1/auth/users'),
+  upsertUser: (body) => request('/api/v1/auth/users', { method: 'POST', body: JSON.stringify(body) }),
+  deleteUser: (name) =>
+    request(`/api/v1/auth/users?name=${encodeURIComponent(name)}`, { method: 'DELETE' }),
   status: () => request('/api/v1/status'),
   dashboard: () => request('/api/v1/dashboard'),
   zones: () => request('/api/v1/zones'),
@@ -72,6 +94,7 @@ export const api = {
     q.set('offset', String(offset))
     return request(`/api/v1/query-logs?${q}`)
   },
+  audit: () => request('/api/v1/audit'),
   acme: () => request('/api/v1/acme'),
   acmeObtain: () => request('/api/v1/acme', { method: 'POST', body: '{}' }),
   rpz: () => request('/api/v1/rpz'),

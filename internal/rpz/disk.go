@@ -73,6 +73,7 @@ func (s *Store) Fingerprint() (string, error) {
 }
 
 // LoadTrie rebuilds an in-memory radix from Badger.
+// Value format: [actionCode][optional UTF-8 target].
 func (s *Store) LoadTrie() (*trie, int, error) {
 	t := newTrie()
 	if s == nil || s.db == nil {
@@ -87,14 +88,19 @@ func (s *Store) LoadTrie() (*trie, int, error) {
 			item := it.Item()
 			key := item.Key()
 			name := string(key[len(domPrefix):])
-			var code uint8 = 1
+			var hit Hit
 			_ = item.Value(func(v []byte) error {
-				if len(v) > 0 {
-					code = v[0]
+				if len(v) == 0 {
+					hit = Hit{Action: ActionNXDOMAIN}
+					return nil
+				}
+				hit = Hit{Action: codeAction(v[0])}
+				if len(v) > 1 {
+					hit.Target = string(v[1:])
 				}
 				return nil
 			})
-			t.insert(name, codeAction(code))
+			t.insertHit(name, hit)
 		}
 		return nil
 	})
@@ -128,12 +134,13 @@ func (s *Store) ReplaceAll(t *trie, fingerprint string) error {
 	wb := s.db.NewWriteBatch()
 	n := 0
 	var flushErr error
-	t.walk(func(name string, action Action) {
+	t.walk(func(name string, hit Hit) {
 		if flushErr != nil {
 			return
 		}
 		key := append([]byte(domPrefix), []byte(name)...)
-		flushErr = wb.Set(key, []byte{actionCode(action)})
+		val := append([]byte{actionCode(hit.Action)}, []byte(hit.Target)...)
+		flushErr = wb.Set(key, val)
 		n++
 		if n%100_000 == 0 {
 			if flushErr = wb.Flush(); flushErr != nil {

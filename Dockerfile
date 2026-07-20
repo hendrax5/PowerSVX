@@ -34,4 +34,4 @@ RUN mkdir -p /data/cache /etc/PowerSVX/certs /var/log/PowerSVX \
 USER powersvx
 EXPOSE 53/udp 53/tcp 853/tcp 443/tcp 784/udp 5380/tcp 9100/tcp
 ENTRYPOINT ["/usr/local/bin/powersvx"]
-CMD ["--config", "/etc/PowerSVX/powersvx.toml"]
+CMD ["--config", "/etc/PowerSVX/powersvx.toml", "--data-dir", "/data"]

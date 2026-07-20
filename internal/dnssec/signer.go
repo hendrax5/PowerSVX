@@ -145,6 +145,61 @@ func (s *Signer) SignResponse(zone string, req, resp *dns.Msg) {
 	}
 }
 
+// SignDenial attaches a minimal NSEC (+ RRSIG) for NXDOMAIN/NODATA when DO is set.
+// Next domain is the zone apex (simplified single-NSEC covering the owner).
+func (s *Signer) SignDenial(zone, qname string, req, resp *dns.Msg) {
+	if s == nil || resp == nil {
+		return
+	}
+	zone = config.NormalizeName(zone)
+	qname = config.NormalizeName(qname)
+	zk, err := s.load(zone)
+	if err != nil {
+		return
+	}
+	wantDO := false
+	if req != nil {
+		if opt := req.IsEdns0(); opt != nil && opt.Do() {
+			wantDO = true
+		}
+	}
+	if !wantDO {
+		return
+	}
+	nsec := &dns.NSEC{
+		Hdr: dns.RR_Header{
+			Name:   qname,
+			Rrtype: dns.TypeNSEC,
+			Class:  dns.ClassINET,
+			Ttl:    300,
+		},
+		NextDomain: zone,
+		TypeBitMap: []uint16{dns.TypeA, dns.TypeAAAA, dns.TypeNS, dns.TypeSOA, dns.TypeRRSIG, dns.TypeNSEC, dns.TypeDNSKEY},
+	}
+	resp.Ns = append(resp.Ns, nsec)
+	now := time.Now().UTC()
+	inc := now.Add(30 * 24 * time.Hour)
+	sig := &dns.RRSIG{
+		Hdr: dns.RR_Header{
+			Name:   qname,
+			Rrtype: dns.TypeRRSIG,
+			Class:  dns.ClassINET,
+			Ttl:    300,
+		},
+		TypeCovered: dns.TypeNSEC,
+		Algorithm:   zk.ZSK.Algorithm,
+		Labels:      uint8(dns.CountLabel(qname)),
+		OrigTtl:     300,
+		Expiration:  uint32(inc.Unix()),
+		Inception:   uint32(now.Unix()),
+		KeyTag:      zk.ZSK.KeyTag(),
+		SignerName:  zone,
+	}
+	if err := sig.Sign(zk.ZSKPriv, []dns.RR{nsec}); err == nil {
+		resp.Ns = append(resp.Ns, sig)
+	}
+}
+
 func groupAuthAnswers(rrs []dns.RR) [][]dns.RR {
 	order := []string{}
 	m := map[string][]dns.RR{}

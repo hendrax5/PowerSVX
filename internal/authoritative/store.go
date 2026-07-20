@@ -244,6 +244,15 @@ func wildcardMatch(pattern, qname string) bool {
 	return strings.HasSuffix(qname, suffix)
 }
 
+// RecordToRR converts a store record to a wire RR (nil if unsupported/invalid).
+func RecordToRR(rec Record) dns.RR {
+	rr, err := buildRR(rec)
+	if err != nil || rr == nil {
+		return nil
+	}
+	return rr
+}
+
 func buildRR(rec Record) (dns.RR, error) {
 	name := config.NormalizeName(rec.Name)
 	ttl := rec.TTL

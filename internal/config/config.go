@@ -19,10 +19,19 @@ type Config struct {
 	RPZ          RPZConfig          `toml:"rpz"`
 	Metrics      MetricsConfig      `toml:"metrics"`
 	TSIG         TSIGConfig         `toml:"tsig"`
+	Transfer     TransferConfig     `toml:"transfer"`
+	ACL          ACLConfig          `toml:"acl"`
 	GeoDNS       GeoDNSConfig       `toml:"geodns"`
 	SplitHorizon SplitHorizonConfig `toml:"split_horizon"`
 	ACME         ACMEConfig         `toml:"acme"`
 	Plugins      PluginsConfig      `toml:"plugins"`
+}
+
+// ACLConfig controls which clients may send DNS queries.
+// Empty AllowQuery = allow all. DenyQuery always wins over allow.
+type ACLConfig struct {
+	AllowQuery []string `toml:"allow_query" json:"allow_query"`
+	DenyQuery  []string `toml:"deny_query" json:"deny_query"`
 }
 
 type ServerConfig struct {
@@ -33,6 +42,10 @@ type ServerConfig struct {
 	DoHPort     int       `toml:"doh_port"`
 	DoQPort     int       `toml:"doq_port"`
 	Workers     int       `toml:"workers"`
+	// TProxy enables IP_TRANSPARENT on UDP/TCP DNS sockets (Linux only).
+	// Needed for nftables/iptables TPROXY where the packet destination stays
+	// non-local (e.g. 8.8.8.8). Not required for MikroTik/iptables DNAT.
+	TProxy      bool      `toml:"tproxy"`
 	TLS         TLSConfig `toml:"tls"`
 }
 
@@ -82,8 +95,38 @@ type APIConfig struct {
 	RESTBind    string `toml:"rest_bind"`
 	GRPCEnabled bool   `toml:"grpc_enabled"`
 	GRPCBind    string `toml:"grpc_bind"`
-	AuthType    string `toml:"auth_type"`
+	AuthType    string `toml:"auth_type"` // none | token | local
 	APIToken    string `toml:"api_token"`
+	// SessionSecret signs/stores local-auth sessions (env SESSION_SECRET).
+	SessionSecret string `toml:"session_secret"`
+	// Tokens is optional multi-token RBAC: name -> {token, role}.
+	// Roles: admin (full), readonly (GET only), operator (no backup restore / no settings write).
+	Tokens []APITokenTOML `toml:"tokens"`
+	// Users is optional local username/password accounts (auth_type=local).
+	Users []APIUserTOML `toml:"users"`
+}
+
+type APITokenTOML struct {
+	Name  string `toml:"name" json:"name"`
+	Token string `toml:"token" json:"token"`
+	Role  string `toml:"role" json:"role"` // admin|operator|readonly
+}
+
+type APIUserTOML struct {
+	Name         string `toml:"name" json:"name"`
+	PasswordHash string `toml:"password_hash" json:"password_hash"`
+	Role         string `toml:"role" json:"role"` // admin|operator|readonly
+}
+
+type TransferConfig struct {
+	// AllowAXFR enables zone transfers (AXFR; IXFR falls back to AXFR).
+	AllowAXFR bool `toml:"allow_axfr"`
+	// RequireTSIG requires a valid TSIG on AXFR/IXFR when true.
+	RequireTSIG bool `toml:"require_tsig"`
+	// Notify lists secondary addresses (host:port) to NOTIFY after zone changes.
+	Notify []string `toml:"notify"`
+	// AllowFrom CIDRs allowed to request AXFR (empty = any if AllowAXFR).
+	AllowFrom []string `toml:"allow_from"`
 }
 
 type LoggingConfig struct {
@@ -92,6 +135,8 @@ type LoggingConfig struct {
 	QueryLogEnabled       bool   `toml:"query_log_enabled"`
 	QueryLogDestination   string `toml:"query_log_destination"`
 	QueryLogRetentionDays int    `toml:"query_log_retention_days"`
+	// QueryLogMaskIP truncates client IPs before storage (/24 IPv4, /48 IPv6).
+	QueryLogMaskIP bool `toml:"query_log_mask_ip"`
 }
 
 type RateLimitConfig struct {
@@ -107,6 +152,8 @@ type RPZPolicyTOML struct {
 	Source string `toml:"source" json:"source"`
 	Format string `toml:"format" json:"format"`
 	Action string `toml:"action" json:"action"`
+	// Target: IP for redirect, hostname for cname.
+	Target string `toml:"target" json:"target,omitempty"`
 }
 
 type RPZConfig struct {
@@ -201,7 +248,10 @@ func Default() *Config {
 			ECSEnabled: true, ECSPrefixV4: 24, ECSPrefixV6: 56,
 		},
 		API: APIConfig{RESTEnabled: true, RESTBind: "0.0.0.0:5380", GRPCEnabled: false, GRPCBind: "0.0.0.0:5381", AuthType: "none"},
-		Logging: LoggingConfig{Level: "info", Format: "json", QueryLogEnabled: false, QueryLogDestination: "postgresql", QueryLogRetentionDays: 30},
+		Logging: LoggingConfig{
+			Level: "info", Format: "json", QueryLogEnabled: false,
+			QueryLogDestination: "postgresql", QueryLogRetentionDays: 30, QueryLogMaskIP: true,
+		},
 		RateLimit: RateLimitConfig{
 			Enabled: false, DefaultQPS: 100, DefaultBurst: 200, BlockDuration: 300,
 			Whitelist: []string{"127.0.0.1/32", "::1/128"},
@@ -211,7 +261,9 @@ func Default() *Config {
 			PrometheusEnabled: true,
 			PrometheusBind:    "0.0.0.0:9100",
 		},
-		TSIG: TSIGConfig{Enabled: false},
+		TSIG:     TSIGConfig{Enabled: false},
+		Transfer: TransferConfig{AllowAXFR: false, RequireTSIG: true},
+		ACL:      ACLConfig{},
 		GeoDNS: GeoDNSConfig{
 			Enabled: false, DatabasePath: "./data/GeoLite2-City.mmdb", DefaultTag: "default",
 		},
@@ -239,6 +291,10 @@ func Load(path string) (*Config, error) {
 func expandEnv(cfg *Config) {
 	cfg.Database.Password = os.ExpandEnv(cfg.Database.Password)
 	cfg.API.APIToken = os.ExpandEnv(cfg.API.APIToken)
+	cfg.API.SessionSecret = os.ExpandEnv(cfg.API.SessionSecret)
+	for i := range cfg.API.Tokens {
+		cfg.API.Tokens[i].Token = os.ExpandEnv(cfg.API.Tokens[i].Token)
+	}
 	for i := range cfg.TSIG.Keys {
 		cfg.TSIG.Keys[i].Secret = os.ExpandEnv(cfg.TSIG.Keys[i].Secret)
 	}

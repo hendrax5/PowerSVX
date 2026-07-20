@@ -1,0 +1,53 @@
+package apiauth
+
+import (
+	"net/http"
+	"testing"
+
+	"github.com/powersvx/powersvx/internal/config"
+)
+
+func TestResolveAndRBAC(t *testing.T) {
+	cfg := config.APIConfig{
+		APIToken: "admin-secret",
+		Tokens: []config.APITokenTOML{
+			{Name: "ro", Token: "ro-secret", Role: RoleReadonly},
+			{Name: "op", Token: "op-secret", Role: RoleOperator},
+		},
+	}
+	p, ok := ResolveToken(cfg, "ro-secret")
+	if !ok || p.Role != RoleReadonly {
+		t.Fatalf("%v %v", p, ok)
+	}
+	if AllowPath(RoleReadonly, http.MethodPut, "/api/v1/zones") {
+		t.Fatal("readonly must not PUT")
+	}
+	if AllowPath(RoleOperator, http.MethodPut, "/api/v1/settings") {
+		t.Fatal("operator must not change settings")
+	}
+	if AllowPath(RoleOperator, http.MethodPost, "/api/v1/backup") {
+		t.Fatal("operator must not restore backup")
+	}
+	if AllowPath(RoleOperator, http.MethodPost, "/api/v1/auth/users") {
+		t.Fatal("operator must not manage users")
+	}
+	if !AllowPath(RoleAdmin, http.MethodDelete, "/api/v1/backup") {
+		t.Fatal("admin full access")
+	}
+	if !AllowPath(RoleOperator, http.MethodPost, "/api/v1/zones") {
+		t.Fatal("operator may mutate zones")
+	}
+}
+
+func TestPasswordRoundTrip(t *testing.T) {
+	h, err := HashPassword("s3cret!")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !CheckPassword(h, "s3cret!") {
+		t.Fatal("check failed")
+	}
+	if CheckPassword(h, "wrong") {
+		t.Fatal("wrong password accepted")
+	}
+}

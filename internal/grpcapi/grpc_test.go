@@ -34,7 +34,7 @@ func TestGRPCHealthAndLookup(t *testing.T) {
 	addr := ln.Addr().String()
 	_ = ln.Close()
 
-	gs, err := grpcapi.Start(addr, dnsSrv, slog.Default())
+	gs, err := grpcapi.Start(addr, dnsSrv, slog.Default(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

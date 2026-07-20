@@ -17,6 +17,8 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/powersvx/powersvx/internal/acme"
+	"github.com/powersvx/powersvx/internal/apiauth"
+	"github.com/powersvx/powersvx/internal/audit"
 	"github.com/powersvx/powersvx/internal/authoritative"
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
@@ -26,7 +28,7 @@ import (
 	"github.com/powersvx/powersvx/internal/server"
 )
 
-const Version = "1.2.0-hardening"
+const Version = "1.3.0-auth"
 
 type API struct {
 	cfg      *config.Config
@@ -36,24 +38,37 @@ type API struct {
 	auth     *authoritative.Store
 	events   *eventlog.Bus
 	acmeMgr  *acme.Manager
+	audit    *audit.Log
+	users    *apiauth.UserStore
+	sessions *apiauth.SessionStore
+	loginLim *loginLimiter
 	log      *slog.Logger
 	http     *http.Server
 	start    time.Time
 	webFS    fs.FS
 	reloadFn func() error
+	dataDir  string
 
 	rpzAutoMu   sync.Mutex
 	rpzAutoStop chan struct{}
 }
 
 func New(cfg *config.Config, srv *server.Server, db *database.DB, tier *cache.Tier, auth *authoritative.Store, log *slog.Logger) *API {
-	return &API{cfg: cfg, srv: srv, db: db, cache: tier, auth: auth, log: log, start: time.Now()}
+	return &API{cfg: cfg, srv: srv, db: db, cache: tier, auth: auth, log: log, start: time.Now(), dataDir: "./data", loginLim: newLoginLimiter()}
 }
 
 func (a *API) SetWebFS(fsys fs.FS) { a.webFS = fsys }
 func (a *API) SetReloadZones(fn func() error) { a.reloadFn = fn }
 func (a *API) SetEvents(bus *eventlog.Bus) { a.events = bus }
 func (a *API) SetACME(m *acme.Manager) { a.acmeMgr = m }
+func (a *API) SetAudit(l *audit.Log) { a.audit = l }
+func (a *API) SetUserStore(u *apiauth.UserStore) { a.users = u }
+func (a *API) SetSessionStore(s *apiauth.SessionStore) { a.sessions = s }
+func (a *API) SetDataDir(dir string) {
+	if dir != "" {
+		a.dataDir = dir
+	}
+}
 
 func (a *API) Start() error {
 	if !a.cfg.API.RESTEnabled {
@@ -86,8 +101,10 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/analytics", a.withAuth(a.handleAnalytics))
 	mux.HandleFunc("/api/v1/anomaly", a.withAuth(a.handleAnomaly))
 	mux.HandleFunc("/api/v1/query-logs", a.withAuth(a.handleQueryLogs))
+	mux.HandleFunc("/api/v1/audit", a.withAuth(a.handleAudit))
 	mux.HandleFunc("/api/v1/acme", a.withAuth(a.handleACME))
 	mux.HandleFunc("/api/v1/backup", a.withAuth(a.handleBackup))
+	mux.HandleFunc("/api/v1/auth/", a.handleAuth)
 	if a.webFS != nil {
 		mux.Handle("/", a.spaHandler())
 	}
@@ -103,23 +120,54 @@ func (a *API) Shutdown(ctx context.Context) error {
 
 func (a *API) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if a.cfg.API.AuthType == "token" {
-			want := a.cfg.API.APIToken
-			if want == "" {
-				http.Error(w, "api token not configured", http.StatusServiceUnavailable)
-				return
-			}
-			got := bearerToken(r.Header.Get("Authorization"))
-			if got == "" {
-				got = r.URL.Query().Get("token")
-			}
-			if !tokenEqual(got, want) {
+		actor, role := "anonymous", ""
+		authType := strings.ToLower(strings.TrimSpace(a.cfg.API.AuthType))
+		if authType == "token" || authType == "local" {
+			p, ok := a.resolvePrincipal(r)
+			if !ok {
+				if a.audit != nil {
+					a.audit.Record(audit.Event{Actor: "unknown", Action: "auth_fail", Path: r.URL.Path, Status: http.StatusUnauthorized})
+				}
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
+			actor, role = p.Name, p.Role
+			if !apiauth.AllowPath(role, r.Method, r.URL.Path) {
+				if a.audit != nil {
+					a.audit.Record(audit.Event{Actor: actor, Role: role, Action: "forbidden", Path: r.URL.Path, Status: http.StatusForbidden})
+				}
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			r = r.WithContext(apiauth.WithPrincipal(r.Context(), p))
+		}
+		if a.audit != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			a.audit.Record(audit.Event{Actor: actor, Role: role, Action: r.Method, Path: r.URL.Path, Status: 0})
 		}
 		next(w, r)
 	}
+}
+
+func (a *API) resolvePrincipal(r *http.Request) (apiauth.Principal, bool) {
+	authType := strings.ToLower(strings.TrimSpace(a.cfg.API.AuthType))
+	got := bearerToken(r.Header.Get("Authorization"))
+	if got == "" {
+		got = r.URL.Query().Get("token")
+	}
+	if got != "" {
+		if authType == "token" && a.cfg.API.APIToken == "" && len(a.cfg.API.Tokens) == 0 {
+			return apiauth.Principal{}, false
+		}
+		return apiauth.ResolveToken(a.cfg.API, got)
+	}
+	if authType == "local" && a.sessions != nil {
+		id := apiauth.ReadSessionCookie(r)
+		return a.sessions.Get(id)
+	}
+	if authType == "token" && a.cfg.API.APIToken == "" && len(a.cfg.API.Tokens) == 0 {
+		return apiauth.Principal{}, false
+	}
+	return apiauth.Principal{}, false
 }
 
 func bearerToken(h string) string {
@@ -139,7 +187,13 @@ func tokenEqual(got, want string) bool {
 
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
@@ -291,6 +345,7 @@ func (a *API) handleZones(w http.ResponseWriter, r *http.Request) {
 			a.auth.UpsertZone(body.Name)
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{"name": config.NormalizeName(body.Name)})
+		a.srv.NotifySecondaries(body.Name)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -546,14 +601,16 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.settingsPayload())
 	case http.MethodPut, http.MethodPatch:
 		var body struct {
-			GeoDNS        *bool   `json:"geodns"`
-			RPZ           *bool   `json:"rpz_enabled"`
-			RateLimit     *bool   `json:"rate_limit"`
-			ECS           *bool   `json:"ecs_enabled"`
-			SplitHorizon  *bool   `json:"split_horizon"`
-			ResolverMode  *string `json:"resolver_mode"`
-			ForwardOnFail *bool   `json:"forward_on_fail"`
-			QueryLog      *bool   `json:"query_log_enabled"`
+			GeoDNS        *bool     `json:"geodns"`
+			RPZ           *bool     `json:"rpz_enabled"`
+			RateLimit     *bool     `json:"rate_limit"`
+			ECS           *bool     `json:"ecs_enabled"`
+			SplitHorizon  *bool     `json:"split_horizon"`
+			ResolverMode  *string   `json:"resolver_mode"`
+			ForwardOnFail *bool     `json:"forward_on_fail"`
+			QueryLog      *bool     `json:"query_log_enabled"`
+			AllowQuery    *[]string `json:"allow_query"`
+			DenyQuery     *[]string `json:"deny_query"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
@@ -590,11 +647,26 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			cur.QueryLog = *body.QueryLog
 		}
 		a.srv.ApplyRuntimeFlags(cur)
+		if body.AllowQuery != nil || body.DenyQuery != nil {
+			allow, deny := a.srv.QueryACL()
+			if body.AllowQuery != nil {
+				allow = *body.AllowQuery
+			}
+			if body.DenyQuery != nil {
+				deny = *body.DenyQuery
+			}
+			if err := a.srv.SetQueryACL(allow, deny); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
 		mode := cur.ResolverMode
-		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath("./data"), config.RuntimeSettings{
+		allow, deny := a.srv.QueryACL()
+		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), config.RuntimeSettings{
 			GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 			ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
 			ResolverMode: &mode, ForwardOnFail: &cur.ForwardOnFail, QueryLog: &cur.QueryLog,
+			AllowQuery: allow, DenyQuery: deny,
 		})
 		writeJSON(w, http.StatusOK, a.settingsPayload())
 	default:
@@ -604,28 +676,50 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) settingsPayload() map[string]any {
 	f := a.srv.RuntimeFlags()
+	allow, deny := a.srv.QueryACL()
 	return map[string]any{
-		"resolver_mode":     f.ResolverMode,
-		"forward_on_fail":   f.ForwardOnFail,
-		"forwarders":        a.cfg.Resolver.Forwarders,
-		"dnssec_mode":       a.cfg.Resolver.DNSSECMode,
-		"ecs_enabled":       f.ECS,
-		"rpz_enabled":       f.RPZ,
-		"geodns":            f.GeoDNS,
-		"split_horizon":     f.SplitHorizon,
-		"rate_limit":        f.RateLimit,
-		"query_log_enabled": f.QueryLog,
-		"udp_addr":          a.srv.UDPAddr(),
-		"geodns_db":         a.cfg.GeoDNS.DatabasePath,
-		"auth_type":         a.cfg.API.AuthType,
-		"auth_required":     a.cfg.API.AuthType == "token",
-		"auth_configured":   a.cfg.API.AuthType == "token" && a.cfg.API.APIToken != "",
-		"tls_min_version":   "1.3",
+		"resolver_mode":            f.ResolverMode,
+		"forward_on_fail":          f.ForwardOnFail,
+		"forwarders":               a.cfg.Resolver.Forwarders,
+		"dnssec_mode":              a.cfg.Resolver.DNSSECMode,
+		"ecs_enabled":              f.ECS,
+		"rpz_enabled":              f.RPZ,
+		"geodns":                   f.GeoDNS,
+		"split_horizon":            f.SplitHorizon,
+		"rate_limit":               f.RateLimit,
+		"query_log_enabled":        f.QueryLog,
+		"query_log_mask_ip":        a.cfg.Logging.QueryLogMaskIP,
+		"query_log_retention_days": a.cfg.Logging.QueryLogRetentionDays,
+		"allow_query":              allow,
+		"deny_query":               deny,
+		"transfer": map[string]any{
+			"allow_axfr":   a.cfg.Transfer.AllowAXFR,
+			"require_tsig": a.cfg.Transfer.RequireTSIG,
+			"notify":       a.cfg.Transfer.Notify,
+			"allow_from":   a.cfg.Transfer.AllowFrom,
+		},
+		"udp_addr":        a.srv.UDPAddr(),
+		"geodns_db":       a.cfg.GeoDNS.DatabasePath,
+		"auth_type":       a.cfg.API.AuthType,
+		"auth_required":   apiauth.AuthRequired(a.cfg.API.AuthType),
+		"auth_configured": a.authConfigured(),
+		"tls_min_version": "1.3",
 		"editable": []string{
 			"geodns", "rpz_enabled", "rate_limit", "ecs_enabled", "split_horizon",
-			"resolver_mode", "forward_on_fail", "query_log_enabled",
+			"resolver_mode", "forward_on_fail", "query_log_enabled", "allow_query", "deny_query",
 		},
-		"note": "Edit toggles / resolver mode, then Save. Persisted to data/runtime-settings.json. No restart required.",
+		"note": "Edit toggles, query ACL, and resolver mode, then Save. Persisted to data/runtime-settings.json. Empty allow_query = allow all. AXFR ACL and IP masking are TOML-only.",
+	}
+}
+
+func (a *API) authConfigured() bool {
+	switch strings.ToLower(strings.TrimSpace(a.cfg.API.AuthType)) {
+	case "token":
+		return a.cfg.API.APIToken != "" || len(a.cfg.API.Tokens) > 0
+	case "local":
+		return a.users != nil && a.users.Count() > 0
+	default:
+		return true
 	}
 }
 
@@ -661,7 +755,7 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "rpz sync already in progress", http.StatusConflict)
 			return
 		}
-		path := config.RPZPoliciesPath("./data")
+		path := config.RPZPoliciesPath(a.dataDir)
 		if err := config.SaveRPZPoliciesFile(path, config.RPZPoliciesFile{
 			Policies: pols, UpdateInterval: interval,
 		}); err != nil {
@@ -746,6 +840,18 @@ func normalizeRPZPolicies(in []config.RPZPolicyTOML) ([]config.RPZPolicyTOML, er
 		}
 		switch p.Action {
 		case "nxdomain", "nodata", "pass":
+			p.Target = ""
+		case "redirect":
+			p.Target = strings.TrimSpace(p.Target)
+			if net.ParseIP(p.Target) == nil {
+				return nil, errRPZ("redirect requires a valid IP target for " + p.Name)
+			}
+		case "cname":
+			p.Target = strings.TrimSpace(p.Target)
+			if p.Target == "" || net.ParseIP(p.Target) != nil {
+				return nil, errRPZ("cname requires a hostname target for " + p.Name)
+			}
+			p.Target = strings.TrimSuffix(strings.ToLower(p.Target), ".")
 		default:
 			return nil, errRPZ("unsupported action: " + p.Action)
 		}
@@ -770,7 +876,7 @@ func (a *API) startRPZReload(sync bool) error {
 	var policies []rpz.PolicyConfig
 	for _, p := range a.cfg.RPZ.Policies {
 		policies = append(policies, rpz.PolicyConfig{
-			Name: p.Name, Source: p.Source, Format: p.Format, Action: rpz.Action(p.Action),
+			Name: p.Name, Source: p.Source, Format: p.Format, Action: rpz.Action(p.Action), Target: p.Target,
 		})
 	}
 	run := func() {
@@ -893,6 +999,18 @@ func (a *API) handleAnalytics(w http.ResponseWriter, r *http.Request) {
 	}
 	names, rcodes := col.Snapshot(25)
 	writeJSON(w, http.StatusOK, map[string]any{"top_names": names, "rcodes": rcodes})
+}
+
+func (a *API) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if a.audit == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": a.audit.Recent(200)})
 }
 
 func (a *API) handleAnomaly(w http.ResponseWriter, r *http.Request) {

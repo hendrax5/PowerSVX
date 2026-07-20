@@ -1,10 +1,26 @@
 # PowerSVX production notes (Raft clustering deferred)
 
-## Auth
-- Set `auth_type = "token"` and `api_token` (or env `API_TOKEN`).
-- Health (`/api/v1/health`) stays open; all other REST routes need `Authorization: Bearer <token>`.
-- SSE may use `?token=` for EventSource.
-- Process refuses to start if `auth_type=token` and token is empty.
+## Query ACL
+- `[acl] allow_query` — CIDRs/IPs allowed to query DNS. **Empty = allow all.**
+- `[acl] deny_query` — always refused (wins over allow).
+- Editable in UI Settings (no restart). Denied clients get REFUSED.
+- Separate from `[transfer] allow_from` (AXFR only) and rate-limit `whitelist` (rate-limit bypass only).
+
+## Auth / RBAC
+- Modes: `auth_type = "none"` | `"token"` | `"local"` (hybrid UI login + API tokens).
+- **Local (recommended for UI):** `auth_type = "local"`. Bootstrap first admin with env `ADMIN_PASSWORD` (creates `admin` in `data/users.json`). Or set `[[api.users]]` with bcrypt `password_hash`.
+- UI: `/login` (username/password only). Session cookie `powersvx_session` (HttpOnly, 12h).
+- **API automation:** scripts still use `Authorization: Bearer <token>` via `api_token` / `[[api.tokens]]` (not via the login form).
+- Roles: `admin` (full), `operator` (zones/RPZ ok; no settings write / backup restore / user mgmt), `readonly` (GET only).
+- Health (`/api/v1/health`) stays open. Login rate-limited (~5/min/IP).
+- `GET /api/v1/audit` returns recent control-plane audit events.
+- Process refuses to start if `token` with no tokens, or `local` with no users and no `ADMIN_PASSWORD`.
+- SSO/OIDC deferred.
+
+## Zone transfer
+- `[transfer] allow_axfr = true` enables AXFR (IXFR falls back to full AXFR).
+- `require_tsig = true` (default) needs a valid TSIG on the transfer.
+- `allow_from` CIDR ACL; `notify` lists secondaries for DNS NOTIFY after zone create.
 
 ## TLS (DoT / DoH / DoH3 / DoQ)
 - Minimum TLS 1.3 for encrypted DNS listeners.
@@ -19,8 +35,26 @@
 - Enable via zone meta `dnssec_enabled` (DB) or `POST /api/v1/zones/{name}/dnssec`.
 - Keys stored under `data/dnssec/<zone>/` (KSK+ZSK, ECDSAP256SHA256).
 - Answers signed when client sets DO; DNSKEY queries return keys + RRSIG.
+- NXDOMAIN includes a simplified NSEC + RRSIG when DO is set.
 - Publish the returned **DS** at the parent / registrar.
-- NSEC/NSEC3 authenticated denial is not included yet.
+- Full NSEC3 / key rollover / HSM still deferred.
 
 ## Query logs
 - Requires PostgreSQL + `query_log_enabled = true`.
+- `query_log_mask_ip = true` stores /24 (IPv4) or /48 (IPv6).
+- `query_log_retention_days` runs an hourly purge job.
+
+## Reload
+- `SIGHUP` / `systemctl reload powersvx` reloads `runtime-settings.json` flags, query ACL, and plugins.
+- Data directory: `--data-dir` (default `./data`; Linux package uses `/var/lib/powersvx`).
+
+## Linux deploy
+- See `deploy/linux/README.md` — systemd unit, `configs/powersvx.linux.toml`, `install.sh`, Docker override.
+
+## Deferred (enterprise)
+- Raft HA / multi-node failover
+- Redis L3 shared cache
+- Full OIDC/SAML SSO
+- Multi-tenancy
+- HSM-backed DNSSEC keys
+- Full NSEC3 + automated key rollover

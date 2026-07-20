@@ -11,14 +11,25 @@ func TestLookupExactAndWildcard(t *testing.T) {
 		"bad.example.com.": ActionNXDOMAIN,
 		"*.ads.test.":      ActionNXDOMAIN,
 	})
-	if a, ok := e.Lookup("bad.example.com"); !ok || a != ActionNXDOMAIN {
-		t.Fatalf("exact miss: %v %v", a, ok)
+	if h, ok := e.Lookup("bad.example.com"); !ok || h.Action != ActionNXDOMAIN {
+		t.Fatalf("exact miss: %v %v", h, ok)
 	}
-	if a, ok := e.Lookup("tracker.ads.test"); !ok || a != ActionNXDOMAIN {
-		t.Fatalf("wildcard miss: %v %v", a, ok)
+	if h, ok := e.Lookup("tracker.ads.test"); !ok || h.Action != ActionNXDOMAIN {
+		t.Fatalf("wildcard miss: %v %v", h, ok)
 	}
 	if _, ok := e.Lookup("good.example.com"); ok {
 		t.Fatal("should not match")
+	}
+}
+
+func TestLookupPassContinues(t *testing.T) {
+	e := New(true)
+	e.Replace(map[string]Action{
+		"allow.example.": ActionPass,
+	})
+	h, ok := e.Lookup("allow.example")
+	if !ok || h.Action != ActionPass {
+		t.Fatalf("pass: %+v %v", h, ok)
 	}
 }
 

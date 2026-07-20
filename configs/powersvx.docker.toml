@@ -8,6 +8,8 @@ dot_port = 853
 doh_port = 443
 doq_port = 784
 workers = 0
+# Linux TPROXY: set true + host network + CAP_NET_ADMIN (see README). Not needed for DNAT/dstnat.
+tproxy = false
 
 [server.tls]
 enabled = true
@@ -74,12 +76,33 @@ prometheus_bind = "0.0.0.0:9100"
 [tsig]
 enabled = false
 
+[acl]
+# Empty allow_query = any client may query. Non-empty = only listed CIDRs/IPs.
+# deny_query always wins over allow.
+# allow_query = ["10.0.0.0/8", "192.168.0.0/16", "127.0.0.1", "::1"]
+# deny_query = []
+
+[transfer]
+allow_axfr = false
+require_tsig = true
+# notify = ["192.0.2.10:53"]
+# allow_from = ["10.0.0.0/8"]
+
 [api]
 rest_enabled = true
 rest_bind = "0.0.0.0:5380"
-# Production: require Bearer token (set API_TOKEN in the environment).
-auth_type = "token"
+# Local login (UI) + optional Bearer tokens for automation.
+auth_type = "local"
 api_token = "${API_TOKEN}"
+# Bootstrap: set ADMIN_PASSWORD on first start if no users exist.
+# [[api.users]]
+# name = "admin"
+# password_hash = "$2a$10$..."
+# role = "admin"
+# [[api.tokens]]
+# name = "ci"
+# token = "${API_TOKEN}"
+# role = "operator"
 
 [logging]
 level = "info"
@@ -87,3 +110,4 @@ format = "json"
 query_log_enabled = true
 query_log_destination = "postgresql"
 query_log_retention_days = 30
+query_log_mask_ip = true

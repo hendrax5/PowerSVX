@@ -1,0 +1,122 @@
+# PowerSVX — Linux bare-metal / VM production
+#
+# Paths assume:
+#   binary:  /usr/local/bin/powersvx
+#   config:  /etc/powersvx/powersvx.toml
+#   env:     /etc/powersvx/powersvx.env
+#   data:    /var/lib/powersvx
+#   web UI:  /usr/share/PowerSVX/web
+#   certs:   /etc/powersvx/certs
+#
+# Install: see deploy/linux/README.md
+
+[server]
+bind_address = "0.0.0.0"
+udp_port = 53
+tcp_port = 53
+dot_port = 853
+doh_port = 443
+doq_port = 784
+workers = 0
+# Set true only with CAP_NET_ADMIN + nftables/iptables TPROXY (host network).
+tproxy = false
+
+[server.tls]
+enabled = true
+cert_file = "/etc/powersvx/certs/fullchain.pem"
+key_file = "/etc/powersvx/certs/privkey.pem"
+
+[database]
+enabled = true
+type = "postgres"
+host = "127.0.0.1"
+port = 5432
+database = "PowerSVX"
+user = "PowerSVX"
+password = "${PG_PASSWORD}"
+max_connections = 40
+
+[cache]
+type = "badger"
+path = "/var/lib/powersvx/cache"
+max_size_mb = 1024
+ttl_seconds = 300
+negative_ttl = 60
+
+[resolver]
+mode = "forward"
+forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
+forward_on_fail = true
+dnssec_mode = "opportunistic"
+edns_buffer_size = 1232
+timeout_ms = 3000
+ecs_enabled = true
+ecs_prefix_v4 = 24
+ecs_prefix_v6 = 56
+
+[rate_limit]
+enabled = true
+default_qps = 200
+default_burst = 400
+block_duration = 300
+whitelist = ["127.0.0.1/32", "::1/128"]
+
+[rpz]
+enabled = true
+update_interval = 3600
+policies = [
+  { name = "sample", source = "/etc/powersvx/sample-blocklist.txt", format = "hosts", action = "nxdomain" }
+]
+
+[geodns]
+enabled = false
+database_path = "/var/lib/powersvx/GeoLite2-City.mmdb"
+default_tag = "default"
+
+[split_horizon]
+enabled = false
+# views = [
+#   { name = "internal", networks = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] }
+# ]
+
+[metrics]
+prometheus_enabled = true
+# Bind to localhost in production and scrape via SSH tunnel / local Prometheus.
+prometheus_bind = "127.0.0.1:9100"
+
+[tsig]
+enabled = false
+
+[acl]
+# Empty allow_query = allow all. Restrict before exposing port 53 publicly.
+# allow_query = ["10.0.0.0/8", "192.168.0.0/16", "127.0.0.1", "::1"]
+# deny_query = []
+
+[transfer]
+allow_axfr = false
+require_tsig = true
+# notify = ["192.0.2.10:53"]
+# allow_from = ["10.0.0.0/8"]
+
+[api]
+rest_enabled = true
+# Prefer localhost + reverse proxy (nginx/Caddy) with TLS in production.
+rest_bind = "127.0.0.1:5380"
+auth_type = "token"
+api_token = "${API_TOKEN}"
+# [[api.tokens]]
+# name = "readonly"
+# token = "${API_TOKEN_RO}"
+# role = "readonly"
+
+[logging]
+level = "info"
+format = "json"
+query_log_enabled = true
+query_log_destination = "postgresql"
+query_log_retention_days = 30
+query_log_mask_ip = true
+
+[plugins]
+enabled = false
+dir = "/var/lib/powersvx/plugins"

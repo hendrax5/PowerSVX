@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/powersvx/powersvx/internal/bloom"
 	"github.com/powersvx/powersvx/internal/config"
 )
 
@@ -21,12 +22,15 @@ const (
 	ActionNXDOMAIN Action = "nxdomain"
 	ActionNODATA   Action = "nodata"
 	ActionPass     Action = "pass"
+	ActionRedirect Action = "redirect" // sinkhole A/AAAA to Target (IP)
+	ActionCNAME    Action = "cname"    // CNAME to Target (hostname)
 )
 
 // Engine is RPZ / blocklist with label-reversed radix + optional Badger snapshot.
 type Engine struct {
 	mu         sync.RWMutex
 	tree       *trie
+	bloom      *bloom.Filter
 	store      *Store
 	enabled    bool
 	count      atomic.Int64
@@ -154,27 +158,58 @@ func (e *Engine) Hits() uint64 {
 	return e.hits.Load()
 }
 
-// Lookup returns action and whether domain matched a policy.
-func (e *Engine) Lookup(name string) (Action, bool) {
+// Lookup returns a hit when the domain matched a policy.
+func (e *Engine) Lookup(name string) (Hit, bool) {
 	if !e.Enabled() {
-		return ActionPass, false
+		return Hit{Action: ActionPass}, false
 	}
 	e.mu.RLock()
 	tree := e.tree
+	bf := e.bloom
 	e.mu.RUnlock()
 	if tree == nil {
-		return ActionPass, false
+		return Hit{Action: ActionPass}, false
 	}
-	a, ok := tree.lookup(name)
+	norm := config.NormalizeName(name)
+	if bf != nil && !bloomMaybe(bf, norm) {
+		return Hit{Action: ActionPass}, false
+	}
+	h, ok := tree.lookup(name)
 	if ok {
 		e.hits.Add(1)
 	}
-	return a, ok
+	return h, ok
+}
+
+func bloomMaybe(bf *bloom.Filter, name string) bool {
+	if bf.MightContain(name) {
+		return true
+	}
+	labels := strings.Split(strings.TrimSuffix(name, "."), ".")
+	for i := 0; i < len(labels); i++ {
+		if bf.MightContain("*." + strings.Join(labels[i:], ".") + ".") {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) replaceTree(t *trie, fromDisk bool) {
+	var bf *bloom.Filter
+	if t != nil && t.count > 0 {
+		bf = bloom.New(t.count*2, 0.01)
+		t.walk(func(name string, _ Hit) {
+			n := config.NormalizeName(name)
+			bf.Add(n)
+			labels := strings.Split(strings.TrimSuffix(n, "."), ".")
+			for i := 1; i < len(labels); i++ {
+				bf.Add("*." + strings.Join(labels[i:], ".") + ".")
+			}
+		})
+	}
 	e.mu.Lock()
 	e.tree = t
+	e.bloom = bf
 	e.mu.Unlock()
 	if t == nil {
 		e.count.Store(0)
@@ -271,20 +306,21 @@ func LoadHostsURL(url string, action Action, timeout time.Duration) (map[string]
 
 func parseHosts(r io.Reader, action Action) (map[string]Action, error) {
 	t := newTrie()
-	if err := streamHosts(r, action, t); err != nil {
+	if err := streamHosts(r, Hit{Action: action}, t); err != nil {
 		return nil, err
 	}
 	out := make(map[string]Action, t.count)
-	t.walk(func(name string, a Action) {
-		out[name] = a
+	t.walk(func(name string, h Hit) {
+		out[name] = h.Action
 	})
 	return out, nil
 }
 
-func streamHosts(r io.Reader, action Action, t *trie) error {
-	if action == "" {
-		action = ActionNXDOMAIN
+func streamHosts(r io.Reader, hit Hit, t *trie) error {
+	if hit.Action == "" {
+		hit.Action = ActionNXDOMAIN
 	}
+	hit.Target = strings.TrimSpace(hit.Target)
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
@@ -310,7 +346,7 @@ func streamHosts(r io.Reader, action Action, t *trie) error {
 		if !strings.Contains(domain, ".") && domain != "*" {
 			continue
 		}
-		t.insert(config.NormalizeName(domain), action)
+		t.insertHit(config.NormalizeName(domain), hit)
 	}
 	return sc.Err()
 }
@@ -321,6 +357,8 @@ type PolicyConfig struct {
 	Source string // file path or URL
 	Format string // hosts
 	Action Action
+	// Target is required for redirect (IP) and cname (hostname).
+	Target string
 }
 
 // LoadPolicies merges all policies into the radix and snapshots to Badger when configured.
@@ -331,12 +369,13 @@ func (e *Engine) LoadPolicies(policies []PolicyConfig, timeout time.Duration) (i
 		if action == "" {
 			action = ActionNXDOMAIN
 		}
+		hit := Hit{Action: action, Target: strings.TrimSpace(p.Target)}
 		src := p.Source
 		var err error
 		if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
-			err = streamHostsURL(src, action, timeout, merged)
+			err = streamHostsURL(src, hit, timeout, merged)
 		} else {
-			err = streamHostsFile(src, action, merged)
+			err = streamHostsFile(src, hit, merged)
 		}
 		if err != nil {
 			return 0, fmt.Errorf("policy %s: %w", p.Name, err)
@@ -347,16 +386,16 @@ func (e *Engine) LoadPolicies(policies []PolicyConfig, timeout time.Duration) (i
 	return merged.count, nil
 }
 
-func streamHostsFile(path string, action Action, t *trie) error {
+func streamHostsFile(path string, hit Hit, t *trie) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return streamHosts(f, action, t)
+	return streamHosts(f, hit, t)
 }
 
-func streamHostsURL(url string, action Action, timeout time.Duration, t *trie) error {
+func streamHostsURL(url string, hit Hit, timeout time.Duration, t *trie) error {
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -366,5 +405,5 @@ func streamHostsURL(url string, action Action, timeout time.Duration, t *trie) e
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("http %d", resp.StatusCode)
 	}
-	return streamHosts(resp.Body, action, t)
+	return streamHosts(resp.Body, hit, t)
 }
