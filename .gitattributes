@@ -1,0 +1,4 @@
+
+
+deploy/docker/*.sh text eol=lf
+deploy/linux/*.sh text eol=lf

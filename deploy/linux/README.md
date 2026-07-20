@@ -139,7 +139,31 @@ Conflict with `systemd-resolved` on port 53:
 sudo mkdir -p /etc/systemd/resolved.conf.d
 echo -e '[Resolve]\nDNSStubListener=no' | sudo tee /etc/systemd/resolved.conf.d/no-stub.conf
 sudo systemctl restart systemd-resolved
-# or disable stub and point resolv.conf carefully
+# confirm host :53 is free
+ss -ulnp | grep ':53' || echo 'udp/53 free'
+ss -tlnp | grep ':53' || echo 'tcp/53 free'
+```
+
+### PowerSVX / Grafana crash-loop
+
+```bash
+docker logs powersvx --tail 80
+docker logs powersvx-grafana --tail 40
+```
+
+Common causes:
+- **Empty `./certs` mount** hides image TLS certs — do not mount `./certs` until you have real `fullchain.pem` + `privkey.pem`
+- **Host port 53 busy** (`systemd-resolved`) — free it with the steps above
+- **Grafana bind-mount permissions** — compose now uses named volume `grafana-data`
+
+Recreate cleanly:
+
+```bash
+git pull origin main
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.linux.yml up -d --build --force-recreate
+docker ps
+ss -ulnp | grep ':53'
+dig @127.0.0.1 example.com
 ```
 
 ### Build fails on `apk add` / Alpine CDN

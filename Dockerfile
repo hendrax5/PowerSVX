@@ -42,10 +42,12 @@ RUN set -eux; \
 COPY --from=builder /build/powersvx /usr/local/bin/powersvx
 COPY --from=web-builder /web/dist /usr/share/PowerSVX/web
 COPY --from=builder /build/certs /etc/PowerSVX/certs
-RUN chmod +x /usr/local/bin/powersvx \
+COPY deploy/docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /usr/local/bin/powersvx /entrypoint.sh \
     && mkdir -p /data/cache /var/log/PowerSVX \
     && chown -R powersvx:powersvx /data /var/log/PowerSVX /etc/PowerSVX /usr/share/PowerSVX
-USER powersvx
+# Entrypoint ensures /data exists; process runs as root for privileged DNS ports.
+USER root
 EXPOSE 53/udp 53/tcp 853/tcp 443/tcp 784/udp 5380/tcp 9100/tcp
-ENTRYPOINT ["/usr/local/bin/powersvx"]
+ENTRYPOINT ["/entrypoint.sh", "/usr/local/bin/powersvx"]
 CMD ["--config", "/etc/PowerSVX/powersvx.toml", "--data-dir", "/data"]

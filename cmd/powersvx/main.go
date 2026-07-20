@@ -204,10 +204,13 @@ func main() {
 	if cfg.TLSEnabled() {
 		tlsCfg, err = tlsutil.LoadServerTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
 		if err != nil {
-			log.Error("tls load failed", "err", err)
-			os.Exit(1)
+			// Do not abort DNS UDP/TCP — empty ./certs bind-mounts are a common deploy footgun.
+			log.Error("tls load failed; continuing without DoT/DoH/DoQ", "err", err,
+				"cert", cfg.Server.TLS.CertFile, "key", cfg.Server.TLS.KeyFile)
+			tlsCfg = nil
+		} else {
+			log.Info("TLS enabled", "cert", cfg.Server.TLS.CertFile)
 		}
-		log.Info("TLS enabled", "cert", cfg.Server.TLS.CertFile)
 	}
 
 	if cfg.Metrics.PrometheusEnabled {

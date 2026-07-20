@@ -47,7 +47,7 @@ services:
       - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./configs/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
     ports:
-      - "0.0.0.0:9090:9090"
+      - "0.0.0.0:9091:9090"
     depends_on:
       - powersvx
     restart: unless-stopped
@@ -61,7 +61,7 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - ./configs/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./data/grafana:/var/lib/grafana
+      - grafana-data:/var/lib/grafana
     ports:
       - "0.0.0.0:3000:3000"
     depends_on:
@@ -90,3 +90,4 @@ services:
 
 volumes:
   powersvx-cache:
+  grafana-data:
