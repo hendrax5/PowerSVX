@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { NavLink, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import {
   Bar,
@@ -147,6 +147,8 @@ function Dashboard() {
         <Stat label="RPZ entries" value={s.rpz_entries} sub={`blocked ${s.rate_limited}`} />
       </div>
 
+      <LiveErrorLog />
+
       <section className="rounded-lg border border-[var(--border)] bg-[var(--bg-panel)]/50 p-4 h-64">
         <h2 className="text-sm text-[var(--muted)] mb-3">Traffic snapshot</h2>
         <ResponsiveContainer width="100%" height="85%">
@@ -182,6 +184,135 @@ function Dashboard() {
       </section>
     </div>
   )
+}
+
+function LiveErrorLog() {
+  const [events, setEvents] = useState([])
+  const [live, setLive] = useState(false)
+  const [paused, setPaused] = useState(false)
+  const pausedRef = useRef(false)
+  pausedRef.current = paused
+
+  useEffect(() => {
+    let es
+    let alive = true
+    let reconnectTimer
+    api
+      .events()
+      .then((d) => {
+        if (alive && Array.isArray(d.events)) setEvents(d.events.slice().reverse())
+      })
+      .catch(() => {})
+
+    const connect = () => {
+      es = new EventSource(api.eventsStreamURL())
+      es.addEventListener('log', (msg) => {
+        if (pausedRef.current) return
+        try {
+          const ev = JSON.parse(msg.data)
+          setEvents((prev) => {
+            if (prev.some((p) => p.id === ev.id)) return prev
+            return [ev, ...prev].slice(0, 100)
+          })
+        } catch {
+          /* ignore */
+        }
+      })
+      es.onopen = () => setLive(true)
+      es.onerror = () => {
+        setLive(false)
+        es.close()
+        reconnectTimer = setTimeout(() => {
+          if (alive) connect()
+        }, 3000)
+      }
+    }
+    connect()
+    return () => {
+      alive = false
+      clearTimeout(reconnectTimer)
+      if (es) es.close()
+    }
+  }, [])
+
+  return (
+    <section className="rounded-lg border border-[var(--border)] bg-[var(--bg-panel)]/50 p-4">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <h2 className="text-sm font-medium">Live errors</h2>
+          <p className="text-xs text-[var(--muted)] mt-0.5">
+            Warnings & errors only — not per-query traffic
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            className={`text-xs px-2 py-1 rounded border ${
+              live
+                ? 'border-[var(--accent-dim)] text-[var(--accent)]'
+                : 'border-[var(--border)] text-[var(--muted)]'
+            }`}
+          >
+            {live ? 'live' : 'reconnecting'}
+          </span>
+          <button
+            type="button"
+            className="text-xs px-2 py-1 rounded border border-[var(--border)] text-[var(--muted)] hover:text-[var(--text)]"
+            onClick={() => setPaused((p) => !p)}
+          >
+            {paused ? 'Resume' : 'Pause'}
+          </button>
+          <button
+            type="button"
+            className="text-xs px-2 py-1 rounded border border-[var(--border)] text-[var(--muted)] hover:text-[var(--text)]"
+            onClick={() => setEvents([])}
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+      <div className="max-h-64 overflow-auto space-y-1.5 mono text-xs">
+        {events.length === 0 ? (
+          <p className="text-[var(--muted)] font-sans">No errors yet. Healthy.</p>
+        ) : (
+          events.map((e) => (
+            <div
+              key={e.id}
+              className={`rounded border px-2.5 py-1.5 ${
+                e.level === 'error'
+                  ? 'border-[var(--danger)]/40 bg-[var(--danger)]/10'
+                  : 'border-[var(--warn)]/30 bg-[var(--warn)]/5'
+              }`}
+            >
+              <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[var(--muted)]">
+                <span>{formatEventTime(e.time)}</span>
+                <span className={e.level === 'error' ? 'text-[var(--danger)]' : 'text-[var(--warn)]'}>
+                  {e.level}
+                </span>
+                <span className="text-[var(--accent)]">{e.kind}</span>
+              </div>
+              <div className="text-[var(--text)] mt-0.5">{e.message}</div>
+              {e.attrs && Object.keys(e.attrs).length ? (
+                <div className="text-[var(--muted)] mt-0.5 truncate">
+                  {Object.entries(e.attrs)
+                    .filter(([k]) => k !== 'kind')
+                    .map(([k, v]) => `${k}=${v}`)
+                    .join(' · ')}
+                </div>
+              ) : null}
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  )
+}
+
+function formatEventTime(t) {
+  try {
+    return new Date(t).toLocaleTimeString()
+  } catch {
+    return t
+  }
 }
 
 function Zones() {

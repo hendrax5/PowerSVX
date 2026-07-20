@@ -14,6 +14,7 @@ import (
 	"github.com/powersvx/powersvx/internal/authoritative"
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
+	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/server"
 )
 
@@ -79,5 +80,35 @@ func TestZonesCRUDAndAuth(t *testing.T) {
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("health: %d", rr.Code)
+	}
+}
+
+func TestEventsRecent(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.API.RESTEnabled = true
+	cfg.Resolver.Mode = "forward"
+	auth := authoritative.NewStore()
+	tier := cache.NewTier(cache.NewL1(100), nil, time.Minute, time.Minute)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth}, log)
+	bus := eventlog.New(10)
+	bus.Emit("warn", "test", "hello", map[string]string{"k": "v"})
+	a := api.New(cfg, srv, nil, tier, auth, log)
+	a.SetEvents(bus)
+	h := a.Handler()
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/events", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code %d", rr.Code)
+	}
+	var body struct {
+		Events []map[string]any `json:"events"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Events) != 1 || body.Events[0]["message"] != "hello" {
+		t.Fatalf("%s", rr.Body.String())
 	}
 }

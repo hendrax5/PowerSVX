@@ -16,6 +16,7 @@ import (
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/database"
+	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/server"
 )
 
@@ -27,6 +28,7 @@ type API struct {
 	db       *database.DB
 	cache    *cache.Tier
 	auth     *authoritative.Store
+	events   *eventlog.Bus
 	log      *slog.Logger
 	http     *http.Server
 	start    time.Time
@@ -40,6 +42,7 @@ func New(cfg *config.Config, srv *server.Server, db *database.DB, tier *cache.Ti
 
 func (a *API) SetWebFS(fsys fs.FS) { a.webFS = fsys }
 func (a *API) SetReloadZones(fn func() error) { a.reloadFn = fn }
+func (a *API) SetEvents(bus *eventlog.Bus) { a.events = bus }
 
 func (a *API) Start() error {
 	if !a.cfg.API.RESTEnabled {
@@ -67,6 +70,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/settings", a.withAuth(a.handleSettings))
 	mux.HandleFunc("/api/v1/rpz", a.withAuth(a.handleRPZ))
 	mux.HandleFunc("/api/v1/tools/lookup", a.withAuth(a.handleLookup))
+	mux.HandleFunc("/api/v1/events", a.withAuth(a.handleEvents))
+	mux.HandleFunc("/api/v1/events/stream", a.withAuth(a.handleEventStream))
 	if a.webFS != nil {
 		mux.Handle("/", a.spaHandler())
 	}
@@ -410,6 +415,79 @@ func (a *API) handleLookup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"rcode": dns.RcodeToString[resp.Rcode], "answers": answers, "ad": resp.AuthenticatedData,
 	})
+}
+
+func (a *API) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	limit := 100
+	if a.events == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []eventlog.Event{}})
+		return
+	}
+	evs := a.events.Recent(limit)
+	if evs == nil {
+		evs = []eventlog.Event{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": evs})
+}
+
+func (a *API) handleEventStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok || a.events == nil {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	ctx := r.Context()
+	ch := a.events.Subscribe(ctx, 64)
+	// seed with recent so UI isn't empty on connect
+	for _, ev := range a.events.Recent(50) {
+		if err := writeSSE(w, ev); err != nil {
+			return
+		}
+	}
+	flusher.Flush()
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, _ = w.Write([]byte(": ping\n\n"))
+			flusher.Flush()
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
+			if err := writeSSE(w, ev); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func writeSSE(w http.ResponseWriter, ev eventlog.Event) error {
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write([]byte("event: log\ndata: " + string(b) + "\n\n"))
+	return err
 }
 
 func (a *API) reloadZones() error {

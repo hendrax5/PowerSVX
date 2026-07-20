@@ -15,6 +15,7 @@ import (
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/dnssec"
 	"github.com/powersvx/powersvx/internal/ecs"
+	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
 	"github.com/powersvx/powersvx/internal/metrics"
 	"github.com/powersvx/powersvx/internal/ratelimit"
@@ -38,6 +39,7 @@ type Server struct {
 	views   *view.Matcher
 	geo     *geo.Resolver
 	tlsCfg  *tls.Config
+	events  *eventlog.Bus
 	log     *slog.Logger
 	udp     *dns.Server
 	tcp     *dns.Server
@@ -65,6 +67,7 @@ type Deps struct {
 	Views   *view.Matcher
 	Geo     *geo.Resolver
 	TLS     *tls.Config
+	Events  *eventlog.Bus
 }
 
 func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
@@ -83,6 +86,7 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 		views:   d.Views,
 		geo:     d.Geo,
 		tlsCfg:  d.TLS,
+		events:  d.Events,
 		log:     log,
 		started: time.Now(),
 	}
@@ -107,6 +111,10 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		s.blocked.Add(1)
 		metrics.RateLimited.Inc()
 		metrics.QueriesTotal.WithLabelValues(proto, "ratelimited").Inc()
+		if s.events != nil {
+			s.events.EmitSampled("rl:"+clientIP, 30*time.Second, "warn", "rate_limit",
+				"client rate limited", map[string]string{"client": clientIP, "proto": proto})
+		}
 		m := new(dns.Msg)
 		m.SetRcode(req, dns.RcodeRefused)
 		_ = w.WriteMsg(m)
@@ -199,7 +207,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 
 	resp, err := s.res.ResolveWithECS(ctx, req, sub)
 	if err != nil {
-		s.log.Warn("resolve failed", "name", qname, "err", err)
+		s.log.Warn("resolve failed", "kind", "resolve", "name", qname, "err", err)
 		m := new(dns.Msg)
 		m.SetReply(req)
 		m.RecursionAvailable = true
@@ -215,7 +223,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 
 	if s.dnssec != nil && s.dnssec.Enabled() {
 		if servfail, res := s.dnssec.Apply(resp); servfail {
-			s.log.Warn("dnssec bogus", "name", qname, "reason", res.Reason)
+			s.log.Warn("dnssec bogus", "kind", "dnssec", "name", qname, "reason", res.Reason)
 			m := new(dns.Msg)
 			m.SetReply(req)
 			m.RecursionAvailable = true

@@ -17,6 +17,7 @@ import (
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/database"
 	"github.com/powersvx/powersvx/internal/dnssec"
+	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
 	"github.com/powersvx/powersvx/internal/metrics"
 	"github.com/powersvx/powersvx/internal/ratelimit"
@@ -32,7 +33,8 @@ func main() {
 	cfgPath := flag.String("config", "configs/powersvx.toml", "path to TOML config")
 	flag.Parse()
 
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	bus := eventlog.New(200)
+	log := slog.New(eventlog.NewHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}), bus))
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -156,10 +158,11 @@ func main() {
 	dnsSrv := server.New(cfg, server.Deps{
 		Cache: tier, Res: res, Auth: auth, DNSSEC: sec,
 		Limiter: limiter, RPZ: rpzEng, TSIG: tsigStore,
-		Views: views, Geo: geoRes, TLS: tlsCfg,
+		Views: views, Geo: geoRes, TLS: tlsCfg, Events: bus,
 	}, log)
 
 	rest := api.New(cfg, dnsSrv, db, tier, auth, log)
+	rest.SetEvents(bus)
 	webDirs := []string{"./web/dist", "/usr/share/PowerSVX/web"}
 	for _, dir := range webDirs {
 		if webFS, err := api.LoadWebDir(dir); err == nil {

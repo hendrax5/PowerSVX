@@ -52,4 +52,10 @@ export const api = {
   rpz: () => request('/api/v1/rpz'),
   lookup: (name, type) =>
     request('/api/v1/tools/lookup', { method: 'POST', body: JSON.stringify({ name, type }) }),
+  events: () => request('/api/v1/events'),
+  eventsStreamURL() {
+    const token = getToken()
+    const q = token ? `?token=${encodeURIComponent(token)}` : ''
+    return `/api/v1/events/stream${q}`
+  },
 }

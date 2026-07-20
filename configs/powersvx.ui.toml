@@ -1,0 +1,63 @@
+# Local UI test — avoids Windows/port conflicts on 5353
+[server]
+bind_address = "127.0.0.1"
+udp_port = 15353
+tcp_port = 15353
+dot_port = 18853
+doh_port = 18443
+doq_port = 1784
+workers = 0
+
+[server.tls]
+enabled = false
+
+[database]
+enabled = false
+
+[cache]
+path = "./data/cache"
+max_size_mb = 128
+ttl_seconds = 300
+negative_ttl = 60
+
+[resolver]
+mode = "forward"
+forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
+dnssec_mode = "off"
+ecs_enabled = true
+timeout_ms = 3000
+
+[rate_limit]
+enabled = true
+default_qps = 100
+default_burst = 200
+block_duration = 300
+whitelist = ["127.0.0.1/32", "::1/128"]
+
+[rpz]
+enabled = true
+policies = [
+  { name = "sample", source = "./configs/sample-blocklist.txt", format = "hosts", action = "nxdomain" }
+]
+
+[geodns]
+enabled = true
+database_path = "./data/GeoLite2-City.mmdb"
+default_tag = "default"
+
+[split_horizon]
+enabled = false
+
+[metrics]
+prometheus_enabled = false
+
+[tsig]
+enabled = false
+
+[api]
+rest_enabled = true
+rest_bind = "127.0.0.1:5380"
+
+[logging]
+level = "info"
+format = "json"

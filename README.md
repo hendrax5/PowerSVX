@@ -9,9 +9,9 @@ Modern DNS server in Go — **Phase 1–4** (foundation → encrypted DNS → se
 | 1 | UDP/TCP, forward/recursive, L1+L2 cache, PostgreSQL zones |
 | 2 | DoT, DoH, **DoQ**, DNSSEC opportunistic/validate, TSIG key store |
 | 3 | RPZ, rate limit, **ECS**, **GeoDNS**, **Split Horizon**, Prometheus |
-| 4 | REST API (zones/records/settings/lookup), React Web UI on `:5380` |
+| 4 | REST API (zones/records/settings/lookup), React Web UI on `:5380`, **live error log** (SSE) |
 
-Deferred: Raft/gRPC cluster, DoH3, ACME, full 20M RPZ radix, WebSocket live logs.
+Deferred: Raft/gRPC cluster, DoH3, ACME, full 20M RPZ radix, live query stream (intentionally omitted — use metrics instead).
 
 ## Quick start
 
