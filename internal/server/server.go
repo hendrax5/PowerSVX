@@ -12,9 +12,11 @@ import (
 	"github.com/miekg/dns"
 	"github.com/powersvx/powersvx/internal/acme"
 	"github.com/powersvx/powersvx/internal/analytics"
+	"github.com/powersvx/powersvx/internal/anomaly"
 	"github.com/powersvx/powersvx/internal/authoritative"
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
+	"github.com/powersvx/powersvx/internal/database"
 	"github.com/powersvx/powersvx/internal/dnssec"
 	"github.com/powersvx/powersvx/internal/ecs"
 	"github.com/powersvx/powersvx/internal/eventlog"
@@ -47,7 +49,9 @@ type Server struct {
 	events  *eventlog.Bus
 	acme    *acme.ChallengeStore
 	stats   *analytics.Collector
+	anomaly *anomaly.Detector
 	plugins *plugin.Registry
+	qlog    *database.QueryLogger
 	log     *slog.Logger
 	udp     *dns.Server
 	tcp     *dns.Server
@@ -80,7 +84,9 @@ type Deps struct {
 	Events  *eventlog.Bus
 	ACME    *acme.ChallengeStore
 	Stats   *analytics.Collector
+	Anomaly *anomaly.Detector
 	Plugins *plugin.Registry
+	QLog    *database.QueryLogger
 }
 
 func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
@@ -102,7 +108,9 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 		events:  d.Events,
 		acme:    d.ACME,
 		stats:   d.Stats,
+		anomaly: d.Anomaly,
 		plugins: d.Plugins,
+		qlog:    d.QLog,
 		log:     log,
 		started: time.Now(),
 	}
@@ -126,6 +134,22 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 
+	logQuery := func(qname, qtype string, rcode int, cached bool) {
+		if s.qlog == nil || s.cfg == nil || !s.cfg.Logging.QueryLogEnabled || qname == "" || clientIP == "" {
+			return
+		}
+		s.qlog.Log(database.QueryLogEntry{
+			Timestamp:    time.Now(),
+			ClientIP:     clientIP,
+			QueryName:    qname,
+			QueryType:    qtype,
+			ResponseCode: rcode,
+			ResponseMS:   int(time.Since(start).Milliseconds()),
+			Cached:       cached,
+			Protocol:     proto,
+		})
+	}
+
 	if s.limiter != nil && clientIP != "" && !s.limiter.Allow(clientIP) {
 		s.blocked.Add(1)
 		metrics.RateLimited.Inc()
@@ -137,6 +161,10 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		m := new(dns.Msg)
 		m.SetRcode(req, dns.RcodeRefused)
 		_ = w.WriteMsg(m)
+		if len(req.Question) > 0 {
+			q := req.Question[0]
+			logQuery(config.NormalizeName(q.Name), dns.TypeToString[q.Qtype], dns.RcodeRefused, false)
+		}
 		return
 	}
 
@@ -151,9 +179,13 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	q := req.Question[0]
 	qname := config.NormalizeName(q.Name)
 	qtype := q.Qtype
+	qtypeStr := dns.TypeToString[qtype]
 	observe := func(code string) {
 		if s.stats != nil {
 			s.stats.Observe(qname, code)
+		}
+		if s.anomaly != nil {
+			s.anomaly.Observe(code)
 		}
 	}
 
@@ -166,6 +198,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			_ = w.WriteMsg(m)
 			metrics.QueriesTotal.WithLabelValues(proto, "acme").Inc()
 			observe("NOERROR")
+			logQuery(qname, qtypeStr, dns.RcodeSuccess, false)
 			return
 		}
 	}
@@ -196,16 +229,20 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		if d, name := s.plugins.Decide(plugin.QueryCtx{Name: qname, Qtype: qtype, ClientIP: clientIP}); d != plugin.DecisionContinue {
 			metrics.QueriesTotal.WithLabelValues(proto, "plugin").Inc()
 			code := "NXDOMAIN"
+			rcode := dns.RcodeNameError
 			if d == plugin.DecisionNODATA {
 				code = "NOERROR"
+				rcode = dns.RcodeSuccess
 			} else if d == plugin.DecisionRefused {
 				code = "REFUSED"
+				rcode = dns.RcodeRefused
 			}
 			observe(code)
 			if s.events != nil {
 				s.events.Emit("info", "plugin", "query blocked by plugin", map[string]string{"plugin": name, "qname": qname})
 			}
 			_ = plugin.ApplyDecision(w, req, d)
+			logQuery(qname, qtypeStr, rcode, false)
 			return
 		}
 	}
@@ -217,9 +254,11 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			m := new(dns.Msg)
 			m.SetReply(req)
 			m.RecursionAvailable = true
+			rcode := dns.RcodeNameError
 			switch action {
 			case rpz.ActionNODATA:
 				m.Rcode = dns.RcodeSuccess
+				rcode = dns.RcodeSuccess
 			default:
 				m.Rcode = dns.RcodeNameError
 			}
@@ -230,6 +269,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			} else {
 				observe("NXDOMAIN")
 			}
+			logQuery(qname, qtypeStr, rcode, false)
 			return
 		}
 	}
@@ -241,6 +281,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		metrics.QueriesTotal.WithLabelValues(proto, "cache").Inc()
 		metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
 		observe(dns.RcodeToString[entry.Rcode])
+		logQuery(qname, qtypeStr, entry.Rcode, true)
 		return
 	}
 	metrics.CacheMisses.Inc()
@@ -260,6 +301,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			metrics.QueriesTotal.WithLabelValues(proto, "auth").Inc()
 			metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
 			observe(dns.RcodeToString[m.Rcode])
+			logQuery(qname, qtypeStr, m.Rcode, false)
 			return
 		}
 	}
@@ -277,6 +319,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		_ = w.WriteMsg(m)
 		metrics.QueriesTotal.WithLabelValues(proto, "servfail").Inc()
 		observe("SERVFAIL")
+		logQuery(qname, qtypeStr, dns.RcodeServerFailure, false)
 		return
 	}
 
@@ -294,6 +337,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			_ = w.WriteMsg(m)
 			metrics.QueriesTotal.WithLabelValues(proto, "dnssec_fail").Inc()
 			observe("SERVFAIL")
+			logQuery(qname, qtypeStr, dns.RcodeServerFailure, false)
 			return
 		}
 	}
@@ -302,6 +346,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	metrics.QueriesTotal.WithLabelValues(proto, "ok").Inc()
 	metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
 	observe(dns.RcodeToString[resp.Rcode])
+	logQuery(qname, qtypeStr, resp.Rcode, false)
 }
 
 func protocolFromWriter(w dns.ResponseWriter) string {
@@ -496,15 +541,26 @@ func (s *Server) ReloadRPZ(policies []rpz.PolicyConfig, timeout time.Duration) (
 
 // RuntimeFlags are feature toggles editable via the API/UI.
 type RuntimeFlags struct {
-	GeoDNS       bool `json:"geodns"`
-	RPZ          bool `json:"rpz_enabled"`
-	RateLimit    bool `json:"rate_limit"`
-	ECS          bool `json:"ecs_enabled"`
-	SplitHorizon bool `json:"split_horizon"`
+	GeoDNS        bool   `json:"geodns"`
+	RPZ           bool   `json:"rpz_enabled"`
+	RateLimit     bool   `json:"rate_limit"`
+	ECS           bool   `json:"ecs_enabled"`
+	SplitHorizon  bool   `json:"split_horizon"`
+	ResolverMode  string `json:"resolver_mode"`
+	ForwardOnFail bool   `json:"forward_on_fail"`
+	QueryLog      bool   `json:"query_log_enabled"`
 }
 
 func (s *Server) RuntimeFlags() RuntimeFlags {
-	f := RuntimeFlags{}
+	f := RuntimeFlags{
+		ResolverMode:  "forward",
+		ForwardOnFail: true,
+	}
+	if s.cfg != nil {
+		f.ResolverMode = config.NormalizeResolverMode(s.cfg.Resolver.Mode)
+		f.ForwardOnFail = s.cfg.Resolver.ForwardOnFail
+		f.QueryLog = s.cfg.Logging.QueryLogEnabled
+	}
 	if s.geo != nil {
 		f.GeoDNS = s.geo.Enabled()
 	}
@@ -516,6 +572,8 @@ func (s *Server) RuntimeFlags() RuntimeFlags {
 	}
 	if s.res != nil {
 		f.ECS = s.res.ECSEnabled
+		f.ResolverMode = config.NormalizeResolverMode(s.res.Mode)
+		f.ForwardOnFail = s.res.ForwardOnFail
 	}
 	if s.views != nil {
 		f.SplitHorizon = s.views.Enabled()
@@ -535,6 +593,8 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 	}
 	if s.res != nil {
 		s.res.SetECSEnabled(f.ECS)
+		s.res.SetMode(f.ResolverMode)
+		s.res.SetForwardOnFail(f.ForwardOnFail)
 	}
 	if s.views != nil {
 		s.views.SetEnabled(f.SplitHorizon)
@@ -544,11 +604,18 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 		s.cfg.RPZ.Enabled = f.RPZ
 		s.cfg.RateLimit.Enabled = f.RateLimit
 		s.cfg.Resolver.ECSEnabled = f.ECS
+		s.cfg.Resolver.Mode = config.NormalizeResolverMode(f.ResolverMode)
+		s.cfg.Resolver.ForwardOnFail = f.ForwardOnFail
 		s.cfg.SplitHorizon.Enabled = f.SplitHorizon
+		s.cfg.Logging.QueryLogEnabled = f.QueryLog
 	}
 }
 
+func (s *Server) SetQueryLogger(q *database.QueryLogger) { s.qlog = q }
+func (s *Server) QueryLogger() *database.QueryLogger     { return s.qlog }
+
 func (s *Server) Analytics() *analytics.Collector { return s.stats }
+func (s *Server) Anomaly() *anomaly.Detector       { return s.anomaly }
 
 func (s *Server) ServeDNSMsg(req *dns.Msg) (*dns.Msg, []byte, error) {
 	rw := &memResponseWriter{}

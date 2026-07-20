@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -81,6 +83,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/events", a.withAuth(a.handleEvents))
 	mux.HandleFunc("/api/v1/events/stream", a.withAuth(a.handleEventStream))
 	mux.HandleFunc("/api/v1/analytics", a.withAuth(a.handleAnalytics))
+	mux.HandleFunc("/api/v1/anomaly", a.withAuth(a.handleAnomaly))
+	mux.HandleFunc("/api/v1/query-logs", a.withAuth(a.handleQueryLogs))
 	mux.HandleFunc("/api/v1/acme", a.withAuth(a.handleACME))
 	if a.webFS != nil {
 		mux.Handle("/", a.spaHandler())
@@ -232,6 +236,11 @@ func (a *API) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		payload["top_names"] = []any{}
 		payload["rcodes"] = []any{}
 	}
+	if det := a.srv.Anomaly(); det != nil {
+		payload["anomaly"] = det.Snapshot()
+	} else {
+		payload["anomaly"] = map[string]any{"alerts": []any{}, "warm": 0}
+	}
 	writeJSON(w, http.StatusOK, payload)
 }
 
@@ -279,7 +288,40 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "zone not found", http.StatusNotFound)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"name": config.NormalizeName(zone), "records": recordsDTO(recs)})
+			payload := map[string]any{"name": config.NormalizeName(zone), "records": recordsDTO(recs)}
+			if a.db != nil && a.cfg.Database.Enabled {
+				if meta, err := a.db.GetZoneMeta(r.Context(), zone); err == nil {
+					payload["meta"] = meta
+				}
+			}
+			writeJSON(w, http.StatusOK, payload)
+		case http.MethodPut, http.MethodPatch:
+			var body struct {
+				DNSSECEnabled *bool  `json:"dnssec_enabled"`
+				SOASerial     *int64 `json:"soa_serial"`
+				SOARefresh    *int   `json:"soa_refresh"`
+				SOARetry      *int   `json:"soa_retry"`
+				SOAExpire     *int   `json:"soa_expire"`
+				SOAMinimum    *int   `json:"soa_minimum"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			if a.db == nil || !a.cfg.Database.Enabled {
+				http.Error(w, "zone meta requires database", http.StatusBadRequest)
+				return
+			}
+			if err := a.db.UpdateZoneMeta(r.Context(), zone, body.DNSSECEnabled, body.SOASerial, body.SOARefresh, body.SOARetry, body.SOAExpire, body.SOAMinimum); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			meta, err := a.db.GetZoneMeta(r.Context(), zone)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusOK, meta)
 		case http.MethodDelete:
 			if a.db != nil && a.cfg.Database.Enabled {
 				if err := a.db.DeleteZone(r.Context(), zone); err != nil {
@@ -329,6 +371,37 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 			a.auth.AddRecord(zone, rec)
 		}
 		writeJSON(w, http.StatusCreated, body)
+	case http.MethodPut:
+		var body struct {
+			OldName string `json:"old_name"`
+			OldType string `json:"old_type"`
+			recordDTO
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		if body.OldName == "" {
+			body.OldName = body.Name
+		}
+		if body.OldType == "" {
+			body.OldType = body.Type
+		}
+		rec := body.toRecord()
+		if a.db != nil && a.cfg.Database.Enabled {
+			if err := a.db.UpdateRecord(r.Context(), zone, body.OldName, body.OldType, rec); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			_ = a.reloadZones()
+		} else {
+			qt := authoritative.TypeFromString(body.OldType)
+			if !a.auth.UpdateRecord(zone, body.OldName, qt, rec) {
+				http.Error(w, "record not found", http.StatusNotFound)
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, body.recordDTO)
 	case http.MethodDelete:
 		name := r.URL.Query().Get("name")
 		typ := r.URL.Query().Get("type")
@@ -390,11 +463,14 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.settingsPayload())
 	case http.MethodPut, http.MethodPatch:
 		var body struct {
-			GeoDNS       *bool `json:"geodns"`
-			RPZ          *bool `json:"rpz_enabled"`
-			RateLimit    *bool `json:"rate_limit"`
-			ECS          *bool `json:"ecs_enabled"`
-			SplitHorizon *bool `json:"split_horizon"`
+			GeoDNS        *bool   `json:"geodns"`
+			RPZ           *bool   `json:"rpz_enabled"`
+			RateLimit     *bool   `json:"rate_limit"`
+			ECS           *bool   `json:"ecs_enabled"`
+			SplitHorizon  *bool   `json:"split_horizon"`
+			ResolverMode  *string `json:"resolver_mode"`
+			ForwardOnFail *bool   `json:"forward_on_fail"`
+			QueryLog      *bool   `json:"query_log_enabled"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
@@ -416,10 +492,26 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if body.SplitHorizon != nil {
 			cur.SplitHorizon = *body.SplitHorizon
 		}
+		if body.ResolverMode != nil {
+			mode := strings.ToLower(strings.TrimSpace(*body.ResolverMode))
+			if mode != "forward" && mode != "recursive" {
+				http.Error(w, "resolver_mode must be forward or recursive", http.StatusBadRequest)
+				return
+			}
+			cur.ResolverMode = mode
+		}
+		if body.ForwardOnFail != nil {
+			cur.ForwardOnFail = *body.ForwardOnFail
+		}
+		if body.QueryLog != nil {
+			cur.QueryLog = *body.QueryLog
+		}
 		a.srv.ApplyRuntimeFlags(cur)
+		mode := cur.ResolverMode
 		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath("./data"), config.RuntimeSettings{
 			GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 			ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
+			ResolverMode: &mode, ForwardOnFail: &cur.ForwardOnFail, QueryLog: &cur.QueryLog,
 		})
 		writeJSON(w, http.StatusOK, a.settingsPayload())
 	default:
@@ -430,18 +522,23 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 func (a *API) settingsPayload() map[string]any {
 	f := a.srv.RuntimeFlags()
 	return map[string]any{
-		"resolver_mode": a.cfg.Resolver.Mode,
-		"forwarders":    a.cfg.Resolver.Forwarders,
-		"dnssec_mode":   a.cfg.Resolver.DNSSECMode,
-		"ecs_enabled":   f.ECS,
-		"rpz_enabled":   f.RPZ,
-		"geodns":        f.GeoDNS,
-		"split_horizon": f.SplitHorizon,
-		"rate_limit":    f.RateLimit,
-		"udp_addr":      a.srv.UDPAddr(),
-		"geodns_db":     a.cfg.GeoDNS.DatabasePath,
-		"editable":      []string{"geodns", "rpz_enabled", "rate_limit", "ecs_enabled", "split_horizon"},
-		"note":          "Edit toggles, then Save to apply and persist (data/runtime-settings.json). No restart required.",
+		"resolver_mode":     f.ResolverMode,
+		"forward_on_fail":   f.ForwardOnFail,
+		"forwarders":        a.cfg.Resolver.Forwarders,
+		"dnssec_mode":       a.cfg.Resolver.DNSSECMode,
+		"ecs_enabled":       f.ECS,
+		"rpz_enabled":       f.RPZ,
+		"geodns":            f.GeoDNS,
+		"split_horizon":     f.SplitHorizon,
+		"rate_limit":        f.RateLimit,
+		"query_log_enabled": f.QueryLog,
+		"udp_addr":          a.srv.UDPAddr(),
+		"geodns_db":         a.cfg.GeoDNS.DatabasePath,
+		"editable": []string{
+			"geodns", "rpz_enabled", "rate_limit", "ecs_enabled", "split_horizon",
+			"resolver_mode", "forward_on_fail", "query_log_enabled",
+		},
+		"note": "Edit toggles / resolver mode, then Save. Persisted to data/runtime-settings.json. No restart required.",
 	}
 }
 
@@ -709,6 +806,80 @@ func (a *API) handleAnalytics(w http.ResponseWriter, r *http.Request) {
 	}
 	names, rcodes := col.Snapshot(25)
 	writeJSON(w, http.StatusOK, map[string]any{"top_names": names, "rcodes": rcodes})
+}
+
+func (a *API) handleAnomaly(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	det := a.srv.Anomaly()
+	if det == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"alerts": []any{}, "warm": 0})
+		return
+	}
+	writeJSON(w, http.StatusOK, det.Snapshot())
+}
+
+func (a *API) handleQueryLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if a.db == nil || !a.cfg.Database.Enabled {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"logs": []any{}, "total": 0, "limit": 50, "offset": 0,
+			"enabled": a.cfg.Logging.QueryLogEnabled,
+			"note":    "PostgreSQL required for query logs",
+		})
+		return
+	}
+	q := r.URL.Query()
+	limit := 50
+	offset := 0
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	if v := q.Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			offset = n
+		}
+	}
+	clientIP := strings.TrimSpace(q.Get("client_ip"))
+	if clientIP != "" {
+		if ip := net.ParseIP(clientIP); ip == nil {
+			http.Error(w, "client_ip must be a valid IP", http.StatusBadRequest)
+			return
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	rows, total, err := a.db.ListQueryLogs(ctx, database.QueryLogFilter{
+		ClientIP: clientIP, Limit: limit, Offset: offset,
+	})
+	if err != nil {
+		// Invalid inet cast etc.
+		if clientIP != "" && strings.Contains(err.Error(), "invalid") {
+			http.Error(w, "client_ip must be a valid IP", http.StatusBadRequest)
+			return
+		}
+		a.log.Warn("query logs list failed", "err", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if rows == nil {
+		rows = []database.QueryLogRow{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"logs":      rows,
+		"total":     total,
+		"limit":     limit,
+		"offset":    offset,
+		"client_ip": clientIP,
+		"enabled":   a.cfg.Logging.QueryLogEnabled,
+	})
 }
 
 func (a *API) handleACME(w http.ResponseWriter, r *http.Request) {

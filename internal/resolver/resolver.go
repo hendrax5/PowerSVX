@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -17,6 +16,7 @@ import (
 type Resolver struct {
 	Mode          string
 	Forwarders    []string
+	ForwardOnFail bool
 	RootHintsFile string
 	Timeout       time.Duration
 	BufSize       uint16
@@ -35,6 +35,20 @@ func (r *Resolver) SetECSEnabled(on bool) {
 	r.ECSEnabled = on
 }
 
+func (r *Resolver) SetMode(mode string) {
+	if r == nil {
+		return
+	}
+	r.Mode = config.NormalizeResolverMode(mode)
+}
+
+func (r *Resolver) SetForwardOnFail(on bool) {
+	if r == nil {
+		return
+	}
+	r.ForwardOnFail = on
+}
+
 func New(cfg config.ResolverConfig) *Resolver {
 	timeout := time.Duration(cfg.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
@@ -44,10 +58,7 @@ func New(cfg config.ResolverConfig) *Resolver {
 	if buf == 0 {
 		buf = 1232
 	}
-	mode := strings.ToLower(cfg.Mode)
-	if mode == "" {
-		mode = "forward"
-	}
+	mode := config.NormalizeResolverMode(cfg.Mode)
 	secMode := dnssec.ParseMode(cfg.DNSSECMode, cfg.DNSSECValidation)
 	v4, v6 := cfg.ECSPrefixV4, cfg.ECSPrefixV6
 	if v4 == 0 {
@@ -59,6 +70,7 @@ func New(cfg config.ResolverConfig) *Resolver {
 	r := &Resolver{
 		Mode:          mode,
 		Forwarders:    cfg.Forwarders,
+		ForwardOnFail: cfg.ForwardOnFail,
 		RootHintsFile: cfg.RootHintsFile,
 		Timeout:       timeout,
 		BufSize:       buf,
@@ -95,7 +107,7 @@ func (r *Resolver) ResolveWithECS(ctx context.Context, req *dns.Msg, sub *ecs.Su
 	switch r.Mode {
 	case "recursive":
 		msg, err := r.resolveRecursive(ctx, q.Name, q.Qtype)
-		if err != nil && len(r.Forwarders) > 0 {
+		if err != nil && r.ForwardOnFail && len(r.Forwarders) > 0 {
 			return r.forward(ctx, req, sub)
 		}
 		return msg, err

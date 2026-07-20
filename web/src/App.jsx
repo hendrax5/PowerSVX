@@ -41,6 +41,7 @@ function Shell({ children }) {
   const links = [
     ['/', 'Dashboard'],
     ['/zones', 'Zones'],
+    ['/logs', 'Query logs'],
     ['/lookup', 'Lookup'],
     ['/settings', 'Settings'],
   ]
@@ -161,6 +162,8 @@ function Dashboard() {
   const s = data.status
   const names = data.top_names || []
   const rcodes = data.rcodes || []
+  const anomaly = data.anomaly || { alerts: [] }
+  const anomalyAlerts = anomaly.alerts || []
   const hitRatio =
     s.cache_hits + s.cache_misses > 0
       ? ((100 * s.cache_hits) / (s.cache_hits + s.cache_misses)).toFixed(1)
@@ -250,32 +253,58 @@ function Dashboard() {
             <EmptyState title="No queries yet" hint="Totals appear after DNS traffic hits this instance." />
           )}
         </section>
-        <section>
-          <h2 className="text-sm text-[var(--muted)] mb-2">Zones</h2>
-          {data.zones?.length ? (
-            <ul className="space-y-1">
-              {data.zones.map((z) => (
+        <section className="panel p-4">
+          <h2 className="text-sm text-[var(--muted)] mb-1">Anomaly alerts</h2>
+          <p className="text-xs text-[var(--muted)] mb-3">
+            EWMA spike detector · baseline QPS {anomaly.qps_baseline ?? '—'} · errors{' '}
+            {anomaly.error_baseline ?? '—'}
+          </p>
+          {anomalyAlerts.length ? (
+            <ul className="space-y-2 text-sm max-h-56 overflow-auto">
+              {anomalyAlerts.map((a, i) => (
                 <li
-                  key={z.name}
-                  className="flex justify-between border border-[var(--border)] px-3 py-2 text-sm panel"
+                  key={`${a.time}-${a.kind}-${i}`}
+                  className="border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-2.5 py-1.5"
                 >
-                  <span className="mono">{z.name}</span>
-                  <span className="text-[var(--muted)]">{z.record_count} records</span>
+                  <div className="text-xs text-[var(--muted)] mono">{a.kind}</div>
+                  <div>{a.message}</div>
+                  <div className="text-xs text-[var(--muted)] mono mt-0.5">
+                    score {Number(a.score).toFixed?.(2) ?? a.score} · cur {a.current} / base {a.baseline}
+                  </div>
                 </li>
               ))}
             </ul>
           ) : (
-            <EmptyState
-              title="No zones yet"
-              hint="Add an authoritative zone to serve local records."
-              action={
-                <a href="/zones" className="inline-block mt-4 text-sm text-[var(--accent)] underline cursor-pointer">
-                  Go to Zones
-                </a>
-              }
-            />
+            <p className="text-sm text-[var(--muted)]">No spikes detected yet (needs a few windows of traffic).</p>
           )}
         </section>
+      </div>
+
+      <div className="reveal reveal-delay-3">
+        <h2 className="text-sm text-[var(--muted)] mb-2">Zones</h2>
+        {data.zones?.length ? (
+          <ul className="space-y-1">
+            {data.zones.map((z) => (
+              <li
+                key={z.name}
+                className="flex justify-between border border-[var(--border)] px-3 py-2 text-sm panel"
+              >
+                <span className="mono">{z.name}</span>
+                <span className="text-[var(--muted)]">{z.record_count} records</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <EmptyState
+            title="No zones yet"
+            hint="Add an authoritative zone to serve local records."
+            action={
+              <a href="/zones" className="inline-block mt-4 text-sm text-[var(--accent)] underline cursor-pointer">
+                Go to Zones
+              </a>
+            }
+          />
+        )}
       </div>
 
       <div className="reveal reveal-delay-4">
@@ -289,8 +318,52 @@ function LiveErrorLog() {
   const [events, setEvents] = useState([])
   const [live, setLive] = useState(false)
   const [paused, setPaused] = useState(false)
+  const [pushOn, setPushOn] = useState(() => localStorage.getItem('powersvx_push') === '1')
+  const [pushPerm, setPushPerm] = useState(
+    typeof Notification !== 'undefined' ? Notification.permission : 'denied',
+  )
   const pausedRef = useRef(false)
+  const pushOnRef = useRef(pushOn)
   pausedRef.current = paused
+  pushOnRef.current = pushOn
+
+  const notifyBrowser = (ev) => {
+    if (!pushOnRef.current) return
+    if (typeof Notification === 'undefined') return
+    if (Notification.permission !== 'granted') return
+    if (ev.level !== 'error' && ev.level !== 'warn') return
+    try {
+      new Notification(`PowerSVX · ${ev.level}`, {
+        body: `${ev.kind}: ${ev.message}`,
+        tag: `powersvx-${ev.kind}-${ev.id}`,
+      })
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const enablePush = async () => {
+    if (typeof Notification === 'undefined') {
+      setPushPerm('denied')
+      return
+    }
+    const perm = await Notification.requestPermission()
+    setPushPerm(perm)
+    if (perm === 'granted') {
+      setPushOn(true)
+      localStorage.setItem('powersvx_push', '1')
+    }
+  }
+
+  const togglePush = () => {
+    if (!pushOn && pushPerm !== 'granted') {
+      enablePush()
+      return
+    }
+    const next = !pushOn
+    setPushOn(next)
+    localStorage.setItem('powersvx_push', next ? '1' : '0')
+  }
 
   useEffect(() => {
     let es
@@ -313,6 +386,7 @@ function LiveErrorLog() {
             if (prev.some((p) => p.id === ev.id)) return prev
             return [ev, ...prev].slice(0, 100)
           })
+          notifyBrowser(ev)
         } catch {
           /* ignore */
         }
@@ -340,10 +414,10 @@ function LiveErrorLog() {
         <div>
           <h2 className="text-sm font-medium">Live errors</h2>
           <p className="text-xs text-[var(--muted)] mt-0.5">
-            Warnings & errors only — not per-query traffic
+            Warnings & errors only — browser push for warn/error when enabled
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
           <span
             className={`text-xs px-2 py-1 border ${
               live
@@ -353,6 +427,18 @@ function LiveErrorLog() {
           >
             {live ? 'live' : 'reconnecting'}
           </span>
+          <button
+            type="button"
+            className={`text-xs px-2 py-1 border ${
+              pushOn && pushPerm === 'granted'
+                ? 'border-[var(--accent-dim)] text-[var(--accent)]'
+                : 'border-[var(--border)] text-[var(--muted)]'
+            } hover:text-[var(--text)]`}
+            onClick={togglePush}
+            title={pushPerm === 'denied' ? 'Notifications blocked by browser' : 'Desktop notifications'}
+          >
+            {pushOn && pushPerm === 'granted' ? 'Push on' : 'Push off'}
+          </button>
           <button
             type="button"
             className="text-xs px-2 py-1 border border-[var(--border)] text-[var(--muted)] hover:text-[var(--text)]"
@@ -502,7 +588,10 @@ function ZoneDetail() {
   const { name } = useParams()
   const zone = decodeURIComponent(name)
   const [recs, setRecs] = useState([])
+  const [meta, setMeta] = useState(null)
   const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
+  const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({
     name: '',
     type: 'A',
@@ -517,40 +606,97 @@ function ZoneDetail() {
   const load = () =>
     api
       .getZone(zone)
-      .then((d) => setRecs(d.records || []))
+      .then((d) => {
+        setRecs(d.records || [])
+        setMeta(d.meta || null)
+      })
       .catch((e) => setErr(e.message))
 
   useEffect(() => {
     load()
   }, [zone])
 
-  const add = async (e) => {
+  const resetForm = () => {
+    setEditing(null)
+    setForm({ name: '', type: 'A', content: '', ttl: 3600, prio: 0, view: '', geo_tag: '' })
+  }
+
+  const save = async (e) => {
     e.preventDefault()
     setErr('')
+    setOk('')
+    const payload = {
+      ...form,
+      ttl: Number(form.ttl) || 3600,
+      prio: Number(form.prio) || 0,
+    }
     try {
-      await api.addRecord(zone, {
-        ...form,
-        ttl: Number(form.ttl) || 3600,
-        prio: Number(form.prio) || 0,
-      })
-      setForm({ name: '', type: 'A', content: '', ttl: 3600, prio: 0, view: '', geo_tag: '' })
+      if (editing) {
+        await api.updateRecord(zone, {
+          old_name: editing.name,
+          old_type: editing.type,
+          ...payload,
+        })
+        setOk('Record updated')
+      } else {
+        await api.addRecord(zone, payload)
+        setOk('Record added')
+      }
+      resetForm()
       await load()
     } catch (ex) {
       setErr(ex.message)
     }
   }
 
+  const startEdit = (r) => {
+    setEditing(r)
+    setForm({
+      name: r.name || '',
+      type: r.type || 'A',
+      content: r.content || '',
+      ttl: r.ttl || 3600,
+      prio: r.prio || 0,
+      view: r.view || '',
+      geo_tag: r.geo_tag || '',
+    })
+    setOk('')
+    setErr('')
+  }
+
   const del = async (r) => {
     try {
       await api.deleteRecord(zone, r.name, r.type)
+      if (editing && editing.name === r.name && editing.type === r.type) resetForm()
       await load()
+    } catch (ex) {
+      setErr(ex.message)
+    }
+  }
+
+  const saveMeta = async (e) => {
+    e.preventDefault()
+    if (!meta) return
+    setErr('')
+    setOk('')
+    try {
+      const updated = await api.updateZoneMeta(zone, {
+        dnssec_enabled: !!meta.dnssec_enabled,
+        soa_serial: Number(meta.soa_serial) || 1,
+        soa_refresh: Number(meta.soa_refresh) || 3600,
+        soa_retry: Number(meta.soa_retry) || 600,
+        soa_expire: Number(meta.soa_expire) || 86400,
+        soa_minimum: Number(meta.soa_minimum) || 3600,
+      })
+      setMeta(updated)
+      setOk('Zone meta saved (DB)')
     } catch (ex) {
       setErr(ex.message)
     }
   }
 
   return (
-    <div className="space-y-6 max-w-4xl">
+    <div className="space-y-6 max-w-5xl">
       <button type="button" className="text-sm text-[var(--muted)] hover:text-[var(--accent)]" onClick={() => nav('/zones')}>
         ← Zones
       </button>
@@ -558,8 +704,53 @@ function ZoneDetail() {
         <h1 className="text-2xl font-semibold mono">{zone}</h1>
       </header>
       {err ? <ErrorBox msg={err} /> : null}
+      {ok ? (
+        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
+          {ok}
+        </div>
+      ) : null}
 
-      <form onSubmit={add} className="grid grid-cols-2 md:grid-cols-3 gap-2 panel p-4">
+      {meta ? (
+        <form onSubmit={saveMeta} className="panel p-4 space-y-3">
+          <h2 className="text-sm font-medium">Zone meta (PostgreSQL)</h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+            {[
+              ['soa_serial', 'SOA serial'],
+              ['soa_refresh', 'refresh'],
+              ['soa_retry', 'retry'],
+              ['soa_expire', 'expire'],
+              ['soa_minimum', 'minimum'],
+            ].map(([k, label]) => (
+              <label key={k} className="text-xs text-[var(--muted)] flex flex-col gap-1">
+                {label}
+                <input
+                  className="bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono"
+                  value={meta[k] ?? ''}
+                  onChange={(e) => setMeta({ ...meta, [k]: e.target.value })}
+                />
+              </label>
+            ))}
+            <label className="text-xs text-[var(--muted)] flex items-center gap-2 mt-5">
+              <input
+                type="checkbox"
+                checked={!!meta.dnssec_enabled}
+                onChange={(e) => setMeta({ ...meta, dnssec_enabled: e.target.checked })}
+              />
+              DNSSEC enabled flag
+            </label>
+          </div>
+          <button type="submit" className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm">
+            Save zone meta
+          </button>
+        </form>
+      ) : (
+        <p className="text-xs text-[var(--muted)]">Zone meta/SOA editor appears when PostgreSQL is enabled.</p>
+      )}
+
+      <form onSubmit={save} className="grid grid-cols-2 md:grid-cols-3 gap-2 panel p-4">
+        <div className="col-span-2 md:col-span-3 text-sm font-medium">
+          {editing ? `Edit ${editing.name} ${editing.type}` : 'Add record'}
+        </div>
         {['name', 'type', 'content', 'ttl', 'prio', 'view', 'geo_tag'].map((k) => (
           <label key={k} className="text-xs text-[var(--muted)] flex flex-col gap-1">
             {k}
@@ -571,39 +762,59 @@ function ZoneDetail() {
             />
           </label>
         ))}
-        <div className="col-span-2 md:col-span-3">
+        <div className="col-span-2 md:col-span-3 flex gap-2">
           <button type="submit" className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm">
-            Add record
+            {editing ? 'Save changes' : 'Add record'}
           </button>
+          {editing ? (
+            <button
+              type="button"
+              onClick={resetForm}
+              className="border border-[var(--border)] px-3 py-2 text-sm text-[var(--muted)]"
+            >
+              Cancel
+            </button>
+          ) : null}
         </div>
       </form>
 
-      <table className="w-full text-sm">
-        <thead className="text-left text-[var(--muted)] border-b border-[var(--border)]">
-          <tr>
-            <th className="py-2 font-medium">Name</th>
-            <th className="py-2 font-medium">Type</th>
-            <th className="py-2 font-medium">Content</th>
-            <th className="py-2 font-medium">TTL</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {recs.map((r, i) => (
-            <tr key={`${r.name}-${r.type}-${i}`} className="border-b border-[var(--border)]/60">
-              <td className="py-2 mono">{r.name}</td>
-              <td className="py-2 mono">{r.type}</td>
-              <td className="py-2 mono">{r.content}</td>
-              <td className="py-2 mono">{r.ttl}</td>
-              <td className="py-2 text-right">
-                <button type="button" className="text-xs text-[var(--danger)]" onClick={() => del(r)}>
-                  Delete
-                </button>
-              </td>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[40rem]">
+          <thead className="text-left text-[var(--muted)] border-b border-[var(--border)]">
+            <tr>
+              <th className="py-2 font-medium">Name</th>
+              <th className="py-2 font-medium">Type</th>
+              <th className="py-2 font-medium">Content</th>
+              <th className="py-2 font-medium">TTL</th>
+              <th className="py-2 font-medium">Prio</th>
+              <th className="py-2 font-medium">View</th>
+              <th className="py-2 font-medium">Geo</th>
+              <th />
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {recs.map((r, i) => (
+              <tr key={`${r.name}-${r.type}-${i}`} className="border-b border-[var(--border)]/60">
+                <td className="py-2 mono">{r.name}</td>
+                <td className="py-2 mono">{r.type}</td>
+                <td className="py-2 mono">{r.content}</td>
+                <td className="py-2 mono">{r.ttl}</td>
+                <td className="py-2 mono">{r.prio || 0}</td>
+                <td className="py-2 mono">{r.view || '—'}</td>
+                <td className="py-2 mono">{r.geo_tag || '—'}</td>
+                <td className="py-2 text-right space-x-2 whitespace-nowrap">
+                  <button type="button" className="text-xs text-[var(--accent)]" onClick={() => startEdit(r)}>
+                    Edit
+                  </button>
+                  <button type="button" className="text-xs text-[var(--danger)]" onClick={() => del(r)}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       {!recs.length ? <p className="text-sm text-[var(--muted)]">No records.</p> : null}
     </div>
   )
@@ -685,19 +896,24 @@ function Settings() {
   const [ok, setOk] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const toggleKeys = ['geodns', 'rpz_enabled', 'rate_limit', 'ecs_enabled', 'split_horizon']
+  const toggleKeys = ['geodns', 'rpz_enabled', 'rate_limit', 'ecs_enabled', 'split_horizon', 'forward_on_fail', 'query_log_enabled']
+
+  const toDraft = (s) => ({
+    geodns: !!s.geodns,
+    rpz_enabled: !!s.rpz_enabled,
+    rate_limit: !!s.rate_limit,
+    ecs_enabled: !!s.ecs_enabled,
+    split_horizon: !!s.split_horizon,
+    forward_on_fail: !!s.forward_on_fail,
+    query_log_enabled: !!s.query_log_enabled,
+    resolver_mode: s.resolver_mode === 'recursive' ? 'recursive' : 'forward',
+  })
 
   const load = () =>
     Promise.all([api.settings(), api.rpz()])
       .then(([s, r]) => {
         setSaved(s)
-        setDraft({
-          geodns: !!s.geodns,
-          rpz_enabled: !!s.rpz_enabled,
-          rate_limit: !!s.rate_limit,
-          ecs_enabled: !!s.ecs_enabled,
-          split_horizon: !!s.split_horizon,
-        })
+        setDraft(toDraft(s))
         setRpz(r)
       })
       .catch((e) => setErr(e.message))
@@ -709,7 +925,8 @@ function Settings() {
   const dirty =
     saved &&
     draft &&
-    toggleKeys.some((k) => !!draft[k] !== !!saved[k])
+    (toggleKeys.some((k) => !!draft[k] !== !!saved[k]) ||
+      draft.resolver_mode !== (saved.resolver_mode === 'recursive' ? 'recursive' : 'forward'))
 
   const toggle = (key) => {
     setOk('')
@@ -719,13 +936,7 @@ function Settings() {
 
   const discard = () => {
     if (!saved) return
-    setDraft({
-      geodns: !!saved.geodns,
-      rpz_enabled: !!saved.rpz_enabled,
-      rate_limit: !!saved.rate_limit,
-      ecs_enabled: !!saved.ecs_enabled,
-      split_horizon: !!saved.split_horizon,
-    })
+    setDraft(toDraft(saved))
     setOk('')
     setErr('')
   }
@@ -738,13 +949,7 @@ function Settings() {
     try {
       const s = await api.updateSettings(draft)
       setSaved(s)
-      setDraft({
-        geodns: !!s.geodns,
-        rpz_enabled: !!s.rpz_enabled,
-        rate_limit: !!s.rate_limit,
-        ecs_enabled: !!s.ecs_enabled,
-        split_horizon: !!s.split_horizon,
-      })
+      setDraft(toDraft(s))
       setOk('Settings saved and applied (no restart)')
       setRpz(await api.rpz())
     } catch (ex) {
@@ -763,6 +968,8 @@ function Settings() {
     ['rate_limit', 'Rate limit', 'Token-bucket per client IP'],
     ['ecs_enabled', 'ECS', 'EDNS Client Subnet on upstream queries'],
     ['split_horizon', 'Split horizon', 'Different answers by client network / view'],
+    ['forward_on_fail', 'Recursive fallback', 'If root recursion fails, fall back to configured forwarders'],
+    ['query_log_enabled', 'Query log', 'Write per-query rows to PostgreSQL (filterable by client IP)'],
   ]
 
   return (
@@ -805,6 +1012,41 @@ function Settings() {
         </div>
       ) : null}
 
+      <section className="panel px-4 py-3 space-y-3">
+        <div>
+          <div className="text-sm font-medium flex items-center gap-2">
+            Resolver mode
+            {draft.resolver_mode !== (saved.resolver_mode === 'recursive' ? 'recursive' : 'forward') ? (
+              <span className="text-[10px] uppercase tracking-wide text-[var(--warn)]">edited</span>
+            ) : null}
+          </div>
+          <p className="text-xs text-[var(--muted)] mt-0.5">
+            <strong>recursive</strong> queries root servers directly; <strong>forward</strong> uses upstream resolvers only.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {['forward', 'recursive'].map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setOk('')
+                setErr('')
+                setDraft((d) => ({ ...d, resolver_mode: mode }))
+              }}
+              className={`px-3 py-2 text-sm border cursor-pointer disabled:opacity-50 ${
+                draft.resolver_mode === mode
+                  ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
+                  : 'border-[var(--border)] text-[var(--muted)] hover:text-[var(--text)]'
+              }`}
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
+      </section>
+
       <section className="panel divide-y divide-[var(--border)]">
         {toggles.map(([key, label, hint]) => (
           <div key={key} className="flex items-center justify-between gap-4 px-4 py-3">
@@ -818,6 +1060,9 @@ function Settings() {
               <div className="text-xs text-[var(--muted)] mt-0.5">{hint}</div>
               {key === 'geodns' && saved.geodns_db ? (
                 <div className="text-xs mono text-[var(--muted)] mt-1">{saved.geodns_db}</div>
+              ) : null}
+              {key === 'forward_on_fail' && draft.resolver_mode !== 'recursive' ? (
+                <div className="text-xs text-[var(--muted)] mt-1">Only applies when resolver mode is recursive</div>
               ) : null}
             </div>
             <button
@@ -843,7 +1088,6 @@ function Settings() {
 
       <dl className="panel divide-y divide-[var(--border)] text-sm">
         {[
-          ['resolver_mode', saved.resolver_mode],
           ['dnssec_mode', saved.dnssec_mode],
           ['udp_addr', saved.udp_addr],
           ['forwarders', (saved.forwarders || []).join(', ')],
@@ -1163,6 +1407,193 @@ function ErrorBox({ msg }) {
   )
 }
 
+function rcodeLabel(code) {
+  const map = {
+    0: 'NOERROR',
+    1: 'FORMERR',
+    2: 'SERVFAIL',
+    3: 'NXDOMAIN',
+    5: 'REFUSED',
+  }
+  return map[code] || String(code)
+}
+
+function QueryLogs() {
+  const [clientIP, setClientIP] = useState('')
+  const [draftIP, setDraftIP] = useState('')
+  const [logs, setLogs] = useState([])
+  const [total, setTotal] = useState(0)
+  const [enabled, setEnabled] = useState(true)
+  const [note, setNote] = useState('')
+  const [offset, setOffset] = useState(0)
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const limit = 50
+
+  const load = (ip = clientIP, off = offset) => {
+    setBusy(true)
+    setErr('')
+    api
+      .queryLogs({ client_ip: ip, limit, offset: off })
+      .then((d) => {
+        setLogs(Array.isArray(d.logs) ? d.logs : [])
+        setTotal(Number(d.total) || 0)
+        setEnabled(d.enabled !== false)
+        setNote(d.note || '')
+      })
+      .catch((e) => setErr(e.message))
+      .finally(() => setBusy(false))
+  }
+
+  useEffect(() => {
+    load('', 0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const applyFilter = (e) => {
+    e.preventDefault()
+    const ip = draftIP.trim()
+    setClientIP(ip)
+    setOffset(0)
+    load(ip, 0)
+  }
+
+  const clearFilter = () => {
+    setDraftIP('')
+    setClientIP('')
+    setOffset(0)
+    load('', 0)
+  }
+
+  const page = Math.floor(offset / limit) + 1
+  const pages = Math.max(1, Math.ceil(total / limit))
+
+  return (
+    <div className="space-y-6">
+      <header>
+        <h1 className="text-2xl font-semibold">Query logs</h1>
+        <p className="text-sm text-[var(--muted)] mt-1">
+          Per-query traffic from PostgreSQL. Filter by client IP to inspect a single user.
+        </p>
+      </header>
+
+      {!enabled ? (
+        <div className="border border-[var(--warn)]/40 bg-[var(--warn)]/10 text-[var(--warn)] text-sm px-3 py-2">
+          Query logging is off — enable it in Settings to record new queries.
+        </div>
+      ) : null}
+      {note ? <p className="text-xs text-[var(--muted)]">{note}</p> : null}
+      {err ? <ErrorBox msg={err} /> : null}
+
+      <form onSubmit={applyFilter} className="panel px-4 py-3 flex flex-wrap gap-2 items-end">
+        <label className="flex-1 min-w-[12rem]">
+          <span className="text-xs text-[var(--muted)]">Client IP</span>
+          <input
+            value={draftIP}
+            onChange={(e) => setDraftIP(e.target.value)}
+            placeholder="e.g. 192.168.1.10"
+            className="mt-1 w-full bg-[var(--bg)] border border-[var(--border)] px-3 py-2 text-sm mono"
+          />
+        </label>
+        <button
+          type="submit"
+          disabled={busy}
+          className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm disabled:opacity-40"
+        >
+          {busy ? '…' : 'Filter'}
+        </button>
+        <button
+          type="button"
+          disabled={busy || (!clientIP && !draftIP)}
+          onClick={clearFilter}
+          className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm text-[var(--muted)] disabled:opacity-40"
+        >
+          Clear
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => load(clientIP, offset)}
+          className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm text-[var(--muted)] disabled:opacity-40"
+        >
+          Refresh
+        </button>
+      </form>
+
+      <div className="panel overflow-x-auto">
+        <table className="w-full text-sm text-left">
+          <thead className="text-xs text-[var(--muted)] border-b border-[var(--border)]">
+            <tr>
+              <th className="px-3 py-2 font-medium">Time</th>
+              <th className="px-3 py-2 font-medium">Client</th>
+              <th className="px-3 py-2 font-medium">Name</th>
+              <th className="px-3 py-2 font-medium">Type</th>
+              <th className="px-3 py-2 font-medium">Rcode</th>
+              <th className="px-3 py-2 font-medium">ms</th>
+              <th className="px-3 py-2 font-medium">Proto</th>
+              <th className="px-3 py-2 font-medium">Cache</th>
+            </tr>
+          </thead>
+          <tbody className="mono text-xs">
+            {logs.length === 0 ? (
+              <tr>
+                <td colSpan={8} className="px-3 py-8 text-center text-[var(--muted)] font-sans">
+                  {busy ? 'Loading…' : 'No query logs yet'}
+                </td>
+              </tr>
+            ) : (
+              logs.map((row) => (
+                <tr key={row.id} className="border-t border-[var(--border)] hover:bg-[var(--bg-panel)]">
+                  <td className="px-3 py-2 whitespace-nowrap">{formatEventTime(row.timestamp)}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">{row.client_ip}</td>
+                  <td className="px-3 py-2 break-all max-w-[18rem]">{row.query_name}</td>
+                  <td className="px-3 py-2">{row.query_type}</td>
+                  <td className="px-3 py-2">{rcodeLabel(row.response_code)}</td>
+                  <td className="px-3 py-2">{row.response_time_ms}</td>
+                  <td className="px-3 py-2">{row.protocol}</td>
+                  <td className="px-3 py-2">{row.cached ? 'yes' : ''}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-center justify-between text-sm text-[var(--muted)]">
+        <span>
+          {total} total{clientIP ? ` · IP ${clientIP}` : ''} · page {page}/{pages}
+        </span>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={busy || offset <= 0}
+            onClick={() => {
+              const next = Math.max(0, offset - limit)
+              setOffset(next)
+              load(clientIP, next)
+            }}
+            className="border border-[var(--border)] cursor-pointer px-3 py-1.5 text-xs disabled:opacity-40"
+          >
+            Prev
+          </button>
+          <button
+            type="button"
+            disabled={busy || offset + limit >= total}
+            onClick={() => {
+              const next = offset + limit
+              setOffset(next)
+              load(clientIP, next)
+            }}
+            className="border border-[var(--border)] cursor-pointer px-3 py-1.5 text-xs disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function formatUptime(sec) {
   const s = Number(sec) || 0
   const h = Math.floor(s / 3600)
@@ -1178,6 +1609,7 @@ export default function App() {
         <Route path="/zones" element={<Zones />} />
         <Route path="/zones/:name" element={<ZoneDetail />} />
         <Route path="/lookup" element={<Lookup />} />
+        <Route path="/logs" element={<QueryLogs />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/analytics" element={<Dashboard />} />
       </Routes>

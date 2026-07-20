@@ -13,6 +13,7 @@ import (
 
 	"github.com/powersvx/powersvx/internal/acme"
 	"github.com/powersvx/powersvx/internal/analytics"
+	"github.com/powersvx/powersvx/internal/anomaly"
 	"github.com/powersvx/powersvx/internal/api"
 	"github.com/powersvx/powersvx/internal/authoritative"
 	"github.com/powersvx/powersvx/internal/cache"
@@ -200,6 +201,9 @@ func main() {
 	acmeStore := acme.NewChallengeStore()
 	acmeMgr := acme.NewManager(cfg.ACME, acmeStore, log)
 	stats := analytics.New(200)
+	anom := anomaly.New(50)
+	qlog := database.NewQueryLogger(db, cfg.Logging.QueryLogEnabled, log)
+	defer qlog.Close()
 	var plugins *plugin.Registry
 	if cfg.Plugins.Enabled {
 		var err error
@@ -215,7 +219,7 @@ func main() {
 		Cache: tier, Res: res, Auth: auth, DNSSEC: sec,
 		Limiter: limiter, RPZ: rpzEng, TSIG: tsigStore,
 		Views: views, Geo: geoRes, TLS: tlsCfg, Events: bus,
-		ACME: acmeStore, Stats: stats, Plugins: plugins,
+		ACME: acmeStore, Stats: stats, Anomaly: anom, Plugins: plugins, QLog: qlog,
 	}, log)
 
 	rest := api.New(cfg, dnsSrv, db, tier, auth, log)
@@ -275,6 +279,7 @@ func main() {
 		"split_horizon", cfg.SplitHorizon.Enabled,
 		"tls", cfg.TLSEnabled(),
 		"acme", cfg.ACME.Enabled,
+		"query_log", cfg.Logging.QueryLogEnabled,
 		"api", cfg.API.RESTBind,
 		"grpc", cfg.API.GRPCEnabled,
 	)

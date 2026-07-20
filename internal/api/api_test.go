@@ -16,6 +16,7 @@ import (
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
+	"github.com/powersvx/powersvx/internal/resolver"
 	"github.com/powersvx/powersvx/internal/server"
 )
 
@@ -119,11 +120,13 @@ func TestSettingsToggle(t *testing.T) {
 	cfg.API.RESTEnabled = true
 	cfg.GeoDNS.Enabled = true
 	cfg.Resolver.Mode = "forward"
+	cfg.Resolver.ForwardOnFail = true
 	auth := authoritative.NewStore()
 	tier := cache.NewTier(cache.NewL1(100), nil, time.Minute, time.Minute)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	geoRes, _ := geo.New(true, "", "default")
-	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth, Geo: geoRes}, log)
+	res := resolver.New(cfg.Resolver)
+	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth, Geo: geoRes, Res: res}, log)
 	a := api.New(cfg, srv, nil, tier, auth, log)
 	h := a.Handler()
 
@@ -141,5 +144,20 @@ func TestSettingsToggle(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &out)
 	if out["geodns"] != false {
 		t.Fatalf("%v", out)
+	}
+
+	body = bytes.NewBufferString(`{"resolver_mode":"recursive","forward_on_fail":false,"query_log_enabled":true}`)
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/settings", body)
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("resolver settings: %d %s", rr.Code, rr.Body.String())
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if out["resolver_mode"] != "recursive" || out["forward_on_fail"] != false || out["query_log_enabled"] != true {
+		t.Fatalf("%v", out)
+	}
+	if res.Mode != "recursive" || res.ForwardOnFail {
+		t.Fatalf("resolver live state mode=%s fallback=%v", res.Mode, res.ForwardOnFail)
 	}
 }

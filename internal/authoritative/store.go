@@ -99,6 +99,23 @@ func (s *Store) AddRecord(zone string, rec Record) {
 	s.zones[zone] = append(s.zones[zone], rec)
 }
 
+func (s *Store) UpdateRecord(zone, oldName string, oldType uint16, rec Record) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	zone = config.NormalizeName(zone)
+	oldName = config.NormalizeName(oldName)
+	rec.Name = config.NormalizeName(rec.Name)
+	recs := s.zones[zone]
+	for i, r := range recs {
+		if config.NormalizeName(r.Name) == oldName && (oldType == 0 || r.Type == oldType) {
+			recs[i] = rec
+			s.zones[zone] = recs
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) DeleteRecord(zone, name string, qtype uint16) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

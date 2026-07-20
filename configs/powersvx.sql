@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS query_logs (
     metadata JSONB DEFAULT '{}'
 );
 
+CREATE INDEX IF NOT EXISTS idx_query_logs_time ON query_logs (timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_query_logs_client ON query_logs (client_ip);
+CREATE INDEX IF NOT EXISTS idx_query_logs_client_time ON query_logs (client_ip, timestamp DESC);
+
 INSERT INTO config (key, value) VALUES
     ('version', '1.0.0'),
     ('setup_complete', 'false')

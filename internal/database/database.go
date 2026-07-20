@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -143,9 +144,10 @@ type QueryLogger struct {
 }
 
 func NewQueryLogger(db *DB, enabled bool, log *slog.Logger) *QueryLogger {
-	if !enabled || db == nil || db.sql == nil {
+	if db == nil || db.sql == nil {
 		return nil
 	}
+	_ = enabled // enable/disable is controlled at call site via config flag
 	ql := &QueryLogger{
 		db:   db,
 		ch:   make(chan QueryLogEntry, 4096),
@@ -224,6 +226,86 @@ func (q *QueryLogger) Close() {
 	<-q.done
 }
 
+// QueryLogRow is a read model for the UI/API.
+type QueryLogRow struct {
+	ID           int64     `json:"id"`
+	Timestamp    time.Time `json:"timestamp"`
+	ClientIP     string    `json:"client_ip"`
+	QueryName    string    `json:"query_name"`
+	QueryType    string    `json:"query_type"`
+	ResponseCode int       `json:"response_code"`
+	ResponseMS   int       `json:"response_time_ms"`
+	Cached       bool      `json:"cached"`
+	Protocol     string    `json:"protocol"`
+}
+
+// QueryLogFilter selects recent query log rows.
+type QueryLogFilter struct {
+	ClientIP string
+	Limit    int
+	Offset   int
+}
+
+// ListQueryLogs returns newest-first rows, optional exact client IP filter.
+func (db *DB) ListQueryLogs(ctx context.Context, f QueryLogFilter) ([]QueryLogRow, int, error) {
+	if db == nil || db.sql == nil {
+		return nil, 0, fmt.Errorf("database unavailable")
+	}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	offset := f.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	where := ""
+	args := []any{}
+	if ip := strings.TrimSpace(f.ClientIP); ip != "" {
+		where = "WHERE client_ip = $1::inet"
+		args = append(args, ip)
+	}
+
+	countQ := "SELECT COUNT(*) FROM query_logs " + where
+	var total int
+	if err := db.sql.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	listArgs := append(append([]any{}, args...), limit, offset)
+	limIdx, offIdx := len(args)+1, len(args)+2
+	listQ := fmt.Sprintf(`
+		SELECT id, timestamp, host(client_ip), query_name, query_type,
+		       COALESCE(response_code,0), COALESCE(response_time_ms,0),
+		       COALESCE(cached,false), COALESCE(protocol,'')
+		FROM query_logs
+		%s
+		ORDER BY timestamp DESC, id DESC
+		LIMIT $%d OFFSET $%d
+	`, where, limIdx, offIdx)
+
+	rows, err := db.sql.QueryContext(ctx, listQ, listArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	out := make([]QueryLogRow, 0, limit)
+	for rows.Next() {
+		var r QueryLogRow
+		if err := rows.Scan(&r.ID, &r.Timestamp, &r.ClientIP, &r.QueryName, &r.QueryType,
+			&r.ResponseCode, &r.ResponseMS, &r.Cached, &r.Protocol); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, r)
+	}
+	return out, total, rows.Err()
+}
+
 const schemaSQL = `
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
@@ -281,6 +363,10 @@ CREATE TABLE IF NOT EXISTS query_logs (
     protocol VARCHAR(10),
     metadata JSONB DEFAULT '{}'
 );
+
+CREATE INDEX IF NOT EXISTS idx_query_logs_time ON query_logs (timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_query_logs_client ON query_logs (client_ip);
+CREATE INDEX IF NOT EXISTS idx_query_logs_client_time ON query_logs (client_ip, timestamp DESC);
 
 INSERT INTO config (key, value) VALUES ('version', '1.0.0'), ('setup_complete', 'false')
 ON CONFLICT (key) DO NOTHING;

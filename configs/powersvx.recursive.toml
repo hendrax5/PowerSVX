@@ -12,6 +12,7 @@ negative_ttl = 60
 [resolver]
 mode = "recursive"
 forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
+forward_on_fail = true
 timeout_ms = 5000
 [api]
 rest_enabled = true

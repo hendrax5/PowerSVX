@@ -8,11 +8,14 @@ import (
 
 // RuntimeSettings is persisted UI-editable feature flags (survives restart).
 type RuntimeSettings struct {
-	GeoDNS       *bool `json:"geodns,omitempty"`
-	RPZ          *bool `json:"rpz_enabled,omitempty"`
-	RateLimit    *bool `json:"rate_limit,omitempty"`
-	ECS          *bool `json:"ecs_enabled,omitempty"`
-	SplitHorizon *bool `json:"split_horizon,omitempty"`
+	GeoDNS        *bool   `json:"geodns,omitempty"`
+	RPZ           *bool   `json:"rpz_enabled,omitempty"`
+	RateLimit     *bool   `json:"rate_limit,omitempty"`
+	ECS           *bool   `json:"ecs_enabled,omitempty"`
+	SplitHorizon  *bool   `json:"split_horizon,omitempty"`
+	ResolverMode  *string `json:"resolver_mode,omitempty"`
+	ForwardOnFail *bool   `json:"forward_on_fail,omitempty"`
+	QueryLog      *bool   `json:"query_log_enabled,omitempty"`
 }
 
 func RuntimeSettingsPath(dir string) string {
@@ -58,5 +61,14 @@ func (c *Config) ApplyRuntimeSettings(s RuntimeSettings) {
 	}
 	if s.SplitHorizon != nil {
 		c.SplitHorizon.Enabled = *s.SplitHorizon
+	}
+	if s.ResolverMode != nil {
+		c.Resolver.Mode = NormalizeResolverMode(*s.ResolverMode)
+	}
+	if s.ForwardOnFail != nil {
+		c.Resolver.ForwardOnFail = *s.ForwardOnFail
+	}
+	if s.QueryLog != nil {
+		c.Logging.QueryLogEnabled = *s.QueryLog
 	}
 }

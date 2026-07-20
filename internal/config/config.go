@@ -65,6 +65,8 @@ type ResolverConfig struct {
 	Mode              string   `toml:"mode"`
 	Forwarders        []string `toml:"forwarders"`
 	RootHintsFile     string   `toml:"root_hints_file"`
+	// ForwardOnFail: when mode=recursive, fall back to forwarders if root iteration fails.
+	ForwardOnFail     bool     `toml:"forward_on_fail"`
 	DNSSECValidation  bool     `toml:"dnssec_validation"`
 	DNSSECMode        string   `toml:"dnssec_mode"`
 	QNameMinimization bool     `toml:"qname_minimization"`
@@ -193,12 +195,13 @@ func Default() *Config {
 		Resolver: ResolverConfig{
 			Mode: "forward",
 			Forwarders: []string{"1.1.1.1:53", "8.8.8.8:53"},
+			ForwardOnFail: true,
 			DNSSECMode: "off", QNameMinimization: true,
 			EDNSBufferSize: 1232, TimeoutMS: 3000,
 			ECSEnabled: true, ECSPrefixV4: 24, ECSPrefixV6: 56,
 		},
 		API: APIConfig{RESTEnabled: true, RESTBind: "0.0.0.0:5380", GRPCEnabled: false, GRPCBind: "0.0.0.0:5381", AuthType: "none"},
-		Logging: LoggingConfig{Level: "info", Format: "json"},
+		Logging: LoggingConfig{Level: "info", Format: "json", QueryLogEnabled: false, QueryLogDestination: "postgresql", QueryLogRetentionDays: 30},
 		RateLimit: RateLimitConfig{
 			Enabled: false, DefaultQPS: 100, DefaultBurst: 200, BlockDuration: 300,
 			Whitelist: []string{"127.0.0.1/32", "::1/128"},
@@ -255,6 +258,14 @@ func normalizeDNSSEC(cfg *Config) {
 	}
 	cfg.Resolver.DNSSECMode = mode
 	cfg.Resolver.DNSSECValidation = mode == "validate" || mode == "opportunistic"
+}
+
+// NormalizeResolverMode returns "recursive" or "forward".
+func NormalizeResolverMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "recursive") {
+		return "recursive"
+	}
+	return "forward"
 }
 
 func (c *Config) DSN() string {

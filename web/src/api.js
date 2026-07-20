@@ -52,6 +52,21 @@ export const api = {
   updateSettings: (body) =>
     request('/api/v1/settings', { method: 'PUT', body: JSON.stringify(body) }),
   analytics: () => request('/api/v1/analytics'),
+  anomaly: () => request('/api/v1/anomaly'),
+  updateZoneMeta: (name, body) =>
+    request(`/api/v1/zones/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  updateRecord: (zone, body) =>
+    request(`/api/v1/zones/${encodeURIComponent(zone)}/records`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  queryLogs: ({ client_ip = '', limit = 50, offset = 0 } = {}) => {
+    const q = new URLSearchParams()
+    if (client_ip) q.set('client_ip', client_ip)
+    q.set('limit', String(limit))
+    q.set('offset', String(offset))
+    return request(`/api/v1/query-logs?${q}`)
+  },
   acme: () => request('/api/v1/acme'),
   acmeObtain: () => request('/api/v1/acme', { method: 'POST', body: '{}' }),
   rpz: () => request('/api/v1/rpz'),
