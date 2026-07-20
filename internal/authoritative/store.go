@@ -42,6 +42,82 @@ func (s *Store) ZoneCount() int {
 	return len(s.zones)
 }
 
+// ZoneInfo is a summary for the API.
+type ZoneInfo struct {
+	Name        string `json:"name"`
+	RecordCount int    `json:"record_count"`
+}
+
+func (s *Store) ListZones() []ZoneInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ZoneInfo, 0, len(s.zones))
+	for name, recs := range s.zones {
+		out = append(out, ZoneInfo{Name: name, RecordCount: len(recs)})
+	}
+	return out
+}
+
+func (s *Store) GetRecords(zone string) ([]Record, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	zone = config.NormalizeName(zone)
+	recs, ok := s.zones[zone]
+	if !ok {
+		return nil, false
+	}
+	cp := make([]Record, len(recs))
+	copy(cp, recs)
+	return cp, true
+}
+
+func (s *Store) UpsertZone(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name = config.NormalizeName(name)
+	if _, ok := s.zones[name]; !ok {
+		s.zones[name] = nil
+	}
+}
+
+func (s *Store) DeleteZone(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name = config.NormalizeName(name)
+	if _, ok := s.zones[name]; !ok {
+		return false
+	}
+	delete(s.zones, name)
+	return true
+}
+
+func (s *Store) AddRecord(zone string, rec Record) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	zone = config.NormalizeName(zone)
+	rec.Name = config.NormalizeName(rec.Name)
+	s.zones[zone] = append(s.zones[zone], rec)
+}
+
+func (s *Store) DeleteRecord(zone, name string, qtype uint16) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	zone = config.NormalizeName(zone)
+	name = config.NormalizeName(name)
+	recs := s.zones[zone]
+	kept := recs[:0]
+	n := 0
+	for _, r := range recs {
+		if config.NormalizeName(r.Name) == name && (qtype == 0 || r.Type == qtype) {
+			n++
+			continue
+		}
+		kept = append(kept, r)
+	}
+	s.zones[zone] = kept
+	return n
+}
+
 // Lookup returns RRs for qname/qtype filtered by view and geo tag.
 func (s *Store) Lookup(qname string, qtype uint16) (rrs []dns.RR, foundZone bool) {
 	return s.LookupScoped(qname, qtype, "", "")

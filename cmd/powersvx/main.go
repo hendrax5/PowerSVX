@@ -160,6 +160,26 @@ func main() {
 	}, log)
 
 	rest := api.New(cfg, dnsSrv, db, tier, auth, log)
+	webDirs := []string{"./web/dist", "/usr/share/PowerSVX/web"}
+	for _, dir := range webDirs {
+		if webFS, err := api.LoadWebDir(dir); err == nil {
+			rest.SetWebFS(webFS)
+			log.Info("web UI mounted", "dir", dir)
+			break
+		}
+	}
+	if db != nil && cfg.Database.Enabled {
+		rest.SetReloadZones(func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			zones, err := db.LoadZones(ctx)
+			if err != nil {
+				return err
+			}
+			auth.Replace(zones)
+			return nil
+		})
+	}
 	if err := rest.Start(); err != nil {
 		log.Error("api start failed", "err", err)
 		os.Exit(1)
@@ -173,6 +193,7 @@ func main() {
 	}()
 
 	log.Info("PowerSVX started",
+		"version", api.Version,
 		"udp", cfg.ListenAddr(cfg.Server.UDPPort),
 		"mode", cfg.Resolver.Mode,
 		"dnssec", cfg.Resolver.DNSSECMode,

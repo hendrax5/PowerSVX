@@ -3,10 +3,15 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
+	"path"
+	"strings"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/powersvx/powersvx/internal/authoritative"
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
@@ -14,33 +19,33 @@ import (
 	"github.com/powersvx/powersvx/internal/server"
 )
 
-const Version = "1.0.0-phase3"
+const Version = "1.0.0-phase4"
 
 type API struct {
-	cfg   *config.Config
-	srv   *server.Server
-	db    *database.DB
-	cache *cache.Tier
-	auth  *authoritative.Store
-	log   *slog.Logger
-	http  *http.Server
-	start time.Time
+	cfg      *config.Config
+	srv      *server.Server
+	db       *database.DB
+	cache    *cache.Tier
+	auth     *authoritative.Store
+	log      *slog.Logger
+	http     *http.Server
+	start    time.Time
+	webFS    fs.FS
+	reloadFn func() error
 }
 
 func New(cfg *config.Config, srv *server.Server, db *database.DB, tier *cache.Tier, auth *authoritative.Store, log *slog.Logger) *API {
 	return &API{cfg: cfg, srv: srv, db: db, cache: tier, auth: auth, log: log, start: time.Now()}
 }
 
+func (a *API) SetWebFS(fsys fs.FS) { a.webFS = fsys }
+func (a *API) SetReloadZones(fn func() error) { a.reloadFn = fn }
+
 func (a *API) Start() error {
 	if !a.cfg.API.RESTEnabled {
 		return nil
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/health", a.handleHealth)
-	mux.HandleFunc("/api/health", a.handleHealth)
-	mux.HandleFunc("/api/v1/status", a.handleStatus)
-
-	a.http = &http.Server{Addr: a.cfg.API.RESTBind, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	a.http = &http.Server{Addr: a.cfg.API.RESTBind, Handler: withCORS(a.Handler()), ReadHeaderTimeout: 10 * time.Second}
 	a.log.Info("REST API starting", "addr", a.cfg.API.RESTBind)
 	go func() {
 		if err := a.http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -50,11 +55,75 @@ func (a *API) Start() error {
 	return nil
 }
 
+// Handler returns the REST (+ optional SPA) mux without CORS wrapper.
+func (a *API) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/health", a.handleHealth)
+	mux.HandleFunc("/api/health", a.handleHealth)
+	mux.HandleFunc("/api/v1/status", a.withAuth(a.handleStatus))
+	mux.HandleFunc("/api/v1/dashboard", a.withAuth(a.handleDashboard))
+	mux.HandleFunc("/api/v1/zones", a.withAuth(a.handleZones))
+	mux.HandleFunc("/api/v1/zones/", a.withAuth(a.handleZoneSub))
+	mux.HandleFunc("/api/v1/settings", a.withAuth(a.handleSettings))
+	mux.HandleFunc("/api/v1/rpz", a.withAuth(a.handleRPZ))
+	mux.HandleFunc("/api/v1/tools/lookup", a.withAuth(a.handleLookup))
+	if a.webFS != nil {
+		mux.Handle("/", a.spaHandler())
+	}
+	return mux
+}
+
 func (a *API) Shutdown(ctx context.Context) error {
 	if a.http == nil {
 		return nil
 	}
 	return a.http.Shutdown(ctx)
+}
+
+func (a *API) withAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if a.cfg.API.AuthType == "token" && a.cfg.API.APIToken != "" {
+			h := r.Header.Get("Authorization")
+			if h != "Bearer "+a.cfg.API.APIToken && r.URL.Query().Get("token") != a.cfg.API.APIToken {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+		next(w, r)
+	}
+}
+
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *API) spaHandler() http.Handler {
+	fileServer := http.FileServer(http.FS(a.webFS))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+		p := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if p == "" || p == "." {
+			p = "index.html"
+		}
+		if _, err := fs.Stat(a.webFS, p); err != nil {
+			r.URL.Path = "/"
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -99,14 +168,14 @@ func statusOrDisabled(on bool, addr string) map[string]any {
 	return map[string]any{"status": "disabled"}
 }
 
-func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
+func (a *API) statusPayload() map[string]any {
 	queries, uptime := a.srv.Stats()
 	hits, misses, size := a.cache.L1.Stats()
 	zones := 0
 	if a.auth != nil {
 		zones = a.auth.ZoneCount()
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	return map[string]any{
 		"version": Version, "uptime_seconds": int(uptime.Seconds()),
 		"mode": a.cfg.Resolver.Mode, "dnssec_mode": a.srv.DNSSECMode(),
 		"dot_enabled": a.srv.DoTEnabled(), "doh_enabled": a.srv.DoHEnabled(), "doq_enabled": a.srv.DoQEnabled(),
@@ -118,11 +187,259 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"ecs_enabled": a.cfg.Resolver.ECSEnabled,
 		"geodns_enabled": a.cfg.GeoDNS.Enabled,
 		"split_horizon_enabled": a.cfg.SplitHorizon.Enabled,
+	}
+}
+
+func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.statusPayload())
+}
+
+func (a *API) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": a.statusPayload(),
+		"zones":  a.auth.ListZones(),
 	})
+}
+
+func (a *API) handleZones(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"zones": a.auth.ListZones()})
+	case http.MethodPost:
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
+			http.Error(w, "name required", http.StatusBadRequest)
+			return
+		}
+		if a.db != nil && a.cfg.Database.Enabled {
+			if _, err := a.db.CreateZone(r.Context(), body.Name); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			_ = a.reloadZones()
+		} else {
+			a.auth.UpsertZone(body.Name)
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"name": config.NormalizeName(body.Name)})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/zones/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	zone := parts[0]
+
+	if len(parts) == 1 {
+		switch r.Method {
+		case http.MethodGet:
+			recs, ok := a.auth.GetRecords(zone)
+			if !ok {
+				http.Error(w, "zone not found", http.StatusNotFound)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"name": config.NormalizeName(zone), "records": recordsDTO(recs)})
+		case http.MethodDelete:
+			if a.db != nil && a.cfg.Database.Enabled {
+				if err := a.db.DeleteZone(r.Context(), zone); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				_ = a.reloadZones()
+			} else if !a.auth.DeleteZone(zone) {
+				http.Error(w, "zone not found", http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	if parts[1] != "records" {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		recs, ok := a.auth.GetRecords(zone)
+		if !ok {
+			http.Error(w, "zone not found", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"records": recordsDTO(recs)})
+	case http.MethodPost:
+		var body recordDTO
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		rec := body.toRecord()
+		if a.db != nil && a.cfg.Database.Enabled {
+			if err := a.db.AddRecord(r.Context(), zone, rec); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			_ = a.reloadZones()
+		} else {
+			a.auth.UpsertZone(zone)
+			a.auth.AddRecord(zone, rec)
+		}
+		writeJSON(w, http.StatusCreated, body)
+	case http.MethodDelete:
+		name := r.URL.Query().Get("name")
+		typ := r.URL.Query().Get("type")
+		if name == "" {
+			http.Error(w, "name required", http.StatusBadRequest)
+			return
+		}
+		if a.db != nil && a.cfg.Database.Enabled {
+			if err := a.db.DeleteRecord(r.Context(), zone, name, typ); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			_ = a.reloadZones()
+		} else {
+			qt := authoritative.TypeFromString(typ)
+			a.auth.DeleteRecord(zone, name, qt)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+type recordDTO struct {
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Content string `json:"content"`
+	TTL     uint32 `json:"ttl"`
+	Prio    uint16 `json:"prio"`
+	View    string `json:"view"`
+	GeoTag  string `json:"geo_tag"`
+}
+
+func (d recordDTO) toRecord() authoritative.Record {
+	ttl := d.TTL
+	if ttl == 0 {
+		ttl = 3600
+	}
+	return authoritative.Record{
+		Name: d.Name, Type: authoritative.TypeFromString(d.Type),
+		Content: d.Content, TTL: ttl, Prio: d.Prio, View: d.View, GeoTag: d.GeoTag,
+	}
+}
+
+func recordsDTO(recs []authoritative.Record) []recordDTO {
+	out := make([]recordDTO, 0, len(recs))
+	for _, r := range recs {
+		out = append(out, recordDTO{
+			Name: r.Name, Type: dns.TypeToString[r.Type], Content: r.Content,
+			TTL: r.TTL, Prio: r.Prio, View: r.View, GeoTag: r.GeoTag,
+		})
+	}
+	return out
+}
+
+func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"resolver_mode": a.cfg.Resolver.Mode,
+		"forwarders":    a.cfg.Resolver.Forwarders,
+		"dnssec_mode":   a.cfg.Resolver.DNSSECMode,
+		"ecs_enabled":   a.cfg.Resolver.ECSEnabled,
+		"rpz_enabled":   a.cfg.RPZ.Enabled,
+		"geodns":        a.cfg.GeoDNS.Enabled,
+		"split_horizon": a.cfg.SplitHorizon.Enabled,
+		"rate_limit":    a.cfg.RateLimit.Enabled,
+		"udp_addr":      a.srv.UDPAddr(),
+	})
+}
+
+func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled": a.cfg.RPZ.Enabled,
+		"entries": a.srv.RPZCount(),
+		"policies": a.cfg.RPZ.Policies,
+	})
+}
+
+func (a *API) handleLookup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+	qtype := dns.TypeA
+	if body.Type != "" {
+		if t, ok := dns.StringToType[strings.ToUpper(body.Type)]; ok {
+			qtype = t
+		}
+	}
+	msg := new(dns.Msg)
+	msg.SetQuestion(dns.Fqdn(body.Name), qtype)
+	msg.RecursionDesired = true
+	resp, _, err := a.srv.ServeDNSMsg(msg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	answers := make([]string, 0, len(resp.Answer))
+	for _, rr := range resp.Answer {
+		answers = append(answers, rr.String())
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rcode": dns.RcodeToString[resp.Rcode], "answers": answers, "ad": resp.AuthenticatedData,
+	})
+}
+
+func (a *API) reloadZones() error {
+	if a.reloadFn != nil {
+		return a.reloadFn()
+	}
+	if a.db == nil || !a.cfg.Database.Enabled {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	zones, err := a.db.LoadZones(ctx)
+	if err != nil {
+		return err
+	}
+	a.auth.Replace(zones)
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// LoadWebDir tries dist path for SPA assets.
+func LoadWebDir(dir string) (fs.FS, error) {
+	st, err := os.Stat(dir)
+	if err != nil || !st.IsDir() {
+		return nil, err
+	}
+	return os.DirFS(dir), nil
 }
