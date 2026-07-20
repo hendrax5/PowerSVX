@@ -1,9 +1,11 @@
 package resolver
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 
@@ -49,10 +51,46 @@ func getRootAddrs() []string {
 	return rootAddrs
 }
 
+func (r *Resolver) roots() []string {
+	base := getRootAddrs()
+	if r == nil || len(r.extraRoots) == 0 {
+		return base
+	}
+	out := make([]string, 0, len(base)+len(r.extraRoots))
+	out = append(out, r.extraRoots...)
+	out = append(out, base...)
+	return out
+}
+
+// loadRootHintsFile reads lines of "ip" or "host:port" (comments with #).
+func loadRootHintsFile(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var out []string
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = strings.TrimSpace(line[:i])
+		}
+		if _, _, err := net.SplitHostPort(line); err != nil {
+			line = net.JoinHostPort(line, "53")
+		}
+		out = append(out, line)
+	}
+	return out, sc.Err()
+}
+
 const maxRecursionDepth = 16
 
 func (r *Resolver) resolveRecursive(ctx context.Context, qname string, qtype uint16) (*dns.Msg, error) {
-	return r.iterate(ctx, qname, qtype, getRootAddrs(), 0)
+	return r.iterate(ctx, qname, qtype, r.roots(), 0)
 }
 
 func (r *Resolver) iterate(ctx context.Context, qname string, qtype uint16, servers []string, depth int) (*dns.Msg, error) {
@@ -95,7 +133,7 @@ func (r *Resolver) iterate(ctx context.Context, qname string, qtype uint16, serv
 
 		// CNAME chase
 		if cname := extractCNAME(resp, qname); cname != "" {
-			cnameMsg, err := r.iterate(ctx, cname, qtype, getRootAddrs(), depth+1)
+			cnameMsg, err := r.iterate(ctx, cname, qtype, r.roots(), depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -112,7 +150,7 @@ func (r *Resolver) iterate(ctx context.Context, qname string, qtype uint16, serv
 			// Try to resolve NS names if no glue
 			nsNames := collectNSNames(resp)
 			for _, ns := range nsNames {
-				nsMsg, err := r.iterate(ctx, ns, dns.TypeA, getRootAddrs(), depth+1)
+				nsMsg, err := r.iterate(ctx, ns, dns.TypeA, r.roots(), depth+1)
 				if err != nil {
 					continue
 				}

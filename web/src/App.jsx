@@ -183,6 +183,7 @@ function Dashboard() {
         <div className="flex flex-wrap gap-2 mt-3">
           <Badge on={s.dot_enabled} label="DoT" />
           <Badge on={s.doh_enabled} label="DoH" />
+          <Badge on={!!s.doh3_enabled} label="DoH3" />
           <Badge on={s.doq_enabled} label="DoQ" />
           <Badge on={s.rpz_enabled} label="RPZ" />
           <Badge on={s.ecs_enabled} label="ECS" />

@@ -23,7 +23,7 @@ import (
 	"github.com/powersvx/powersvx/internal/server"
 )
 
-const Version = "1.0.0-phase4"
+const Version = "1.1.0-phase5"
 
 type API struct {
 	cfg      *config.Config
@@ -147,6 +147,7 @@ func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 	checks["dns_udp"] = map[string]any{"status": "pass", "addr": a.srv.UDPAddr()}
 	checks["dns_dot"] = statusOrDisabled(a.srv.DoTEnabled(), a.srv.DoTAddr())
 	checks["dns_doh"] = statusOrDisabled(a.srv.DoHEnabled(), a.srv.DoHAddr())
+	checks["dns_doh3"] = statusOrDisabled(a.srv.DoH3Enabled(), a.srv.DoHAddr())
 	checks["dns_doq"] = statusOrDisabled(a.srv.DoQEnabled(), a.srv.DoQAddr())
 
 	if a.cfg.Database.Enabled {
@@ -194,7 +195,7 @@ func (a *API) statusPayload() map[string]any {
 	return map[string]any{
 		"version": Version, "uptime_seconds": int(uptime.Seconds()),
 		"mode": a.cfg.Resolver.Mode, "dnssec_mode": a.srv.DNSSECMode(),
-		"dot_enabled": a.srv.DoTEnabled(), "doh_enabled": a.srv.DoHEnabled(), "doq_enabled": a.srv.DoQEnabled(),
+		"dot_enabled": a.srv.DoTEnabled(), "doh_enabled": a.srv.DoHEnabled(), "doh3_enabled": a.srv.DoH3Enabled(), "doq_enabled": a.srv.DoQEnabled(),
 		"dot_addr": a.srv.DoTAddr(), "doh_addr": a.srv.DoHAddr(), "doq_addr": a.srv.DoQAddr(),
 		"queries_total": queries, "rate_limited": a.srv.Blocked(),
 		"cache_hits": hits, "cache_misses": misses, "cache_l1_size": size,

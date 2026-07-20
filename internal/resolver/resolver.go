@@ -15,15 +15,17 @@ import (
 
 // Resolver resolves DNS queries via forward or recursive mode.
 type Resolver struct {
-	Mode        string
-	Forwarders  []string
-	Timeout     time.Duration
-	BufSize     uint16
-	WantDO      bool
-	ECSEnabled  bool
-	ECSPrefixV4 uint8
-	ECSPrefixV6 uint8
-	client      *dns.Client
+	Mode          string
+	Forwarders    []string
+	RootHintsFile string
+	Timeout       time.Duration
+	BufSize       uint16
+	WantDO        bool
+	ECSEnabled    bool
+	ECSPrefixV4   uint8
+	ECSPrefixV6   uint8
+	client        *dns.Client
+	extraRoots    []string
 }
 
 func (r *Resolver) SetECSEnabled(on bool) {
@@ -54,21 +56,28 @@ func New(cfg config.ResolverConfig) *Resolver {
 	if v6 == 0 {
 		v6 = 56
 	}
-	return &Resolver{
-		Mode:        mode,
-		Forwarders:  cfg.Forwarders,
-		Timeout:     timeout,
-		BufSize:     buf,
-		WantDO:      secMode != dnssec.ModeOff,
-		ECSEnabled:  cfg.ECSEnabled,
-		ECSPrefixV4: v4,
-		ECSPrefixV6: v6,
+	r := &Resolver{
+		Mode:          mode,
+		Forwarders:    cfg.Forwarders,
+		RootHintsFile: cfg.RootHintsFile,
+		Timeout:       timeout,
+		BufSize:       buf,
+		WantDO:        secMode != dnssec.ModeOff,
+		ECSEnabled:    cfg.ECSEnabled,
+		ECSPrefixV4:   v4,
+		ECSPrefixV6:   v6,
 		client: &dns.Client{
 			Net:     "udp",
 			Timeout: timeout,
 			UDPSize: buf,
 		},
 	}
+	if cfg.RootHintsFile != "" {
+		if addrs, err := loadRootHintsFile(cfg.RootHintsFile); err == nil {
+			r.extraRoots = addrs
+		}
+	}
+	return r
 }
 
 func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {

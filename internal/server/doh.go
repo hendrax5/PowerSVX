@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 )
 
 const dohPath = "/dns-query"
@@ -24,10 +26,31 @@ func (s *Server) startDoH(addr string) error {
 		http.NotFound(w, r)
 	})
 
-	s.dohHTTP = &http.Server{
+	tlsCfg := s.tlsCfg.Clone()
+	// HTTP/2 over TLS (DoH) + keep existing certs
+	if len(tlsCfg.NextProtos) == 0 {
+		tlsCfg.NextProtos = []string{"h2", "http/1.1"}
+	}
+
+	h3 := &http3.Server{
 		Addr:      addr,
 		Handler:   mux,
-		TLSConfig: s.tlsCfg.Clone(),
+		TLSConfig: http3.ConfigureTLSConfig(s.tlsCfg.Clone()),
+		QUICConfig: &quic.Config{
+			Allow0RTT: false,
+		},
+	}
+	s.dohHTTP3 = h3
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = h3.SetQUICHeaders(w.Header())
+		mux.ServeHTTP(w, r)
+	})
+
+	s.dohHTTP = &http.Server{
+		Addr:      addr,
+		Handler:   handler,
+		TLSConfig: tlsCfg,
 	}
 	return nil
 }
@@ -134,12 +157,13 @@ func writeDoHUsage(w http.ResponseWriter, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"service": "PowerSVX DoH",
+		"service": "PowerSVX DoH / DoH3",
 		"path":    dohPath,
 		"usage": []string{
 			"POST /dns-query  Content-Type: application/dns-message  (RFC 8484)",
 			"GET  /dns-query?dns=<base64url>  (RFC 8484)",
 			"GET  /dns-query?name=example.com&type=A  (convenience)",
+			"HTTP/3 (DoH3): same path over QUIC (ALPN h3); Alt-Svc advertised on DoH responses",
 		},
 		"example": "https://127.0.0.1:8443/dns-query?name=example.com&type=A",
 		"cli":     "go run ./cmd/dohquery https://127.0.0.1:8443/dns-query example.com A",

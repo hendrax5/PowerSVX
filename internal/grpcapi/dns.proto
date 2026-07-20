@@ -1,0 +1,15 @@
+syntax = "proto3";
+package powersvx.v1;
+option go_package = "github.com/powersvx/powersvx/internal/grpcapi/pb";
+service DNS {
+  rpc Lookup(LookupRequest) returns (LookupResponse);
+}
+message LookupRequest {
+  string name = 1;
+  string type = 2;
+}
+message LookupResponse {
+  string rcode = 1;
+  repeated string answers = 2;
+  bool ad = 3;
+}

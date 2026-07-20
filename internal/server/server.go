@@ -20,12 +20,15 @@ import (
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
 	"github.com/powersvx/powersvx/internal/metrics"
+	"github.com/powersvx/powersvx/internal/otelx"
+	"github.com/powersvx/powersvx/internal/plugin"
 	"github.com/powersvx/powersvx/internal/ratelimit"
 	"github.com/powersvx/powersvx/internal/resolver"
 	"github.com/powersvx/powersvx/internal/rpz"
 	"github.com/powersvx/powersvx/internal/tsig"
 	"github.com/powersvx/powersvx/internal/view"
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 )
 
 // Server is the DNS request pipeline.
@@ -44,20 +47,23 @@ type Server struct {
 	events  *eventlog.Bus
 	acme    *acme.ChallengeStore
 	stats   *analytics.Collector
+	plugins *plugin.Registry
 	log     *slog.Logger
 	udp     *dns.Server
 	tcp     *dns.Server
 	dot     *dns.Server
-	dohHTTP *http.Server
-	doqLn   *quic.Listener
-	doqCtx  context.Context
+	dohHTTP  *http.Server
+	dohHTTP3 *http3.Server
+	doqLn    *quic.Listener
+	doqCtx   context.Context
 	doqCancel context.CancelFunc
-	queries atomic.Uint64
-	blocked atomic.Uint64
-	started time.Time
-	dotOn   bool
-	dohOn   bool
-	doqOn   bool
+	queries  atomic.Uint64
+	blocked  atomic.Uint64
+	started  time.Time
+	dotOn    bool
+	dohOn    bool
+	doh3On   bool
+	doqOn    bool
 }
 
 type Deps struct {
@@ -74,6 +80,7 @@ type Deps struct {
 	Events  *eventlog.Bus
 	ACME    *acme.ChallengeStore
 	Stats   *analytics.Collector
+	Plugins *plugin.Registry
 }
 
 func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
@@ -95,12 +102,16 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 		events:  d.Events,
 		acme:    d.ACME,
 		stats:   d.Stats,
+		plugins: d.Plugins,
 		log:     log,
 		started: time.Now(),
 	}
 }
 
 func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
+	_, span := otelx.Tracer().Start(context.Background(), "dns.query")
+	defer span.End()
+
 	start := time.Now()
 	s.queries.Add(1)
 	proto := protocolFromWriter(w)
@@ -181,6 +192,24 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	// RPZ before cache so blocks always apply
+	if s.plugins != nil {
+		if d, name := s.plugins.Decide(plugin.QueryCtx{Name: qname, Qtype: qtype, ClientIP: clientIP}); d != plugin.DecisionContinue {
+			metrics.QueriesTotal.WithLabelValues(proto, "plugin").Inc()
+			code := "NXDOMAIN"
+			if d == plugin.DecisionNODATA {
+				code = "NOERROR"
+			} else if d == plugin.DecisionRefused {
+				code = "REFUSED"
+			}
+			observe(code)
+			if s.events != nil {
+				s.events.Emit("info", "plugin", "query blocked by plugin", map[string]string{"plugin": name, "qname": qname})
+			}
+			_ = plugin.ApplyDecision(w, req, d)
+			return
+		}
+	}
+
 	if s.rpz != nil {
 		if action, hit := s.rpz.Lookup(qname); hit {
 			metrics.RPZBlocked.Inc()
@@ -349,6 +378,16 @@ func (s *Server) ListenAndServe() error {
 			s.log.Info("DoH listener starting", "addr", dohAddr)
 			errCh <- s.dohHTTP.ListenAndServeTLS("", "")
 		}()
+		if s.dohHTTP3 != nil {
+			s.doh3On = true
+			go func() {
+				s.log.Info("DoH3 (HTTP/3) listener starting", "addr", dohAddr)
+				if err := s.dohHTTP3.ListenAndServe(); err != nil {
+					s.log.Error("DoH3 stopped", "err", err)
+					errCh <- err
+				}
+			}()
+		}
 	}
 
 	if s.tlsCfg != nil && s.cfg.Server.DoQPort > 0 {
@@ -386,6 +425,11 @@ func (s *Server) Shutdown() error {
 			err = e
 		}
 	}
+	if s.dohHTTP3 != nil {
+		if e := s.dohHTTP3.Close(); e != nil && err == nil {
+			err = e
+		}
+	}
 	return err
 }
 
@@ -420,6 +464,7 @@ func (s *Server) DoQAddr() string {
 
 func (s *Server) DoTEnabled() bool { return s.dotOn }
 func (s *Server) DoHEnabled() bool { return s.dohOn }
+func (s *Server) DoH3Enabled() bool { return s.doh3On }
 func (s *Server) DoQEnabled() bool { return s.doqOn }
 
 func (s *Server) DNSSECMode() string {

@@ -22,6 +22,7 @@ type Config struct {
 	GeoDNS       GeoDNSConfig       `toml:"geodns"`
 	SplitHorizon SplitHorizonConfig `toml:"split_horizon"`
 	ACME         ACMEConfig         `toml:"acme"`
+	Plugins      PluginsConfig      `toml:"plugins"`
 }
 
 type ServerConfig struct {
@@ -63,6 +64,7 @@ type CacheConfig struct {
 type ResolverConfig struct {
 	Mode              string   `toml:"mode"`
 	Forwarders        []string `toml:"forwarders"`
+	RootHintsFile     string   `toml:"root_hints_file"`
 	DNSSECValidation  bool     `toml:"dnssec_validation"`
 	DNSSECMode        string   `toml:"dnssec_mode"`
 	QNameMinimization bool     `toml:"qname_minimization"`
@@ -76,6 +78,8 @@ type ResolverConfig struct {
 type APIConfig struct {
 	RESTEnabled bool   `toml:"rest_enabled"`
 	RESTBind    string `toml:"rest_bind"`
+	GRPCEnabled bool   `toml:"grpc_enabled"`
+	GRPCBind    string `toml:"grpc_bind"`
 	AuthType    string `toml:"auth_type"`
 	APIToken    string `toml:"api_token"`
 }
@@ -112,6 +116,7 @@ type RPZConfig struct {
 type MetricsConfig struct {
 	PrometheusEnabled bool   `toml:"prometheus_enabled"`
 	PrometheusBind    string `toml:"prometheus_bind"`
+	OTelEnabled       bool   `toml:"otel_enabled"`
 }
 
 type TSIGKeyTOML struct {
@@ -156,6 +161,11 @@ type ACMEConfig struct {
 	StorageDir string   `toml:"storage_dir"`
 }
 
+type PluginsConfig struct {
+	Enabled bool   `toml:"enabled"`
+	Dir     string `toml:"dir"`
+}
+
 func Default() *Config {
 	return &Config{
 		Server: ServerConfig{
@@ -187,7 +197,7 @@ func Default() *Config {
 			EDNSBufferSize: 1232, TimeoutMS: 3000,
 			ECSEnabled: true, ECSPrefixV4: 24, ECSPrefixV6: 56,
 		},
-		API: APIConfig{RESTEnabled: true, RESTBind: "0.0.0.0:5380", AuthType: "none"},
+		API: APIConfig{RESTEnabled: true, RESTBind: "0.0.0.0:5380", GRPCEnabled: false, GRPCBind: "0.0.0.0:5381", AuthType: "none"},
 		Logging: LoggingConfig{Level: "info", Format: "json"},
 		RateLimit: RateLimitConfig{
 			Enabled: false, DefaultQPS: 100, DefaultBurst: 200, BlockDuration: 300,
@@ -206,6 +216,7 @@ func Default() *Config {
 		ACME: ACMEConfig{
 			Enabled: false, Staging: true, StorageDir: "./certs/acme",
 		},
+		Plugins: PluginsConfig{Enabled: false, Dir: "./plugins"},
 	}
 }
 

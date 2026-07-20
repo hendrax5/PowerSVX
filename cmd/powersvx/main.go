@@ -21,7 +21,10 @@ import (
 	"github.com/powersvx/powersvx/internal/dnssec"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
+	"github.com/powersvx/powersvx/internal/grpcapi"
 	"github.com/powersvx/powersvx/internal/metrics"
+	"github.com/powersvx/powersvx/internal/otelx"
+	"github.com/powersvx/powersvx/internal/plugin"
 	"github.com/powersvx/powersvx/internal/ratelimit"
 	"github.com/powersvx/powersvx/internal/resolver"
 	"github.com/powersvx/powersvx/internal/rpz"
@@ -184,15 +187,35 @@ func main() {
 		}()
 	}
 
+	otelShutdown, err := otelx.Init(context.Background(), "powersvx", cfg.Metrics.OTelEnabled)
+	if err != nil {
+		log.Warn("otel init failed", "err", err)
+		otelShutdown = func(context.Context) error { return nil }
+	} else if cfg.Metrics.OTelEnabled || os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" {
+		log.Info("OpenTelemetry tracing enabled")
+	}
+	defer func() { _ = otelShutdown(context.Background()) }()
+
 	res := resolver.New(cfg.Resolver)
 	acmeStore := acme.NewChallengeStore()
 	acmeMgr := acme.NewManager(cfg.ACME, acmeStore, log)
 	stats := analytics.New(200)
+	var plugins *plugin.Registry
+	if cfg.Plugins.Enabled {
+		var err error
+		plugins, err = plugin.LoadDir(cfg.Plugins.Dir)
+		if err != nil {
+			log.Warn("plugins load failed", "err", err)
+			plugins = plugin.NewRegistry()
+		} else {
+			log.Info("plugins loaded", "dir", cfg.Plugins.Dir, "count", plugins.Len())
+		}
+	}
 	dnsSrv := server.New(cfg, server.Deps{
 		Cache: tier, Res: res, Auth: auth, DNSSEC: sec,
 		Limiter: limiter, RPZ: rpzEng, TSIG: tsigStore,
 		Views: views, Geo: geoRes, TLS: tlsCfg, Events: bus,
-		ACME: acmeStore, Stats: stats,
+		ACME: acmeStore, Stats: stats, Plugins: plugins,
 	}, log)
 
 	rest := api.New(cfg, dnsSrv, db, tier, auth, log)
@@ -224,6 +247,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	var grpcSrv *grpcapi.Server
+	if cfg.API.GRPCEnabled {
+		grpcSrv, err = grpcapi.Start(cfg.API.GRPCBind, dnsSrv, log)
+		if err != nil {
+			log.Error("grpc start failed", "err", err)
+			os.Exit(1)
+		}
+	}
+
 	go func() {
 		if err := dnsSrv.ListenAndServe(); err != nil {
 			log.Error("dns server stopped", "err", err)
@@ -244,6 +276,7 @@ func main() {
 		"tls", cfg.TLSEnabled(),
 		"acme", cfg.ACME.Enabled,
 		"api", cfg.API.RESTBind,
+		"grpc", cfg.API.GRPCEnabled,
 	)
 
 	ch := make(chan os.Signal, 1)
@@ -253,5 +286,8 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = rest.Shutdown(ctx)
+	if grpcSrv != nil {
+		grpcSrv.Stop()
+	}
 	_ = dnsSrv.Shutdown()
 }
