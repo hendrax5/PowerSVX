@@ -1,0 +1,21 @@
+﻿[server]
+bind_address = "127.0.0.1"
+udp_port = 5455
+tcp_port = 5455
+[database]
+enabled = false
+[cache]
+path = "./data/cache-rec"
+max_size_mb = 64
+ttl_seconds = 300
+negative_ttl = 60
+[resolver]
+mode = "recursive"
+forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
+timeout_ms = 5000
+[api]
+rest_enabled = true
+rest_bind = "127.0.0.1:5382"
+[logging]
+level = "info"
+format = "json"

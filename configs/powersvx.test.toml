@@ -1,0 +1,45 @@
+# PowerSVX Phase 1 — local / standalone
+
+[server]
+bind_address = "127.0.0.1"
+udp_port = 5454
+tcp_port = 5454
+workers = 0
+
+[database]
+enabled = false
+type = "postgres"
+host = "localhost"
+port = 5432
+database = "PowerSVX"
+user = "PowerSVX"
+password = "${PG_PASSWORD}"
+max_connections = 20
+
+[cache]
+type = "badger"
+path = "./data/cache-test"
+max_size_mb = 64
+ttl_seconds = 300
+negative_ttl = 60
+
+[resolver]
+mode = "forward"
+forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
+dnssec_validation = false
+qname_minimization = true
+edns_buffer_size = 1232
+timeout_ms = 3000
+
+[api]
+rest_enabled = true
+rest_bind = "127.0.0.1:5381"
+auth_type = "none"
+api_token = "${API_TOKEN}"
+
+[logging]
+level = "info"
+format = "json"
+query_log_enabled = false
+query_log_destination = "postgresql"
+query_log_retention_days = 30

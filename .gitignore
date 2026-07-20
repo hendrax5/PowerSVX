@@ -1,0 +1,8 @@
+certs/
+data/
+*.exe
+*.test
+.idea/
+.vscode/
+*.log
+.env

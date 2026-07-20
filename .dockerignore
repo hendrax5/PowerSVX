@@ -1,0 +1,7 @@
+data/
+certs/
+*.exe
+*.log
+.git/
+.idea/
+.vscode/
