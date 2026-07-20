@@ -77,7 +77,8 @@ func (d *DB) LoadZones(ctx context.Context) (map[string][]authoritative.Record, 
 		return out, nil
 	}
 	rows, err := d.sql.QueryContext(ctx, `
-		SELECT z.name, r.name, r.type, r.content, r.ttl, r.prio
+		SELECT z.name, r.name, r.type, r.content, r.ttl, r.prio,
+		       COALESCE(r.geo_tag, ''), COALESCE(r.view_name, '')
 		FROM zones z
 		LEFT JOIN records r ON r.zone_id = z.id AND r.disabled = false
 		ORDER BY z.name
@@ -89,9 +90,9 @@ func (d *DB) LoadZones(ctx context.Context) (map[string][]authoritative.Record, 
 
 	for rows.Next() {
 		var zoneName string
-		var rName, rType, content sql.NullString
+		var rName, rType, content, geoTag, viewName sql.NullString
 		var ttl, prio sql.NullInt64
-		if err := rows.Scan(&zoneName, &rName, &rType, &content, &ttl, &prio); err != nil {
+		if err := rows.Scan(&zoneName, &rName, &rType, &content, &ttl, &prio, &geoTag, &viewName); err != nil {
 			return nil, err
 		}
 		zoneName = config.NormalizeName(zoneName)
@@ -115,6 +116,8 @@ func (d *DB) LoadZones(ctx context.Context) (map[string][]authoritative.Record, 
 			Content: content.String,
 			TTL:     ttlVal,
 			Prio:    prioVal,
+			GeoTag:  geoTag.String,
+			View:    viewName.String,
 		})
 	}
 	return out, rows.Err()
@@ -247,9 +250,14 @@ CREATE TABLE IF NOT EXISTS records (
     ttl INT DEFAULT 3600,
     prio INT DEFAULT 0,
     disabled BOOLEAN DEFAULT false,
+    geo_tag VARCHAR(50) DEFAULT '',
+    view_name VARCHAR(50) DEFAULT '',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE records ADD COLUMN IF NOT EXISTS geo_tag VARCHAR(50) DEFAULT '';
+ALTER TABLE records ADD COLUMN IF NOT EXISTS view_name VARCHAR(50) DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS idx_records_zone_name ON records(zone_id, name);
 

@@ -27,11 +27,28 @@ func (e *Entry) CloneWire() []byte {
 
 // Key builds an FNV-64a cache key from qname + qtype.
 func Key(name string, qtype uint16) uint64 {
+	return KeyScoped(name, qtype, "", "", "")
+}
+
+// KeyScoped includes ECS subnet, split-horizon view, and geo tag for isolation.
+func KeyScoped(name string, qtype uint16, ecsSubnet, viewName, geoTag string) uint64 {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(name))
 	var b [2]byte
 	binary.BigEndian.PutUint16(b[:], qtype)
 	_, _ = h.Write(b[:])
+	if ecsSubnet != "" {
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(ecsSubnet))
+	}
+	if viewName != "" {
+		_, _ = h.Write([]byte{1})
+		_, _ = h.Write([]byte(viewName))
+	}
+	if geoTag != "" {
+		_, _ = h.Write([]byte{2})
+		_, _ = h.Write([]byte(geoTag))
+	}
 	return h.Sum64()
 }
 

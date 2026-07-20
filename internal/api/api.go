@@ -115,6 +115,9 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"cache_hits": hits, "cache_misses": misses, "cache_l1_size": size,
 		"rpz_entries": a.srv.RPZCount(), "zones": zones, "udp_addr": a.srv.UDPAddr(),
 		"ratelimit_enabled": a.cfg.RateLimit.Enabled, "rpz_enabled": a.cfg.RPZ.Enabled,
+		"ecs_enabled": a.cfg.Resolver.ECSEnabled,
+		"geodns_enabled": a.cfg.GeoDNS.Enabled,
+		"split_horizon_enabled": a.cfg.SplitHorizon.Enabled,
 	})
 }
 

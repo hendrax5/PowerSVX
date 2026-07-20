@@ -14,11 +14,14 @@ import (
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/dnssec"
+	"github.com/powersvx/powersvx/internal/ecs"
+	"github.com/powersvx/powersvx/internal/geo"
 	"github.com/powersvx/powersvx/internal/metrics"
 	"github.com/powersvx/powersvx/internal/ratelimit"
 	"github.com/powersvx/powersvx/internal/resolver"
 	"github.com/powersvx/powersvx/internal/rpz"
 	"github.com/powersvx/powersvx/internal/tsig"
+	"github.com/powersvx/powersvx/internal/view"
 	"github.com/quic-go/quic-go"
 )
 
@@ -32,6 +35,8 @@ type Server struct {
 	limiter *ratelimit.Limiter
 	rpz     *rpz.Engine
 	tsig    *tsig.Store
+	views   *view.Matcher
+	geo     *geo.Resolver
 	tlsCfg  *tls.Config
 	log     *slog.Logger
 	udp     *dns.Server
@@ -57,6 +62,8 @@ type Deps struct {
 	Limiter *ratelimit.Limiter
 	RPZ     *rpz.Engine
 	TSIG    *tsig.Store
+	Views   *view.Matcher
+	Geo     *geo.Resolver
 	TLS     *tls.Config
 }
 
@@ -73,6 +80,8 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 		limiter: d.Limiter,
 		rpz:     d.RPZ,
 		tsig:    d.TSIG,
+		views:   d.Views,
+		geo:     d.Geo,
 		tlsCfg:  d.TLS,
 		log:     log,
 		started: time.Now(),
@@ -116,6 +125,27 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	qname := config.NormalizeName(q.Name)
 	qtype := q.Qtype
 
+	// Split horizon + GeoDNS + ECS scope
+	viewName := "default"
+	if s.views != nil {
+		viewName = s.views.Match(clientIP)
+	}
+	geoTag := "default"
+	if s.geo != nil && s.geo.Enabled() {
+		geoTag = s.geo.Lookup(clientIP).Tag
+	}
+	var sub *ecs.Subnet
+	if s.res != nil && s.res.ECSEnabled {
+		sub = ecs.Extract(req)
+		if sub == nil && clientIP != "" {
+			sub = ecs.FromIP(net.ParseIP(clientIP), s.res.ECSPrefixV4, s.res.ECSPrefixV6)
+		}
+	}
+	ecsKey := ""
+	if sub != nil {
+		ecsKey = sub.String()
+	}
+
 	// RPZ before cache so blocks always apply
 	if s.rpz != nil {
 		if action, hit := s.rpz.Lookup(qname); hit {
@@ -136,7 +166,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 
-	if entry, ok := s.cache.Get(qname, qtype); ok {
+	if entry, ok := s.cache.GetScoped(qname, qtype, ecsKey, viewName, geoTag); ok {
 		metrics.CacheHits.Inc()
 		wire := resolver.RewriteID(entry.Wire, req.Id)
 		_, _ = w.Write(wire)
@@ -147,7 +177,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	metrics.CacheMisses.Inc()
 
 	if s.auth != nil {
-		if rrs, inZone := s.auth.Lookup(qname, qtype); inZone {
+		if rrs, inZone := s.auth.LookupScoped(qname, qtype, viewName, geoTag); inZone {
 			m := new(dns.Msg)
 			m.SetReply(req)
 			m.Authoritative = true
@@ -157,7 +187,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			} else {
 				m.Answer = rrs
 			}
-			s.storeAndWrite(w, req, m)
+			s.storeAndWriteScoped(w, req, m, ecsKey, viewName, geoTag)
 			metrics.QueriesTotal.WithLabelValues(proto, "auth").Inc()
 			metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
 			return
@@ -167,7 +197,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.res.Timeout)
 	defer cancel()
 
-	resp, err := s.res.Resolve(ctx, req)
+	resp, err := s.res.ResolveWithECS(ctx, req, sub)
 	if err != nil {
 		s.log.Warn("resolve failed", "name", qname, "err", err)
 		m := new(dns.Msg)
@@ -196,7 +226,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 
-	s.storeAndWrite(w, req, resp)
+	s.storeAndWriteScoped(w, req, resp, ecsKey, viewName, geoTag)
 	metrics.QueriesTotal.WithLabelValues(proto, "ok").Inc()
 	metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
 }
@@ -214,13 +244,17 @@ func protocolFromWriter(w dns.ResponseWriter) string {
 }
 
 func (s *Server) storeAndWrite(w dns.ResponseWriter, req, resp *dns.Msg) {
+	s.storeAndWriteScoped(w, req, resp, "", "", "")
+}
+
+func (s *Server) storeAndWriteScoped(w dns.ResponseWriter, req, resp *dns.Msg, ecsSubnet, viewName, geoTag string) {
 	wire, err := resolver.PackResponse(resp)
 	if err != nil {
 		_ = w.WriteMsg(resp)
 		return
 	}
 	ttl := resolver.MinTTL(resp)
-	s.cache.Set(config.NormalizeName(req.Question[0].Name), req.Question[0].Qtype, wire, resp.Rcode, ttl)
+	s.cache.SetScoped(config.NormalizeName(req.Question[0].Name), req.Question[0].Qtype, ecsSubnet, viewName, geoTag, wire, resp.Rcode, ttl)
 	_, _ = w.Write(wire)
 }
 

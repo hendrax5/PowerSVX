@@ -8,9 +8,9 @@ Modern DNS server in Go — **Phase 1–3** (foundation + encrypted DNS + RPZ/ra
 |-------|----------------|
 | 1 | UDP/TCP, forward/recursive, L1+L2 cache, PostgreSQL zones |
 | 2 | DoT, DoH, **DoQ**, DNSSEC opportunistic/validate, TSIG key store |
-| 3 | **RPZ/blocklist**, **rate limit**, Prometheus `:9100` |
+| 3 | RPZ, rate limit, **ECS**, **GeoDNS**, **Split Horizon**, Prometheus |
 
-Deferred: DoH3, GeoDNS, ECS, Split Horizon views, Raft, React UI, ACME.
+Deferred: DoH3, Raft, React UI, ACME, full 20M RPZ radix.
 
 ## Quick start
 
@@ -59,10 +59,20 @@ default_qps = 100
 enabled = true
 policies = [{ name = "sample", source = "./configs/sample-blocklist.txt", action = "nxdomain" }]
 
-[metrics]
-prometheus_enabled = true
-prometheus_bind = "0.0.0.0:9100"
+[geodns]
+enabled = true
+default_tag = "default"
+overrides = [{ ip = "127.0.0.1", country = "ID", tag = "ID" }]
+
+[split_horizon]
+enabled = true
+views = [{ name = "internal", networks = ["10.0.0.0/8", "192.168.0.0/16"] }]
+
+[resolver]
+ecs_enabled = true
 ```
+
+Optional MaxMind DB: set `geodns.database_path` to `GeoLite2-City.mmdb`. Without it, overrides + default tag still work.
 
 ## License
 

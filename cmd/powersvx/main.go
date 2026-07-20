@@ -17,6 +17,7 @@ import (
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/database"
 	"github.com/powersvx/powersvx/internal/dnssec"
+	"github.com/powersvx/powersvx/internal/geo"
 	"github.com/powersvx/powersvx/internal/metrics"
 	"github.com/powersvx/powersvx/internal/ratelimit"
 	"github.com/powersvx/powersvx/internal/resolver"
@@ -24,6 +25,7 @@ import (
 	"github.com/powersvx/powersvx/internal/server"
 	"github.com/powersvx/powersvx/internal/tlsutil"
 	"github.com/powersvx/powersvx/internal/tsig"
+	"github.com/powersvx/powersvx/internal/view"
 )
 
 func main() {
@@ -108,6 +110,23 @@ func main() {
 		log.Info("tsig keys loaded", "count", tsigStore.Len())
 	}
 
+	viewMap := map[string][]string{}
+	for _, v := range cfg.SplitHorizon.Views {
+		viewMap[v.Name] = v.Networks
+	}
+	views := view.FromConfig(cfg.SplitHorizon.Enabled, "default", viewMap)
+
+	geoRes, err := geo.New(cfg.GeoDNS.Enabled, cfg.GeoDNS.DatabasePath, cfg.GeoDNS.DefaultTag)
+	if err != nil {
+		log.Warn("geodns mmdb unavailable, using overrides/default", "err", err)
+	}
+	if geoRes != nil {
+		for _, o := range cfg.GeoDNS.Overrides {
+			geoRes.SetOverride(o.IP, geo.Info{Country: o.Country, Continent: o.Continent, Tag: o.Tag})
+		}
+		defer func() { _ = geoRes.Close() }()
+	}
+
 	var tlsCfg *tls.Config
 	if cfg.TLSEnabled() {
 		tlsCfg, err = tlsutil.LoadServerTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
@@ -136,7 +155,8 @@ func main() {
 	res := resolver.New(cfg.Resolver)
 	dnsSrv := server.New(cfg, server.Deps{
 		Cache: tier, Res: res, Auth: auth, DNSSEC: sec,
-		Limiter: limiter, RPZ: rpzEng, TSIG: tsigStore, TLS: tlsCfg,
+		Limiter: limiter, RPZ: rpzEng, TSIG: tsigStore,
+		Views: views, Geo: geoRes, TLS: tlsCfg,
 	}, log)
 
 	rest := api.New(cfg, dnsSrv, db, tier, auth, log)
@@ -158,6 +178,9 @@ func main() {
 		"dnssec", cfg.Resolver.DNSSECMode,
 		"rpz", cfg.RPZ.Enabled,
 		"ratelimit", cfg.RateLimit.Enabled,
+		"ecs", cfg.Resolver.ECSEnabled,
+		"geodns", cfg.GeoDNS.Enabled,
+		"split_horizon", cfg.SplitHorizon.Enabled,
 		"tls", cfg.TLSEnabled(),
 		"api", cfg.API.RESTBind,
 	)

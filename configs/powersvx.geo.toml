@@ -1,0 +1,61 @@
+# GeoDNS + Split Horizon + ECS smoke (no TLS)
+
+[server]
+bind_address = "127.0.0.1"
+udp_port = 5458
+tcp_port = 5458
+dot_port = 0
+doh_port = 0
+doq_port = 0
+
+[server.tls]
+enabled = false
+
+[database]
+enabled = false
+
+[cache]
+path = "./data/cache-geo"
+max_size_mb = 32
+
+[resolver]
+mode = "forward"
+forwarders = ["1.1.1.1:53"]
+dnssec_mode = "off"
+ecs_enabled = true
+ecs_prefix_v4 = 24
+timeout_ms = 3000
+
+[rate_limit]
+enabled = false
+
+[rpz]
+enabled = true
+policies = [
+  { name = "sample", source = "./configs/sample-blocklist.txt", format = "hosts", action = "nxdomain" }
+]
+
+[geodns]
+enabled = true
+database_path = ""
+default_tag = "default"
+overrides = [
+  { ip = "127.0.0.1", country = "ID", continent = "AS", tag = "ID" }
+]
+
+[split_horizon]
+enabled = true
+views = [
+  { name = "internal", networks = ["10.0.0.0/8", "192.168.0.0/16"] }
+]
+
+[metrics]
+prometheus_enabled = false
+
+[api]
+rest_enabled = true
+rest_bind = "127.0.0.1:5386"
+
+[logging]
+level = "info"
+format = "json"

@@ -9,16 +9,18 @@ import (
 )
 
 type Config struct {
-	Server     ServerConfig     `toml:"server"`
-	Database   DatabaseConfig   `toml:"database"`
-	Cache      CacheConfig      `toml:"cache"`
-	Resolver   ResolverConfig   `toml:"resolver"`
-	API        APIConfig        `toml:"api"`
-	Logging    LoggingConfig    `toml:"logging"`
-	RateLimit  RateLimitConfig  `toml:"rate_limit"`
-	RPZ        RPZConfig        `toml:"rpz"`
-	Metrics    MetricsConfig    `toml:"metrics"`
-	TSIG       TSIGConfig       `toml:"tsig"`
+	Server       ServerConfig       `toml:"server"`
+	Database     DatabaseConfig     `toml:"database"`
+	Cache        CacheConfig        `toml:"cache"`
+	Resolver     ResolverConfig     `toml:"resolver"`
+	API          APIConfig          `toml:"api"`
+	Logging      LoggingConfig      `toml:"logging"`
+	RateLimit    RateLimitConfig    `toml:"rate_limit"`
+	RPZ          RPZConfig          `toml:"rpz"`
+	Metrics      MetricsConfig      `toml:"metrics"`
+	TSIG         TSIGConfig         `toml:"tsig"`
+	GeoDNS       GeoDNSConfig       `toml:"geodns"`
+	SplitHorizon SplitHorizonConfig `toml:"split_horizon"`
 }
 
 type ServerConfig struct {
@@ -65,6 +67,9 @@ type ResolverConfig struct {
 	QNameMinimization bool     `toml:"qname_minimization"`
 	EDNSBufferSize    uint16   `toml:"edns_buffer_size"`
 	TimeoutMS         int      `toml:"timeout_ms"`
+	ECSEnabled        bool     `toml:"ecs_enabled"`
+	ECSPrefixV4       uint8    `toml:"ecs_prefix_v4"`
+	ECSPrefixV6       uint8    `toml:"ecs_prefix_v6"`
 }
 
 type APIConfig struct {
@@ -118,6 +123,30 @@ type TSIGConfig struct {
 	Keys    []TSIGKeyTOML `toml:"keys"`
 }
 
+type GeoOverrideTOML struct {
+	IP        string `toml:"ip"`
+	Country   string `toml:"country"`
+	Continent string `toml:"continent"`
+	Tag       string `toml:"tag"`
+}
+
+type GeoDNSConfig struct {
+	Enabled      bool              `toml:"enabled"`
+	DatabasePath string            `toml:"database_path"`
+	DefaultTag   string            `toml:"default_tag"`
+	Overrides    []GeoOverrideTOML `toml:"overrides"`
+}
+
+type SplitViewTOML struct {
+	Name     string   `toml:"name"`
+	Networks []string `toml:"networks"`
+}
+
+type SplitHorizonConfig struct {
+	Enabled bool            `toml:"enabled"`
+	Views   []SplitViewTOML `toml:"views"`
+}
+
 func Default() *Config {
 	return &Config{
 		Server: ServerConfig{
@@ -147,6 +176,7 @@ func Default() *Config {
 			Forwarders: []string{"1.1.1.1:53", "8.8.8.8:53"},
 			DNSSECMode: "off", QNameMinimization: true,
 			EDNSBufferSize: 1232, TimeoutMS: 3000,
+			ECSEnabled: true, ECSPrefixV4: 24, ECSPrefixV6: 56,
 		},
 		API: APIConfig{RESTEnabled: true, RESTBind: "0.0.0.0:5380", AuthType: "none"},
 		Logging: LoggingConfig{Level: "info", Format: "json"},
@@ -160,6 +190,10 @@ func Default() *Config {
 			PrometheusBind:    "0.0.0.0:9100",
 		},
 		TSIG: TSIGConfig{Enabled: false},
+		GeoDNS: GeoDNSConfig{
+			Enabled: false, DatabasePath: "./data/GeoLite2-City.mmdb", DefaultTag: "default",
+		},
+		SplitHorizon: SplitHorizonConfig{Enabled: false},
 	}
 }
 

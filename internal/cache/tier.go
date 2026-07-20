@@ -123,7 +123,11 @@ func NewTier(l1 *L1, l2 *L2, defaultTTL, negativeTTL time.Duration) *Tier {
 }
 
 func (t *Tier) Get(name string, qtype uint16) (*Entry, bool) {
-	k := Key(name, qtype)
+	return t.GetScoped(name, qtype, "", "", "")
+}
+
+func (t *Tier) GetScoped(name string, qtype uint16, ecsSubnet, viewName, geoTag string) (*Entry, bool) {
+	k := KeyScoped(name, qtype, ecsSubnet, viewName, geoTag)
 	if e, ok := t.L1.Get(k); ok {
 		return e, true
 	}
@@ -134,16 +138,19 @@ func (t *Tier) Get(name string, qtype uint16) (*Entry, bool) {
 	if !ok {
 		return nil, false
 	}
-	// Promote to L1
 	ttl := time.Until(e.Expiry)
 	t.L1.Set(k, e.Wire, ttl, e.Rcode)
 	return e, true
 }
 
 func (t *Tier) Set(name string, qtype uint16, wire []byte, rcode int, msgTTL uint32) {
-	k := Key(name, qtype)
+	t.SetScoped(name, qtype, "", "", "", wire, rcode, msgTTL)
+}
+
+func (t *Tier) SetScoped(name string, qtype uint16, ecsSubnet, viewName, geoTag string, wire []byte, rcode int, msgTTL uint32) {
+	k := KeyScoped(name, qtype, ecsSubnet, viewName, geoTag)
 	ttl := t.DefaultTTL
-	if rcode != 0 { // non-NOERROR → negative TTL
+	if rcode != 0 {
 		ttl = t.NegativeTTL
 	} else if msgTTL > 0 {
 		d := time.Duration(msgTTL) * time.Second

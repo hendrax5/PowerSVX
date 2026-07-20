@@ -16,12 +16,14 @@ type Record struct {
 	Content string
 	TTL     uint32
 	Prio    uint16
+	View    string // split-horizon view; empty = all views
+	GeoTag  string // country/continent/default; empty = all geos
 }
 
 // Store holds authoritative zones loaded from PostgreSQL (or empty).
 type Store struct {
 	mu    sync.RWMutex
-	zones map[string][]Record // zone apex -> records
+	zones map[string][]Record
 }
 
 func NewStore() *Store {
@@ -40,18 +42,26 @@ func (s *Store) ZoneCount() int {
 	return len(s.zones)
 }
 
+// Lookup returns RRs for qname/qtype filtered by view and geo tag.
 func (s *Store) Lookup(qname string, qtype uint16) (rrs []dns.RR, foundZone bool) {
+	return s.LookupScoped(qname, qtype, "", "")
+}
+
+func (s *Store) LookupScoped(qname string, qtype uint16, viewName, geoTag string) (rrs []dns.RR, foundZone bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	qname = config.NormalizeName(qname)
+	viewName = strings.ToLower(viewName)
+	geoTag = strings.ToUpper(geoTag)
 
 	zone := s.findZone(qname)
 	if zone == "" {
 		return nil, false
 	}
 	foundZone = true
-	recs := s.zones[zone]
-	for _, rec := range recs {
+
+	var candidates []Record
+	for _, rec := range s.zones[zone] {
 		name := config.NormalizeName(rec.Name)
 		if name != qname && !wildcardMatch(rec.Name, qname) {
 			continue
@@ -59,6 +69,14 @@ func (s *Store) Lookup(qname string, qtype uint16) (rrs []dns.RR, foundZone bool
 		if rec.Type != qtype && qtype != dns.TypeANY {
 			continue
 		}
+		if !viewOK(rec.View, viewName) {
+			continue
+		}
+		candidates = append(candidates, rec)
+	}
+
+	picked := pickGeo(candidates, geoTag)
+	for _, rec := range picked {
 		rr, err := buildRR(rec)
 		if err != nil || rr == nil {
 			continue
@@ -66,6 +84,44 @@ func (s *Store) Lookup(qname string, qtype uint16) (rrs []dns.RR, foundZone bool
 		rrs = append(rrs, rr)
 	}
 	return rrs, foundZone
+}
+
+func viewOK(recView, clientView string) bool {
+	recView = strings.ToLower(strings.TrimSpace(recView))
+	if recView == "" || recView == "*" {
+		return true
+	}
+	if clientView == "" {
+		return recView == "default"
+	}
+	return recView == clientView
+}
+
+// pickGeo prefers records matching geoTag, else continent-less country, else "default"/empty.
+func pickGeo(recs []Record, geoTag string) []Record {
+	if len(recs) == 0 {
+		return nil
+	}
+	geoTag = strings.ToUpper(strings.TrimSpace(geoTag))
+	var exact, def, untagged []Record
+	for _, r := range recs {
+		tag := strings.ToUpper(strings.TrimSpace(r.GeoTag))
+		switch {
+		case tag == "" || tag == "*":
+			untagged = append(untagged, r)
+		case tag == "DEFAULT":
+			def = append(def, r)
+		case geoTag != "" && tag == geoTag:
+			exact = append(exact, r)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	if len(def) > 0 {
+		return def
+	}
+	return untagged
 }
 
 func (s *Store) findZone(qname string) string {
@@ -85,7 +141,7 @@ func wildcardMatch(pattern, qname string) bool {
 	if !strings.HasPrefix(pattern, "*.") {
 		return false
 	}
-	suffix := pattern[1:] // ".example.com."
+	suffix := pattern[1:]
 	return strings.HasSuffix(qname, suffix)
 }
 
