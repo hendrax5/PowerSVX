@@ -1,0 +1,103 @@
+# PowerSVX — Docker Compose host-network production
+#
+# Same as the normal Docker config, but Postgres is reached through the host's
+# loopback publish because the PowerSVX container shares the host network.
+
+[server]
+bind_address = "0.0.0.0"
+udp_port = 53
+tcp_port = 53
+dot_port = 853
+doh_port = 443
+doq_port = 784
+workers = 0
+tproxy = false
+
+[server.tls]
+enabled = true
+cert_file = "/etc/PowerSVX/certs/fullchain.pem"
+key_file = "/etc/PowerSVX/certs/privkey.pem"
+
+[database]
+enabled = true
+type = "postgres"
+host = "127.0.0.1"
+port = 5433
+database = "PowerSVX"
+user = "PowerSVX"
+password = "${PG_PASSWORD}"
+max_connections = 20
+
+[cache]
+type = "badger"
+path = "/data/cache"
+max_size_mb = 512
+ttl_seconds = 300
+negative_ttl = 60
+
+[resolver]
+mode = "recursive"
+forwarders = ["103.88.88.99:53", "203.119.13.77:53"]
+forward_on_fail = true
+dnssec_mode = "opportunistic"
+edns_buffer_size = 1232
+timeout_ms = 3000
+ecs_enabled = true
+ecs_prefix_v4 = 24
+ecs_prefix_v6 = 56
+
+[rate_limit]
+enabled = true
+default_qps = 2000
+default_burst = 400
+block_duration = 300
+whitelist = ["127.0.0.1/32", "::1/128", "172.16.0.0/12"]
+
+[rpz]
+enabled = true
+update_interval = 3600
+policies = [
+  { name = "sample", source = "/etc/PowerSVX/sample-blocklist.txt", format = "hosts", action = "nxdomain" }
+]
+
+[geodns]
+enabled = true
+database_path = "/data/GeoLite2-City.mmdb"
+default_tag = "default"
+
+[split_horizon]
+enabled = true
+views = [
+  { name = "internal", networks = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] }
+]
+
+[metrics]
+prometheus_enabled = true
+prometheus_bind = "0.0.0.0:9100"
+
+[tsig]
+enabled = false
+
+[acl]
+# Empty allow_query = any client may query. Non-empty = only listed CIDRs/IPs.
+# deny_query always wins over allow.
+# allow_query = ["10.0.0.0/8", "192.168.0.0/16", "127.0.0.1", "::1"]
+# deny_query = []
+
+[transfer]
+allow_axfr = false
+require_tsig = true
+
+[api]
+rest_enabled = true
+rest_bind = "0.0.0.0:5380"
+auth_type = "local"
+api_token = "${API_TOKEN}"
+
+[logging]
+level = "info"
+format = "json"
+query_log_enabled = true
+query_log_destination = "postgresql"
+query_log_retention_days = 30
+query_log_mask_ip = true
