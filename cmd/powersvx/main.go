@@ -28,6 +28,7 @@ import (
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
 	"github.com/powersvx/powersvx/internal/grpcapi"
+	"github.com/powersvx/powersvx/internal/kominfo"
 	"github.com/powersvx/powersvx/internal/metrics"
 	"github.com/powersvx/powersvx/internal/monitor"
 	"github.com/powersvx/powersvx/internal/otelx"
@@ -292,6 +293,10 @@ func main() {
 		defer secMgr.Stop()
 		log.Info("secondary manager ready", "zones", len(secMgr.List()))
 	}
+	kominfoMgr := kominfo.New(auth, log, cfg.KominfoSync.Targets)
+	kominfoMgr.SetEnabled(cfg.KominfoSync.Enabled)
+	dnsSrv.SetKominfo(kominfoMgr)
+	log.Info("kominfo sync ready", "enabled", kominfoMgr.Enabled(), "targets", kominfoMgr.Targets())
 
 	rest := api.New(cfg, dnsSrv, db, tier, auth, log)
 	rest.SetDataDir(*dataDir)
@@ -388,6 +393,7 @@ func main() {
 					ResolverMode: cfg.Resolver.Mode, ForwardOnFail: cfg.Resolver.ForwardOnFail,
 					QueryLog: cfg.Logging.QueryLogEnabled, Forwarders: cfg.Resolver.Forwarders,
 					ForwardZones: cfg.Resolver.ForwardZones,
+					KominfoSync:  cfg.KominfoSync.Enabled,
 				})
 				if err := dnsSrv.SetQueryACL(cfg.ACL.AllowQuery, cfg.ACL.DenyQuery); err != nil {
 					log.Warn("acl reload failed", "err", err)

@@ -27,6 +27,7 @@ import (
 	"github.com/powersvx/powersvx/internal/ecs"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
+	"github.com/powersvx/powersvx/internal/kominfo"
 	"github.com/powersvx/powersvx/internal/metrics"
 	"github.com/powersvx/powersvx/internal/monitor"
 	"github.com/powersvx/powersvx/internal/otelx"
@@ -65,6 +66,7 @@ type Server struct {
 	plugins      *plugin.Registry
 	qlog         *database.QueryLogger
 	secondaryMgr *secondary.Manager
+	kominfo      *kominfo.Manager
 	log          *slog.Logger
 	queryACLMu sync.RWMutex
 	queryACL   *acl.List
@@ -786,6 +788,7 @@ type RuntimeFlags struct {
 	QueryLog      bool     `json:"query_log_enabled"`
 	Forwarders    []string `json:"forwarders,omitempty"`
 	ForwardZones  []config.ForwardZoneConfig `json:"forward_zones,omitempty"`
+	KominfoSync   bool                       `json:"kominfo_sync_enabled"`
 }
 
 func (s *Server) RuntimeFlags() RuntimeFlags {
@@ -819,6 +822,9 @@ func (s *Server) RuntimeFlags() RuntimeFlags {
 	}
 	if s.views != nil {
 		f.SplitHorizon = s.views.Enabled()
+	}
+	if s.kominfo != nil {
+		f.KominfoSync = s.kominfo.Enabled()
 	}
 	return f
 }
@@ -865,6 +871,10 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 		}
 		s.cfg.SplitHorizon.Enabled = f.SplitHorizon
 		s.cfg.Logging.QueryLogEnabled = f.QueryLog
+		s.cfg.KominfoSync.Enabled = f.KominfoSync
+	}
+	if s.kominfo != nil {
+		s.kominfo.SetEnabled(f.KominfoSync)
 	}
 }
 
@@ -873,6 +883,10 @@ func (s *Server) SetQueryLogger(q *database.QueryLogger) { s.qlog = q }
 func (s *Server) SetSecondary(m *secondary.Manager) { s.secondaryMgr = m }
 
 func (s *Server) Secondary() *secondary.Manager { return s.secondaryMgr }
+
+func (s *Server) SetKominfo(m *kominfo.Manager) { s.kominfo = m }
+
+func (s *Server) Kominfo() *kominfo.Manager { return s.kominfo }
 
 // SetQueryACL replaces the live DNS query ACL (allow/deny CIDRs).
 func (s *Server) SetQueryACL(allow, deny []string) error {

@@ -20,26 +20,39 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 		return false
 	}
 	if s.cfg == nil || !s.cfg.Transfer.AllowAXFR {
-		m := new(dns.Msg)
-		m.SetRcode(req, dns.RcodeRefused)
-		_ = w.WriteMsg(m)
-		metrics.QueriesTotal.WithLabelValues(protocolFromWriter(w), "xfer_denied").Inc()
-		return true
-	}
-	if !transferAllowedFrom(s.cfg.Transfer.AllowFrom, clientIP) {
-		m := new(dns.Msg)
-		m.SetRcode(req, dns.RcodeRefused)
-		_ = w.WriteMsg(m)
-		metrics.QueriesTotal.WithLabelValues(protocolFromWriter(w), "xfer_acl").Inc()
-		return true
-	}
-	if s.cfg.Transfer.RequireTSIG {
-		if status := w.TsigStatus(); status != nil {
+		// Kominfo sync may allow AXFR only for its secondaries without global allow_axfr.
+		if s.kominfo == nil || !s.kominfo.IsTargetIP(clientIP) {
 			m := new(dns.Msg)
-			m.SetRcode(req, dns.RcodeNotAuth)
+			m.SetRcode(req, dns.RcodeRefused)
 			_ = w.WriteMsg(m)
-			metrics.QueriesTotal.WithLabelValues(protocolFromWriter(w), "xfer_tsig").Inc()
+			metrics.QueriesTotal.WithLabelValues(protocolFromWriter(w), "xfer_denied").Inc()
 			return true
+		}
+	}
+	allowFrom := []string(nil)
+	requireTSIG := false
+	if s.cfg != nil {
+		allowFrom = s.cfg.Transfer.AllowFrom
+		requireTSIG = s.cfg.Transfer.RequireTSIG
+	}
+	if !transferAllowedFrom(allowFrom, clientIP) {
+		if s.kominfo == nil || !s.kominfo.IsTargetIP(clientIP) {
+			m := new(dns.Msg)
+			m.SetRcode(req, dns.RcodeRefused)
+			_ = w.WriteMsg(m)
+			metrics.QueriesTotal.WithLabelValues(protocolFromWriter(w), "xfer_acl").Inc()
+			return true
+		}
+	}
+	if requireTSIG {
+		if s.kominfo == nil || !s.kominfo.IsTargetIP(clientIP) {
+			if status := w.TsigStatus(); status != nil {
+				m := new(dns.Msg)
+				m.SetRcode(req, dns.RcodeNotAuth)
+				_ = w.WriteMsg(m)
+				metrics.QueriesTotal.WithLabelValues(protocolFromWriter(w), "xfer_tsig").Inc()
+				return true
+			}
 		}
 	}
 
@@ -74,6 +87,8 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 	}()
 	if err := tr.Out(w, req, ch); err != nil {
 		s.log.Warn("axfr failed", "zone", zone, "err", err)
+	} else if s.kominfo != nil {
+		s.kominfo.RecordAXFRPull(zone, clientIP)
 	}
 	metrics.QueriesTotal.WithLabelValues(protocolFromWriter(w), dns.TypeToString[q.Qtype]).Inc()
 	return true
@@ -123,10 +138,16 @@ func findOrSynthSOA(zone string, recs []authoritative.Record) dns.RR {
 
 // NotifySecondaries sends DNS NOTIFY for zone to configured remotes (best-effort).
 func (s *Server) NotifySecondaries(zone string) {
-	if s == nil || s.cfg == nil || len(s.cfg.Transfer.Notify) == 0 {
+	if s == nil {
 		return
 	}
 	zone = config.NormalizeName(zone)
+	if s.kominfo != nil && s.kominfo.Enabled() {
+		go s.kominfo.NotifyZone(zone)
+	}
+	if s.cfg == nil || len(s.cfg.Transfer.Notify) == 0 {
+		return
+	}
 	m := new(dns.Msg)
 	m.SetNotify(zone)
 	c := &dns.Client{Net: "udp", Timeout: s.res.Timeout}

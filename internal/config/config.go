@@ -24,6 +24,7 @@ type Config struct {
 	TSIG         TSIGConfig         `toml:"tsig"`
 	Transfer     TransferConfig     `toml:"transfer"`
 	Update       UpdateConfig       `toml:"update"`
+	KominfoSync  KominfoSyncConfig  `toml:"kominfo_sync"`
 	ACL          ACLConfig          `toml:"acl"`
 	GeoDNS       GeoDNSConfig       `toml:"geodns"`
 	SplitHorizon SplitHorizonConfig `toml:"split_horizon"`
@@ -140,6 +141,14 @@ type TransferConfig struct {
 	Notify []string `toml:"notify"`
 	// AllowFrom CIDRs allowed to request AXFR (empty = any if AllowAXFR).
 	AllowFrom []string `toml:"allow_from"`
+}
+
+// KominfoSyncConfig controls automatic NOTIFY/AXFR sync to Kominfo secondaries.
+type KominfoSyncConfig struct {
+	// Enabled default is false; UI/runtime can turn on without restart.
+	Enabled bool `toml:"enabled"`
+	// Targets override the built-in Kominfo secondary IPs (host or host:port).
+	Targets []string `toml:"targets"`
 }
 
 // UpdateConfig controls RFC 2136 dynamic DNS updates.
@@ -294,9 +303,10 @@ func Default() *Config {
 			PrometheusBind:    "0.0.0.0:9100",
 		},
 		TSIG:     TSIGConfig{Enabled: false},
-		Transfer: TransferConfig{AllowAXFR: false, RequireTSIG: true},
-		Update:   UpdateConfig{Enabled: false, RequireTSIG: true},
-		ACL:      ACLConfig{},
+		Transfer:    TransferConfig{AllowAXFR: false, RequireTSIG: true},
+		Update:      UpdateConfig{Enabled: false, RequireTSIG: true},
+		KominfoSync: KominfoSyncConfig{Enabled: false},
+		ACL:         ACLConfig{},
 		GeoDNS: GeoDNSConfig{
 			Enabled: false, DatabasePath: "./data/dbip-country-lite.mmdb", DefaultTag: "default",
 		},

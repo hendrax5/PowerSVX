@@ -24,6 +24,7 @@ type RuntimeSettings struct {
 	ForwardZones         []ForwardZoneConfig `json:"forward_zones"`
 	AllowQuery           []string `json:"allow_query"`
 	DenyQuery            []string `json:"deny_query"`
+	KominfoSyncEnabled   *bool    `json:"kominfo_sync_enabled,omitempty"`
 }
 
 func RuntimeSettingsPath(dir string) string {
@@ -104,5 +105,8 @@ func (c *Config) ApplyRuntimeSettings(s RuntimeSettings) {
 	}
 	if s.DenyQuery != nil {
 		c.ACL.DenyQuery = append([]string(nil), s.DenyQuery...)
+	}
+	if s.KominfoSyncEnabled != nil {
+		c.KominfoSync.Enabled = *s.KominfoSyncEnabled
 	}
 }

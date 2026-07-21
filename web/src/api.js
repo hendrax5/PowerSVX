@@ -135,6 +135,14 @@ export const api = {
       method: 'POST',
       body: '{}',
     }),
+  kominfoSync: () => request('/api/v1/kominfo-sync'),
+  setKominfoSync: (enabled) =>
+    request('/api/v1/kominfo-sync', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: !!enabled }),
+    }),
+  runKominfoSync: () =>
+    request('/api/v1/kominfo-sync', { method: 'POST', body: '{}' }),
   events: () => request('/api/v1/events'),
   eventsStreamURL() {
     const token = getToken()

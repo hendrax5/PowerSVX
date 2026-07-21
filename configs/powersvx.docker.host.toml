@@ -92,6 +92,11 @@ require_tsig = true
 enabled = false
 require_tsig = true
 
+# Kominfo secondary AXFR sync (NOTIFY + allow pull). Default off; enable in UI.
+[kominfo_sync]
+enabled = false
+# targets = ["182.23.79.202:53", "139.255.196.202:53"]
+
 [api]
 rest_enabled = true
 rest_bind = "0.0.0.0:5380"

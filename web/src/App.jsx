@@ -1838,6 +1838,7 @@ function Settings() {
     { id: 'features', label: 'Features', hint: 'Optional engines', dirty: dirtyFeatures },
     { id: 'access', label: 'Access', hint: 'Who may query', dirty: dirtyAcl },
     { id: 'status', label: 'Status', hint: 'Read-only info', dirty: false },
+    { id: 'kominfo', label: 'Kominfo', hint: 'AXFR sync', dirty: false },
     { id: 'tools', label: 'Tools', hint: 'Backup, RPZ, users', dirty: false },
   ]
 
@@ -2416,6 +2417,7 @@ function Settings() {
                   ['AXFR requires TSIG', saved.transfer?.require_tsig ? 'yes' : 'no'],
                   ['NOTIFY targets', (saved.transfer?.notify || []).join(', ') || '—'],
                   ['AXFR allow from', (saved.transfer?.allow_from || []).join(', ') || '—'],
+                  ['Kominfo sync', saved.kominfo_sync_enabled ? 'on' : 'off'],
                 ].map(([k, v]) => (
                   <div key={k} className="flex justify-between gap-4 px-4 py-2.5">
                     <dt className="text-[var(--muted)]">{k}</dt>
@@ -2425,6 +2427,8 @@ function Settings() {
               </dl>
             </section>
           ) : null}
+
+          {section === 'kominfo' ? <KominfoSyncPanel isAdmin={isAdmin} /> : null}
 
           {section === 'tools' ? (
             <div className="space-y-4" aria-label="Tools">
@@ -2444,6 +2448,183 @@ function Settings() {
         </div>
       ) : null}
     </div>
+  )
+}
+
+function KominfoSyncPanel({ isAdmin }) {
+  const [data, setData] = useState(null)
+  const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const load = () =>
+    api
+      .kominfoSync()
+      .then((d) => setData(d))
+      .catch((e) => setErr(e.message))
+
+  useEffect(() => {
+    load()
+  }, [])
+
+  useEffect(() => {
+    if (!data?.progress?.running) return undefined
+    const t = setInterval(() => {
+      api.kominfoSync().then(setData).catch(() => {})
+    }, 1500)
+    return () => clearInterval(t)
+  }, [data?.progress?.running])
+
+  const toggle = async () => {
+    if (!data) return
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const next = await api.setKominfoSync(!data.enabled)
+      setData(next)
+      setOk(next.enabled ? 'Kominfo sync enabled' : 'Kominfo sync disabled')
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const syncNow = async () => {
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const next = await api.runKominfoSync()
+      setData(next)
+      setOk('Sync started')
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const statusTone = (st) => {
+    if (st === 'soa_ok' || st === 'axfr_ok' || st === 'notify_ok') return 'text-[var(--ok)]'
+    if (st === 'fail' || st === 'notify_fail' || st === 'soa_mismatch') return 'text-[var(--danger)]'
+    return 'text-[var(--muted)]'
+  }
+
+  if (!data) {
+    return err ? <ErrorBox msg={err} /> : <LoadingBlock label="Loading Kominfo sync" />
+  }
+
+  const p = data.progress || {}
+  const pct = p.total > 0 ? Math.min(100, Math.round((100 * (p.done || 0)) / p.total)) : 0
+
+  return (
+    <section className="panel space-y-0" aria-labelledby="settings-kominfo-heading">
+      <div className="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 id="settings-kominfo-heading" className="text-sm font-medium">
+            Kominfo AXFR sync
+          </h2>
+          <p className="text-xs text-[var(--muted)] mt-1 max-w-xl leading-relaxed">
+            Default off. When enabled, PowerSVX NOTIFYs Kominfo secondaries and allows them to AXFR
+            without global transfer ACL/TSIG. Sync now walks all zones and checks remote SOA.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy || !isAdmin}
+            onClick={toggle}
+            className={`btn min-h-[44px] disabled:opacity-50 ${
+              data.enabled ? 'btn-primary' : 'btn-secondary'
+            }`}
+          >
+            {data.enabled ? 'Enabled' : 'Disabled'}
+          </button>
+          <button
+            type="button"
+            disabled={busy || !isAdmin || !data.enabled || p.running}
+            onClick={syncNow}
+            className="btn btn-secondary min-h-[44px] disabled:opacity-50"
+          >
+            {p.running ? 'Syncing…' : 'Sync now'}
+          </button>
+        </div>
+      </div>
+
+      <div className="px-4 py-3 space-y-3 border-b border-[var(--border)]">
+        <div className="text-xs text-[var(--muted)]">
+          Targets:{' '}
+          <span className="mono text-[var(--text)]">{(data.targets || []).join(', ')}</span>
+        </div>
+        {p.running || p.total > 0 ? (
+          <div className="space-y-2">
+            <div className="flex justify-between text-xs text-[var(--muted)]">
+              <span>
+                Progress {p.done || 0}/{p.total || 0}
+                {p.current_zone ? ` · ${p.current_zone}` : ''}
+                {p.phase ? ` · ${p.phase}` : ''}
+              </span>
+              <span className="mono">{pct}%</span>
+            </div>
+            <div className="h-2 bg-[var(--bg)] border border-[var(--border)] rounded-[var(--radius-sm)] overflow-hidden">
+              <div
+                className="h-full bg-[var(--accent)] transition-[width] duration-300"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            {p.last_error ? <p className="text-xs text-[var(--danger)]">{p.last_error}</p> : null}
+            {p.finished_at && !p.running ? (
+              <p className="text-xs text-[var(--muted)]">Last finished {p.finished_at}</p>
+            ) : null}
+          </div>
+        ) : null}
+        {err ? <ErrorBox msg={err} /> : null}
+        {ok ? (
+          <div className="text-sm text-[var(--accent)]" role="status">
+            {ok}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="overflow-x-auto">
+        {(data.zones || []).length === 0 ? (
+          <p className="px-4 py-6 text-sm text-[var(--muted)]">No authoritative zones yet.</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-[var(--muted)] border-b border-[var(--border)]">
+                <th className="px-4 py-2 font-medium">Zone</th>
+                <th className="px-4 py-2 font-medium">Serial</th>
+                <th className="px-4 py-2 font-medium">Target</th>
+                <th className="px-4 py-2 font-medium">Status</th>
+                <th className="px-4 py-2 font-medium">Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data.zones || []).flatMap((z) =>
+                (z.targets || []).map((t, i) => (
+                  <tr key={`${z.zone}-${t.addr}`} className="border-b border-[var(--border)]/70">
+                    <td className="px-4 py-2 mono">{i === 0 ? z.zone : ''}</td>
+                    <td className="px-4 py-2 mono">{i === 0 ? z.serial : ''}</td>
+                    <td className="px-4 py-2 mono text-xs">{t.addr}</td>
+                    <td className={`px-4 py-2 mono text-xs ${statusTone(t.status)}`}>{t.status}</td>
+                    <td className="px-4 py-2 text-xs text-[var(--muted)]">
+                      {t.error ||
+                        (t.remote_serial ? `remote ${t.remote_serial}` : '') ||
+                        (t.axfr_pull_at ? `pull ${t.axfr_pull_at}` : '') ||
+                        (t.notify_at ? `notify ${t.notify_at}` : '—')}
+                    </td>
+                  </tr>
+                )),
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
+      {data.note ? <p className="px-4 py-3 text-[11px] text-[var(--muted)] border-t border-[var(--border)]">{data.note}</p> : null}
+    </section>
   )
 }
 

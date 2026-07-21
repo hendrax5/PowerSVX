@@ -97,6 +97,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/settings", a.withAuth(a.handleSettings))
 	mux.HandleFunc("/api/v1/secondary", a.withAuth(a.handleSecondary))
 	mux.HandleFunc("/api/v1/secondary/", a.withAuth(a.handleSecondarySub))
+	mux.HandleFunc("/api/v1/kominfo-sync", a.withAuth(a.handleKominfoSync))
 	mux.HandleFunc("/api/v1/rpz", a.withAuth(a.handleRPZ))
 	mux.HandleFunc("/api/v1/domains/", a.withAuth(a.handleDomains))
 	mux.HandleFunc("/api/v1/tools/lookup", a.withAuth(a.handleLookup))
@@ -789,6 +790,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			fz = a.cfg.Resolver.ForwardZones
 		}
 		rlLive := a.srv.RateLimitConfig()
+		kominfoOn := cur.KominfoSync
 		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), config.RuntimeSettings{
 			GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 			RateLimitQPS: &rlLive.QPS, RateLimitBurst: &rlLive.Burst, RateLimitBlockDur: &rlLive.BlockDuration,
@@ -796,6 +798,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
 			ResolverMode: &mode, ForwardOnFail: &cur.ForwardOnFail, QueryLog: &cur.QueryLog,
 			Forwarders: fwd, ForwardZones: fz, AllowQuery: allow, DenyQuery: deny,
+			KominfoSyncEnabled: &kominfoOn,
 		})
 		writeJSON(w, http.StatusOK, a.settingsPayload())
 	default:
@@ -858,6 +861,7 @@ func (a *API) settingsPayload() map[string]any {
 			"notify":       a.cfg.Transfer.Notify,
 			"allow_from":   a.cfg.Transfer.AllowFrom,
 		},
+		"kominfo_sync_enabled": a.srv.RuntimeFlags().KominfoSync,
 		"udp_addr":        a.srv.UDPAddr(),
 		"geodns_db":       a.cfg.GeoDNS.DatabasePath,
 		"auth_type":       a.cfg.API.AuthType,

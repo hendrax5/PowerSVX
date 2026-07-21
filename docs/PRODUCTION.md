@@ -58,6 +58,13 @@
 - Publish the returned **DS** at the parent / registrar.
 - Full NSEC3 / key rollover / HSM still deferred.
 
+## Kominfo AXFR sync
+- Settings → Kominfo. Default **disabled**.
+- Targets: `182.23.79.202` and `139.255.196.202` (override via `[kominfo_sync] targets`).
+- When enabled: those IPs may AXFR/IXFR without global `allow_axfr` / TSIG; zone changes send NOTIFY.
+- **Sync now** walks all zones (NOTIFY → SOA check) with live progress; `axfr_ok` appears after a successful pull from Kominfo.
+- Toggle persisted in `runtime-settings.json` as `kominfo_sync_enabled`.
+
 ## GeoDNS
 - Uses MaxMind-compatible MMDB (`[geodns] database_path`).
 - **Docker default:** DB-IP Country Lite (`/data/dbip-country-lite.mmdb`), auto-downloaded by `deploy/docker/entrypoint.sh` on start if missing or older than ~35 days (CC BY 4.0 — attribute [DB-IP](https://db-ip.com)).
