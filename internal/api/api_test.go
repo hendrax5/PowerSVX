@@ -11,12 +11,14 @@ import (
 	"time"
 
 	"github.com/powersvx/powersvx/internal/api"
+	"github.com/powersvx/powersvx/internal/allowlist"
 	"github.com/powersvx/powersvx/internal/authoritative"
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
 	"github.com/powersvx/powersvx/internal/resolver"
+	"github.com/powersvx/powersvx/internal/rpz"
 	"github.com/powersvx/powersvx/internal/server"
 )
 
@@ -163,5 +165,51 @@ func TestSettingsToggle(t *testing.T) {
 	}
 	if len(res.Forwarders) != 2 || res.Forwarders[0] != "1.0.0.1:53" {
 		t.Fatalf("live forwarders=%v", res.Forwarders)
+	}
+}
+
+func TestWhitelistAndDomainLookup(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.API.RESTEnabled = true
+	cfg.API.AuthType = "token"
+	cfg.API.APIToken = "secret"
+	auth := authoritative.NewStore()
+	tier := cache.NewTier(cache.NewL1(1000), nil, time.Minute, time.Minute)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	wl := allowlist.New("")
+	eng := rpz.New(true)
+	eng.Replace(map[string]rpz.Action{"bad.example.com.": rpz.ActionNXDOMAIN})
+	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth, Allow: wl, RPZ: eng}, log)
+	a := api.New(cfg, srv, nil, tier, auth, log)
+	h := a.Handler()
+	authH := func(method, url string, body io.Reader) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, url, body)
+		req.Header.Set("Authorization", "Bearer secret")
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr
+	}
+
+	rr := authH(http.MethodPost, "/api/v1/domains/whitelist", bytes.NewBufferString(`{"domain":"bad.example.com"}`))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("add wl: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = authH(http.MethodGet, "/api/v1/domains/lookup?name=bad.example.com", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("lookup: %d", rr.Code)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if out["whitelisted"] != true || out["blocked"] != false || out["in_rpz"] != true {
+		t.Fatalf("%v", out)
+	}
+	rr = authH(http.MethodDelete, "/api/v1/domains/whitelist?name=bad.example.com", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("del: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = authH(http.MethodGet, "/api/v1/domains/lookup?name=bad.example.com", nil)
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if out["blocked"] != true {
+		t.Fatalf("should block after remove: %v", out)
 	}
 }

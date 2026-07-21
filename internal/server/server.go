@@ -16,6 +16,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/powersvx/powersvx/internal/acme"
 	"github.com/powersvx/powersvx/internal/acl"
+	"github.com/powersvx/powersvx/internal/allowlist"
 	"github.com/powersvx/powersvx/internal/analytics"
 	"github.com/powersvx/powersvx/internal/anomaly"
 	"github.com/powersvx/powersvx/internal/authoritative"
@@ -50,6 +51,7 @@ type Server struct {
 	signer  *dnssec.Signer
 	limiter *ratelimit.Limiter
 	rpz     *rpz.Engine
+	allow   *allowlist.List
 	tsig    *tsig.Store
 	views   *view.Matcher
 	geo     *geo.Resolver
@@ -89,6 +91,7 @@ type Deps struct {
 	Signer  *dnssec.Signer
 	Limiter *ratelimit.Limiter
 	RPZ     *rpz.Engine
+	Allow   *allowlist.List
 	TSIG    *tsig.Store
 	Views   *view.Matcher
 	Geo     *geo.Resolver
@@ -126,6 +129,7 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 		signer:   d.Signer,
 		limiter:  d.Limiter,
 		rpz:      d.RPZ,
+		allow:    d.Allow,
 		tsig:     d.TSIG,
 		views:    d.Views,
 		geo:      d.Geo,
@@ -184,8 +188,13 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		if s.mon == nil {
 			return
 		}
+		qn := ""
+		if len(req.Question) > 0 {
+			qn = config.NormalizeName(req.Question[0].Name)
+		}
 		s.mon.Observe(monitor.Sample{
 			ClientIP:    clientIP,
+			QName:       qn,
 			Latency:     time.Since(start),
 			Path:        path,
 			RCode:       rcode,
@@ -324,45 +333,48 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	if s.rpz != nil {
-		if hit, ok := s.rpz.Lookup(qname); ok {
-			if hit.Action == rpz.ActionPass {
-				// Explicit allow — continue to cache / auth / recursive.
-			} else {
-				metrics.RPZBlocked.Inc()
-				metrics.QueriesTotal.WithLabelValues(proto, "blocked").Inc()
-				m := new(dns.Msg)
-				m.SetReply(req)
-				m.RecursionAvailable = true
-				rcode := dns.RcodeNameError
-				code := "NXDOMAIN"
-				switch hit.Action {
-				case rpz.ActionNODATA:
-					m.Rcode = dns.RcodeSuccess
-					rcode = dns.RcodeSuccess
-					code = "NOERROR"
-				case rpz.ActionRedirect:
-					m.Rcode = dns.RcodeSuccess
-					rcode = dns.RcodeSuccess
-					code = "NOERROR"
-					if rr := rpzRedirectRR(qname, qtype, hit.Target); rr != nil {
-						m.Answer = []dns.RR{rr}
+		whitelisted := s.allow != nil && s.allow.Allows(qname)
+		if !whitelisted {
+			if hit, ok := s.rpz.Lookup(qname); ok {
+				if hit.Action == rpz.ActionPass {
+					// Explicit allow — continue to cache / auth / recursive.
+				} else {
+					metrics.RPZBlocked.Inc()
+					metrics.QueriesTotal.WithLabelValues(proto, "blocked").Inc()
+					m := new(dns.Msg)
+					m.SetReply(req)
+					m.RecursionAvailable = true
+					rcode := dns.RcodeNameError
+					code := "NXDOMAIN"
+					switch hit.Action {
+					case rpz.ActionNODATA:
+						m.Rcode = dns.RcodeSuccess
+						rcode = dns.RcodeSuccess
+						code = "NOERROR"
+					case rpz.ActionRedirect:
+						m.Rcode = dns.RcodeSuccess
+						rcode = dns.RcodeSuccess
+						code = "NOERROR"
+						if rr := rpzRedirectRR(qname, qtype, hit.Target); rr != nil {
+							m.Answer = []dns.RR{rr}
+						}
+					case rpz.ActionCNAME:
+						m.Rcode = dns.RcodeSuccess
+						rcode = dns.RcodeSuccess
+						code = "NOERROR"
+						if rr := rpzCNAMERR(qname, hit.Target); rr != nil {
+							m.Answer = []dns.RR{rr}
+						}
+					default:
+						m.Rcode = dns.RcodeNameError
 					}
-				case rpz.ActionCNAME:
-					m.Rcode = dns.RcodeSuccess
-					rcode = dns.RcodeSuccess
-					code = "NOERROR"
-					if rr := rpzCNAMERR(qname, hit.Target); rr != nil {
-						m.Answer = []dns.RR{rr}
-					}
-				default:
-					m.Rcode = dns.RcodeNameError
+					_ = w.WriteMsg(m)
+					metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
+					observe(code)
+					logQuery(qname, qtypeStr, rcode, false)
+					note("rpz", code, false, false, false)
+					return
 				}
-				_ = w.WriteMsg(m)
-				metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
-				observe(code)
-				logQuery(qname, qtypeStr, rcode, false)
-				note("rpz", code, false, false, false)
-				return
 			}
 		}
 	}
@@ -842,6 +854,7 @@ func (s *Server) QueryLogger() *database.QueryLogger     { return s.qlog }
 
 func (s *Server) Analytics() *analytics.Collector { return s.stats }
 func (s *Server) Monitor() *monitor.Collector     { return s.mon }
+func (s *Server) Allowlist() *allowlist.List      { return s.allow }
 
 // RateLimitBlocked returns currently blocked client IPs.
 func (s *Server) RateLimitBlocked(limit int) []monitor.Count {

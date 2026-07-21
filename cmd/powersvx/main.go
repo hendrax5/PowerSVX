@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/powersvx/powersvx/internal/acme"
+	"github.com/powersvx/powersvx/internal/allowlist"
 	"github.com/powersvx/powersvx/internal/analytics"
 	"github.com/powersvx/powersvx/internal/anomaly"
 	"github.com/powersvx/powersvx/internal/api"
@@ -154,6 +155,12 @@ func main() {
 	}
 	defer func() { _ = rpzEng.Close() }()
 
+	wl := allowlist.New(allowlist.DefaultPath(*dataDir))
+	if err := wl.Load(); err != nil {
+		log.Warn("whitelist load failed", "err", err)
+	} else {
+		log.Info("whitelist ready", "entries", wl.Count())
+	}
 	var policies []rpz.PolicyConfig
 	for _, p := range cfg.RPZ.Policies {
 		policies = append(policies, rpz.PolicyConfig{
@@ -267,7 +274,7 @@ func main() {
 	}
 	dnsSrv := server.New(cfg, server.Deps{
 		Cache: tier, Res: res, Auth: auth, DNSSEC: sec, Signer: signer,
-		Limiter: limiter, RPZ: rpzEng, TSIG: tsigStore,
+		Limiter: limiter, RPZ: rpzEng, Allow: wl, TSIG: tsigStore,
 		Views: views, Geo: geoRes, TLS: tlsCfg, Events: bus,
 		ACME: acmeStore, Stats: stats, Anomaly: anom, Monitor: mon, Plugins: plugins, QLog: qlog,
 	}, log)

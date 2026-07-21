@@ -96,6 +96,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/zones/", a.withAuth(a.handleZoneSub))
 	mux.HandleFunc("/api/v1/settings", a.withAuth(a.handleSettings))
 	mux.HandleFunc("/api/v1/rpz", a.withAuth(a.handleRPZ))
+	mux.HandleFunc("/api/v1/domains/", a.withAuth(a.handleDomains))
 	mux.HandleFunc("/api/v1/tools/lookup", a.withAuth(a.handleLookup))
 	mux.HandleFunc("/api/v1/events", a.withAuth(a.handleEvents))
 	mux.HandleFunc("/api/v1/events/stream", a.withAuth(a.handleEventStream))

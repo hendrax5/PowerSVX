@@ -53,6 +53,7 @@ function Shell({ children }) {
       label: 'Operate',
       links: [
         ['/', 'Dashboard'],
+        ['/domains', 'Domains'],
         ['/zones', 'Zones'],
         ['/lookup', 'Lookup'],
       ],
@@ -313,10 +314,6 @@ function Dashboard() {
   const mon = data.monitor || {}
   const health = data.health || { checks: {}, status: '—' }
   const checks = health.checks || {}
-  const hitRatio =
-    s.cache_hits + s.cache_misses > 0
-      ? ((100 * s.cache_hits) / (s.cache_hits + s.cache_misses)).toFixed(1)
-      : '—'
   const trafficChart = [
     { name: 'Hits', value: s.cache_hits },
     { name: 'Misses', value: s.cache_misses },
@@ -391,17 +388,21 @@ function Dashboard() {
       </section>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 reveal reveal-delay-1">
-        <Stat label="QPS" value={Number(mon.qps_now || 0).toFixed(0)} sub={`total ${s.queries_total}`} />
+        <Stat label="QPS" value={Number(mon.qps_now || 0).toFixed(0)} sub={`total ${mon.queries_total ?? s.queries_total}`} />
+        <Stat
+          label="Blocked"
+          value={`${Number(mon.blocked_percent || 0).toFixed(1)}%`}
+          sub={`${mon.blocked_total ?? 0} blocked · RPZ ${s.rpz_entries ?? 0}`}
+        />
         <Stat
           label="Latency p50 / p95"
           value={`${Number(lat.p50_ms || 0).toFixed(1)} / ${Number(lat.p95_ms || 0).toFixed(1)}`}
-          sub={`p99 ${Number(lat.p99_ms || 0).toFixed(1)} ms · n=${lat.samples || 0}`}
+          sub={`p99 ${Number(lat.p99_ms || 0).toFixed(1)} ms`}
         />
-        <Stat label="Cache hit %" value={hitRatio} sub={`L1 size ${s.cache_l1_size}`} />
         <Stat
-          label="Resources"
-          value={`${res.goroutines ?? '—'} g`}
-          sub={`heap ${Number(res.heap_mb || 0).toFixed(0)} MB · GC ${res.num_gc ?? 0}`}
+          label="CPU / RAM"
+          value={`${Number(res.cpu_percent || 0).toFixed(1)}%`}
+          sub={`RSS ${Number(res.rss_mb || 0).toFixed(0)} MB · ${res.goroutines ?? '—'} g · ${res.num_cpu ?? '—'} CPU`}
         />
       </div>
 
@@ -486,6 +487,27 @@ function Dashboard() {
       <div className="grid md:grid-cols-3 gap-4 reveal reveal-delay-3">
         <section className="panel p-4">
           <div className="flex items-center justify-between gap-2 mb-3">
+            <h2 className="text-sm text-[var(--muted)]">Top blocked</h2>
+            <a href="/domains" className="text-xs text-[var(--accent)] underline">
+              Domains
+            </a>
+          </div>
+          {(mon.top_blocked || []).length ? (
+            <ul className="space-y-1 text-sm mono max-h-56 overflow-auto">
+              {mon.top_blocked.map((n) => (
+                <li key={n.key} className="flex justify-between gap-3 border-b border-[var(--border)]/50 py-1.5">
+                  <span className="truncate">{n.key}</span>
+                  <span className="text-[var(--warn)] shrink-0">{n.count}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyState title="No blocks yet" hint="Appears when RPZ/plugin blocks a query." />
+          )}
+        </section>
+
+        <section className="panel p-4">
+          <div className="flex items-center justify-between gap-2 mb-3">
             <h2 className="text-sm text-[var(--muted)]">Top clients</h2>
             <a href="/settings" className="text-xs text-[var(--accent)] underline">
               ACL settings
@@ -520,6 +542,35 @@ function Dashboard() {
           ) : null}
         </section>
 
+        <section className="panel p-4">
+          <h2 className="text-sm text-[var(--muted)] mb-3">Recent queries</h2>
+          {(mon.recent || []).length ? (
+            <ul className="space-y-1 text-sm mono max-h-72 overflow-auto">
+              {mon.recent.slice(0, 25).map((q, i) => (
+                <li
+                  key={`${q.time}-${q.qname}-${i}`}
+                  className="border-b border-[var(--border)]/50 py-1.5 flex flex-col gap-0.5"
+                >
+                  <div className="flex justify-between gap-2">
+                    <span className={`truncate ${q.blocked ? 'text-[var(--warn)]' : ''}`}>{q.qname || '—'}</span>
+                    <span className="text-xs text-[var(--muted)] shrink-0">{Number(q.ms || 0).toFixed(0)}ms</span>
+                  </div>
+                  <div className="text-xs text-[var(--muted)] flex justify-between gap-2">
+                    <span className="truncate">{q.client_ip || '—'}</span>
+                    <span>
+                      {q.blocked ? 'blocked' : q.path} · {q.rcode}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyState title="No recent queries" hint="Live ring fills as DNS traffic arrives." />
+          )}
+        </section>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4 reveal reveal-delay-3">
         <section className="panel p-4">
           <h2 className="text-sm text-[var(--muted)] mb-1">ACL</h2>
           {mon.acl_open_resolver ? (
@@ -2484,6 +2535,201 @@ function AuditLog() {
   )
 }
 
+function DomainsPage() {
+  const { canWrite } = useAuth()
+  const [q, setQ] = useState('')
+  const [result, setResult] = useState(null)
+  const [domains, setDomains] = useState([])
+  const [draft, setDraft] = useState('')
+  const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const loadWL = () =>
+    api
+      .whitelist()
+      .then((r) => setDomains(r.domains || []))
+      .catch((e) => setErr(e.message))
+
+  useEffect(() => {
+    loadWL()
+  }, [])
+
+  const search = async (e) => {
+    e?.preventDefault?.()
+    setErr('')
+    setOk('')
+    setResult(null)
+    const name = q.trim()
+    if (!name) {
+      setErr('Enter a domain to search')
+      return
+    }
+    setBusy(true)
+    try {
+      setResult(await api.domainLookup(name))
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const add = async (e) => {
+    e?.preventDefault?.()
+    setErr('')
+    setOk('')
+    const name = draft.trim() || q.trim()
+    if (!name) {
+      setErr('Domain required')
+      return
+    }
+    setBusy(true)
+    try {
+      const r = await api.addWhitelist(name)
+      setDomains(r.domains || [])
+      setDraft('')
+      setOk(`Whitelisted ${r.domain}`)
+      if (q.trim()) setResult(await api.domainLookup(q.trim()))
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async (name) => {
+    setErr('')
+    setOk('')
+    setBusy(true)
+    try {
+      const r = await api.removeWhitelist(name)
+      setDomains(r.domains || [])
+      setOk(`Removed ${name}`)
+      if (q.trim()) setResult(await api.domainLookup(q.trim()))
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6 max-w-3xl">
+      <header>
+        <h1 className="text-2xl font-semibold">Domains</h1>
+        <p className="text-sm text-[var(--muted)] mt-1">
+          Search the RPZ blacklist and manage the whitelist (bypasses blocklists).
+        </p>
+      </header>
+
+      {err ? <ErrorBox msg={err} /> : null}
+      {ok ? (
+        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
+          {ok}
+        </div>
+      ) : null}
+
+      <section className="panel p-4 space-y-3">
+        <h2 className="text-sm font-medium">Blacklist lookup</h2>
+        <form onSubmit={search} className="flex flex-wrap gap-2">
+          <input
+            className="flex-1 min-w-[12rem] bg-[var(--bg)] border border-[var(--border)] px-3 py-2 text-sm mono"
+            placeholder="ads.example.com"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <button
+            type="submit"
+            disabled={busy}
+            className="bg-[var(--accent)] text-[#0e1014] font-medium px-3 py-2 text-sm cursor-pointer disabled:opacity-40"
+          >
+            Search
+          </button>
+          {canWrite ? (
+            <button
+              type="button"
+              disabled={busy || !q.trim()}
+              onClick={add}
+              className="border border-[var(--border)] px-3 py-2 text-sm cursor-pointer disabled:opacity-40"
+            >
+              Add to whitelist
+            </button>
+          ) : null}
+        </form>
+        {result ? (
+          <div className="border border-[var(--border)] px-3 py-3 text-sm space-y-1">
+            <div className="mono font-medium">{result.name}</div>
+            <div>
+              Status:{' '}
+              <span className={result.blocked ? 'text-[var(--warn)]' : 'text-[var(--ok)]'}>
+                {result.whitelisted
+                  ? 'whitelisted (allowed)'
+                  : result.blocked
+                    ? `blocked (${result.action || 'nxdomain'})`
+                    : result.in_rpz
+                      ? `in RPZ (${result.action})`
+                      : 'not in blacklist'}
+              </span>
+            </div>
+            {result.target ? <div className="text-xs text-[var(--muted)]">Target: {result.target}</div> : null}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="panel p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-medium">Whitelist ({domains.length})</h2>
+          <a href="/settings" className="text-xs text-[var(--accent)] underline">
+            RPZ feeds
+          </a>
+        </div>
+        {canWrite ? (
+          <form onSubmit={add} className="flex flex-wrap gap-2">
+            <input
+              className="flex-1 min-w-[12rem] bg-[var(--bg)] border border-[var(--border)] px-3 py-2 text-sm mono"
+              placeholder="example.com or *.cdn.example"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+            />
+            <button
+              type="submit"
+              disabled={busy}
+              className="bg-[var(--accent)] text-[#0e1014] font-medium px-3 py-2 text-sm cursor-pointer disabled:opacity-40"
+            >
+              Add
+            </button>
+          </form>
+        ) : null}
+        {domains.length ? (
+          <ul className="space-y-1 text-sm mono max-h-96 overflow-auto">
+            {domains.map((d) => (
+              <li
+                key={d}
+                className="flex justify-between gap-3 border-b border-[var(--border)]/50 py-1.5 items-center"
+              >
+                <span className="truncate">{d}</span>
+                {canWrite ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => remove(d)}
+                    className="text-xs text-[var(--warn)] cursor-pointer disabled:opacity-40"
+                  >
+                    Remove
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <EmptyState title="Whitelist empty" hint="Add domains that should never be blocked by RPZ." />
+        )}
+      </section>
+    </div>
+  )
+}
+
 function QueryLogs() {
   const [clientIP, setClientIP] = useState(() => {
     try {
@@ -2719,6 +2965,7 @@ export default function App() {
                 <Routes>
                   <Route path="/" element={<Dashboard />} />
                   <Route path="/zones" element={<Zones />} />
+                  <Route path="/domains" element={<DomainsPage />} />
                   <Route path="/zones/:name" element={<ZoneDetail />} />
                   <Route path="/lookup" element={<Lookup />} />
                   <Route path="/logs" element={<QueryLogs />} />

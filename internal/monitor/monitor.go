@@ -3,7 +3,6 @@ package monitor
 import (
 	"fmt"
 	"net"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -20,8 +19,9 @@ const (
 // Sample is one finished DNS query observation.
 type Sample struct {
 	ClientIP    string
+	QName       string
 	Latency     time.Duration
-	Path        string // cache, auth, recursive, forward, fallback, acl_denied, ratelimited, ...
+	Path        string // cache, auth, recursive, forward, fallback, acl_denied, ratelimited, rpz, ...
 	RCode       string
 	ACLDenied   bool
 	RateLimited bool
@@ -40,10 +40,16 @@ type Collector struct {
 	subnets  map[string]uint64
 	paths    map[string]uint64
 	errors   map[string]uint64
+	blocked  map[string]uint64 // qname -> count (RPZ blocks)
 	aclAllow uint64
 	aclDeny  uint64
+	queries  uint64
 	rlHits   map[string]uint64
 	rlTotal  uint64
+
+	recent []RecentQuery
+	recI   int
+	recN   int
 
 	latRing [latencySamples]float64 // milliseconds
 	latN    int
@@ -55,6 +61,22 @@ type Collector struct {
 	fwdMS   map[string]int64
 }
 
+const (
+	maxBlockedNames = 200
+	recentCap       = 50
+)
+
+// RecentQuery is a short live query for the dashboard (Pi-hole style).
+type RecentQuery struct {
+	Time     time.Time `json:"time"`
+	ClientIP string    `json:"client_ip"`
+	QName    string    `json:"qname"`
+	Path     string    `json:"path"`
+	RCode    string    `json:"rcode"`
+	Blocked  bool      `json:"blocked"`
+	MS       float64   `json:"ms"`
+}
+
 func New() *Collector {
 	now := time.Now().Unix()
 	return &Collector{
@@ -62,11 +84,13 @@ func New() *Collector {
 		subnets:  make(map[string]uint64),
 		paths:    make(map[string]uint64),
 		errors:   make(map[string]uint64),
+		blocked:  make(map[string]uint64),
 		rlHits:   make(map[string]uint64),
 		fwdOK:    make(map[string]uint64),
 		fwdFail:  make(map[string]uint64),
 		fwdLast:  make(map[string]string),
 		fwdMS:    make(map[string]int64),
+		recent:   make([]RecentQuery, recentCap),
 		qpsEpoch: now - qpsWindowSec + 1,
 	}
 }
@@ -95,11 +119,24 @@ func (c *Collector) Observe(s Sample) {
 	}
 
 	c.paths[path]++
+	c.queries++
 
 	if s.ACLDenied || path == "acl_denied" {
 		c.aclDeny++
 	} else {
 		c.aclAllow++
+	}
+
+	isBlocked := path == "rpz" || path == "plugin"
+	if isBlocked {
+		qname := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s.QName), "."))
+		if qname == "" {
+			qname = "."
+		}
+		c.blocked[qname]++
+		if len(c.blocked) > maxBlockedNames*2 {
+			trimMap(c.blocked, maxBlockedNames)
+		}
 	}
 
 	if s.RateLimited || path == "ratelimited" {
@@ -133,6 +170,20 @@ func (c *Collector) Observe(s Sample) {
 
 	if kind := errorKind(s); kind != "" {
 		c.errors[kind]++
+	}
+
+	c.recent[c.recI] = RecentQuery{
+		Time:     time.Now().UTC(),
+		ClientIP: strings.TrimSpace(s.ClientIP),
+		QName:    strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s.QName), ".")),
+		Path:     path,
+		RCode:    s.RCode,
+		Blocked:  isBlocked,
+		MS:       ms,
+	}
+	c.recI = (c.recI + 1) % recentCap
+	if c.recN < recentCap {
+		c.recN++
 	}
 }
 
@@ -187,6 +238,9 @@ type Resources struct {
 	SysMB      float64 `json:"sys_mb"`
 	HeapMB     float64 `json:"heap_mb"`
 	NumGC      uint32  `json:"num_gc"`
+	CPUPercent float64 `json:"cpu_percent"`
+	RSSMB      float64 `json:"rss_mb"`
+	NumCPU     int     `json:"num_cpu"`
 }
 
 type Snapshot struct {
@@ -194,9 +248,13 @@ type Snapshot struct {
 	QPSSeries        []Point           `json:"qps_series"`
 	TopClients       []Count           `json:"top_clients"`
 	TopSubnets       []Count           `json:"top_subnets"`
+	TopBlocked       []Count           `json:"top_blocked"`
 	Latency          Latency           `json:"latency"`
 	Paths            []Count           `json:"paths"`
 	Errors           []Count           `json:"errors"`
+	QueriesTotal     uint64            `json:"queries_total"`
+	BlockedTotal     uint64            `json:"blocked_total"`
+	BlockedPercent   float64           `json:"blocked_percent"`
 	ACLAllow         uint64            `json:"acl_allow"`
 	ACLDeny          uint64            `json:"acl_deny"`
 	ACLOpenResolver  bool              `json:"acl_open_resolver"`
@@ -204,6 +262,7 @@ type Snapshot struct {
 	RateLimitTop     []Count           `json:"rate_limit_top"`
 	RateLimitActive  []Count           `json:"rate_limit_active"`
 	Forwarders       []ForwarderHealth `json:"forwarders"`
+	Recent           []RecentQuery     `json:"recent"`
 	Resources        Resources         `json:"resources"`
 }
 
@@ -212,11 +271,13 @@ func (c *Collector) Snapshot(allowCIDRs []string, activeBlocked []Count) Snapsho
 		QPSSeries:       []Point{},
 		TopClients:      []Count{},
 		TopSubnets:      []Count{},
+		TopBlocked:      []Count{},
 		Paths:           []Count{},
 		Errors:          []Count{},
 		RateLimitTop:    []Count{},
 		RateLimitActive: activeBlocked,
 		Forwarders:      []ForwarderHealth{},
+		Recent:          []RecentQuery{},
 		Resources:       resourceSnapshot(),
 		ACLOpenResolver: len(allowCIDRs) == 0,
 	}
@@ -254,6 +315,7 @@ func (c *Collector) Snapshot(allowCIDRs []string, activeBlocked []Count) Snapsho
 
 	out.TopClients = topN(c.clients, 15)
 	out.TopSubnets = topN(c.subnets, 15)
+	out.TopBlocked = topN(c.blocked, 15)
 	out.Paths = topN(c.paths, 20)
 	out.Errors = topN(c.errors, 20)
 	out.ACLAllow = c.aclAllow
@@ -262,6 +324,26 @@ func (c *Collector) Snapshot(allowCIDRs []string, activeBlocked []Count) Snapsho
 	out.RateLimitTop = topN(c.rlHits, 10)
 	out.Latency = percentileLocked(c)
 	out.Forwarders = forwarderListLocked(c)
+	out.QueriesTotal = c.queries
+	out.BlockedTotal = c.paths["rpz"] + c.paths["plugin"]
+	if c.queries > 0 {
+		out.BlockedPercent = 100 * float64(out.BlockedTotal) / float64(c.queries)
+	}
+	out.Recent = recentLocked(c)
+	return out
+}
+
+func recentLocked(c *Collector) []RecentQuery {
+	n := c.recN
+	if n == 0 {
+		return []RecentQuery{}
+	}
+	out := make([]RecentQuery, 0, n)
+	for i := 0; i < n; i++ {
+		// newest first
+		idx := (c.recI - 1 - i + recentCap) % recentCap
+		out = append(out, c.recent[idx])
+	}
 	return out
 }
 
@@ -415,16 +497,4 @@ func errorKind(s Sample) string {
 		return "servfail"
 	}
 	return ""
-}
-
-func resourceSnapshot() Resources {
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	return Resources{
-		Goroutines: runtime.NumGoroutine(),
-		AllocMB:    float64(ms.Alloc) / (1024 * 1024),
-		SysMB:      float64(ms.Sys) / (1024 * 1024),
-		HeapMB:     float64(ms.HeapAlloc) / (1024 * 1024),
-		NumGC:      ms.NumGC,
-	}
 }

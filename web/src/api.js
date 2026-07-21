@@ -108,6 +108,16 @@ export const api = {
       }),
     }),
   reloadRPZ: () => request('/api/v1/rpz', { method: 'POST', body: '{}' }),
+  domainLookup: (name) =>
+    request(`/api/v1/domains/lookup?name=${encodeURIComponent(name)}`),
+  whitelist: () => request('/api/v1/domains/whitelist'),
+  addWhitelist: (domain) =>
+    request('/api/v1/domains/whitelist', {
+      method: 'POST',
+      body: JSON.stringify({ domain }),
+    }),
+  removeWhitelist: (name) =>
+    request(`/api/v1/domains/whitelist?name=${encodeURIComponent(name)}`, { method: 'DELETE' }),
   lookup: (name, type) =>
     request('/api/v1/tools/lookup', { method: 'POST', body: JSON.stringify({ name, type }) }),
   events: () => request('/api/v1/events'),
