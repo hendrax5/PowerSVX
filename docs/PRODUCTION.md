@@ -18,9 +18,14 @@
 - SSO/OIDC deferred.
 
 ## Zone transfer
-- `[transfer] allow_axfr = true` enables AXFR (IXFR falls back to full AXFR).
+- `[transfer] allow_axfr = true` enables outbound zone transfer.
+- **IXFR is answered as full AXFR** (no incremental journal). Clients that request IXFR still get a complete zone dump. True delta-IXFR is deferred.
+- Secondary (slave) zones: configure via API/UI (`data/secondary-zones.json`) with `masters`; inbound DNS NOTIFY triggers AXFR pull; periodic refresh uses SOA/refresh interval.
 - `require_tsig = true` (default) needs a valid TSIG on the transfer.
 - `allow_from` CIDR ACL; `notify` lists secondaries for DNS NOTIFY after zone create.
+
+## Conditional forwarders
+- Global `[resolver] forwarders` plus optional `[[resolver.forward_zones]]` (`zone` + `forwarders`) for longest-suffix routing (stub/conditional). Editable in Settings.
 
 ## TLS (DoT / DoH / DoH3 / DoQ)
 - Minimum TLS 1.3 for encrypted DNS listeners.

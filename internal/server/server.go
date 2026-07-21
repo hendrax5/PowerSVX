@@ -34,6 +34,7 @@ import (
 	"github.com/powersvx/powersvx/internal/ratelimit"
 	"github.com/powersvx/powersvx/internal/resolver"
 	"github.com/powersvx/powersvx/internal/rpz"
+	"github.com/powersvx/powersvx/internal/secondary"
 	"github.com/powersvx/powersvx/internal/tproxy"
 	"github.com/powersvx/powersvx/internal/tsig"
 	"github.com/powersvx/powersvx/internal/view"
@@ -61,9 +62,10 @@ type Server struct {
 	stats   *analytics.Collector
 	anomaly *anomaly.Detector
 	mon     *monitor.Collector
-	plugins *plugin.Registry
-	qlog    *database.QueryLogger
-	log     *slog.Logger
+	plugins      *plugin.Registry
+	qlog         *database.QueryLogger
+	secondaryMgr *secondary.Manager
+	log          *slog.Logger
 	queryACLMu sync.RWMutex
 	queryACL   *acl.List
 	udp     *dns.Server
@@ -163,6 +165,23 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		} else {
 			clientIP = ra.String()
 		}
+	}
+
+	if req != nil && req.Opcode == dns.OpcodeNotify {
+		zone := ""
+		if len(req.Question) > 0 {
+			zone = config.NormalizeName(req.Question[0].Name)
+		}
+		m := new(dns.Msg)
+		if s.secondaryMgr != nil && zone != "" && s.secondaryMgr.HandleNotify(zone) {
+			m.SetReply(req)
+			metrics.QueriesTotal.WithLabelValues(proto, "notify").Inc()
+		} else {
+			m.SetRcode(req, dns.RcodeRefused)
+			metrics.QueriesTotal.WithLabelValues(proto, "notify_refused").Inc()
+		}
+		_ = w.WriteMsg(m)
+		return
 	}
 
 	logQuery := func(qname, qtype string, rcode int, cached bool) {
@@ -760,6 +779,7 @@ type RuntimeFlags struct {
 	ForwardOnFail bool     `json:"forward_on_fail"`
 	QueryLog      bool     `json:"query_log_enabled"`
 	Forwarders    []string `json:"forwarders,omitempty"`
+	ForwardZones  []config.ForwardZoneConfig `json:"forward_zones,omitempty"`
 }
 
 func (s *Server) RuntimeFlags() RuntimeFlags {
@@ -789,6 +809,7 @@ func (s *Server) RuntimeFlags() RuntimeFlags {
 		f.ResolverMode = config.NormalizeResolverMode(s.res.Mode)
 		f.ForwardOnFail = s.res.ForwardOnFail
 		f.Forwarders = append([]string(nil), s.res.Forwarders...)
+		f.ForwardZones = append([]config.ForwardZoneConfig(nil), s.res.ForwardZones...)
 	}
 	if s.views != nil {
 		f.SplitHorizon = s.views.Enabled()
@@ -816,6 +837,9 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 		if f.Forwarders != nil {
 			s.res.SetForwarders(f.Forwarders)
 		}
+		if f.ForwardZones != nil {
+			s.res.SetForwardZones(f.ForwardZones)
+		}
 	}
 	if s.views != nil {
 		s.views.SetEnabled(f.SplitHorizon)
@@ -830,12 +854,19 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 		if f.Forwarders != nil {
 			s.cfg.Resolver.Forwarders = append([]string(nil), f.Forwarders...)
 		}
+		if f.ForwardZones != nil {
+			s.cfg.Resolver.ForwardZones = append([]config.ForwardZoneConfig(nil), f.ForwardZones...)
+		}
 		s.cfg.SplitHorizon.Enabled = f.SplitHorizon
 		s.cfg.Logging.QueryLogEnabled = f.QueryLog
 	}
 }
 
 func (s *Server) SetQueryLogger(q *database.QueryLogger) { s.qlog = q }
+
+func (s *Server) SetSecondary(m *secondary.Manager) { s.secondaryMgr = m }
+
+func (s *Server) Secondary() *secondary.Manager { return s.secondaryMgr }
 
 // SetQueryACL replaces the live DNS query ACL (allow/deny CIDRs).
 func (s *Server) SetQueryACL(allow, deny []string) error {

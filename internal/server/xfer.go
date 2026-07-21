@@ -10,7 +10,7 @@ import (
 	"github.com/powersvx/powersvx/internal/metrics"
 )
 
-// handleTransfer serves AXFR (and IXFR-as-AXFR). Returns true if the query was handled.
+// handleTransfer serves AXFR. IXFR is answered as a full-zone AXFR (no journal).
 func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP string) bool {
 	if len(req.Question) == 0 {
 		return false
@@ -75,7 +75,7 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 	if err := tr.Out(w, req, ch); err != nil {
 		s.log.Warn("axfr failed", "zone", zone, "err", err)
 	}
-	metrics.QueriesTotal.WithLabelValues(protocolFromWriter(w), "axfr").Inc()
+	metrics.QueriesTotal.WithLabelValues(protocolFromWriter(w), dns.TypeToString[q.Qtype]).Inc()
 	return true
 }
 

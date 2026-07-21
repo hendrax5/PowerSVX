@@ -79,6 +79,9 @@ type CacheConfig struct {
 type ResolverConfig struct {
 	Mode              string   `toml:"mode"`
 	Forwarders        []string `toml:"forwarders"`
+	// ForwardZones routes queries for matching domains to specific upstreams
+	// (longest-suffix match). Checked before recursion and before global forwarders.
+	ForwardZones      []ForwardZoneConfig `toml:"forward_zones"`
 	RootHintsFile     string   `toml:"root_hints_file"`
 	// ForwardOnFail: when mode=recursive, fall back to forwarders if root iteration fails.
 	ForwardOnFail     bool     `toml:"forward_on_fail"`
@@ -90,6 +93,12 @@ type ResolverConfig struct {
 	ECSEnabled        bool     `toml:"ecs_enabled"`
 	ECSPrefixV4       uint8    `toml:"ecs_prefix_v4"`
 	ECSPrefixV6       uint8    `toml:"ecs_prefix_v6"`
+}
+
+// ForwardZoneConfig is a conditional/stub forwarder for a domain suffix.
+type ForwardZoneConfig struct {
+	Zone       string   `toml:"zone" json:"zone"`
+	Forwarders []string `toml:"forwarders" json:"forwarders"`
 }
 
 type APIConfig struct {
@@ -365,6 +374,31 @@ func NormalizeForwarders(in []string) ([]string, error) {
 		}
 		seen[addr] = struct{}{}
 		out = append(out, addr)
+	}
+	return out, nil
+}
+
+// NormalizeForwardZones validates conditional forwarder entries.
+func NormalizeForwardZones(in []ForwardZoneConfig) ([]ForwardZoneConfig, error) {
+	out := make([]ForwardZoneConfig, 0, len(in))
+	seen := map[string]struct{}{}
+	for _, z := range in {
+		zone := NormalizeName(z.Zone)
+		if zone == "." {
+			return nil, fmt.Errorf("forward zone cannot be root; use global forwarders")
+		}
+		fwd, err := NormalizeForwarders(z.Forwarders)
+		if err != nil {
+			return nil, fmt.Errorf("zone %s: %w", zone, err)
+		}
+		if len(fwd) == 0 {
+			return nil, fmt.Errorf("zone %s: at least one forwarder required", zone)
+		}
+		if _, ok := seen[zone]; ok {
+			continue
+		}
+		seen[zone] = struct{}{}
+		out = append(out, ForwardZoneConfig{Zone: zone, Forwarders: fwd})
 	}
 	return out, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -16,6 +17,7 @@ import (
 type Resolver struct {
 	Mode          string
 	Forwarders    []string
+	ForwardZones  []config.ForwardZoneConfig
 	ForwardOnFail bool
 	RootHintsFile string
 	Timeout       time.Duration
@@ -58,6 +60,13 @@ func (r *Resolver) SetForwarders(addrs []string) {
 	r.Forwarders = append([]string(nil), addrs...)
 }
 
+func (r *Resolver) SetForwardZones(zones []config.ForwardZoneConfig) {
+	if r == nil {
+		return
+	}
+	r.ForwardZones = append([]config.ForwardZoneConfig(nil), zones...)
+}
+
 func New(cfg config.ResolverConfig) *Resolver {
 	timeout := time.Duration(cfg.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
@@ -76,9 +85,11 @@ func New(cfg config.ResolverConfig) *Resolver {
 	if v6 == 0 {
 		v6 = 56
 	}
+	fz, _ := config.NormalizeForwardZones(cfg.ForwardZones)
 	r := &Resolver{
 		Mode:          mode,
 		Forwarders:    cfg.Forwarders,
+		ForwardZones:  fz,
 		ForwardOnFail: cfg.ForwardOnFail,
 		RootHintsFile: cfg.RootHintsFile,
 		Timeout:       timeout,
@@ -107,13 +118,19 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg) (*dns.Msg, error) 
 }
 
 // ResolveWithECS forwards/resolves, optionally attaching ECS subnet.
-// Path is "recursive", "forward", or "fallback" (recursive failed then forwarder succeeded/failed).
+// Path is "recursive", "forward", "conditional", or "fallback".
 func (r *Resolver) ResolveWithECS(ctx context.Context, req *dns.Msg, sub *ecs.Subnet) (*dns.Msg, string, error) {
 	if len(req.Question) == 0 {
 		return nil, "", fmt.Errorf("empty question")
 	}
 	q := req.Question[0]
 	q.Name = config.NormalizeName(q.Name)
+
+	// Conditional / stub forwarders always win (longest-suffix match).
+	if addrs := r.matchForwardZone(q.Name); len(addrs) > 0 {
+		msg, err := r.forwardTo(ctx, req, sub, addrs)
+		return msg, "conditional", err
+	}
 
 	switch r.Mode {
 	case "recursive":
@@ -139,12 +156,35 @@ func (r *Resolver) ResolveWithECS(ctx context.Context, req *dns.Msg, sub *ecs.Su
 	}
 }
 
+func (r *Resolver) matchForwardZone(qname string) []string {
+	if r == nil || len(r.ForwardZones) == 0 {
+		return nil
+	}
+	qname = config.NormalizeName(qname)
+	best := ""
+	var addrs []string
+	for _, z := range r.ForwardZones {
+		zone := config.NormalizeName(z.Zone)
+		if qname == zone || strings.HasSuffix(qname, "."+zone) {
+			if len(zone) > len(best) {
+				best = zone
+				addrs = z.Forwarders
+			}
+		}
+	}
+	return addrs
+}
+
 func (r *Resolver) forward(ctx context.Context, req *dns.Msg, sub *ecs.Subnet) (*dns.Msg, error) {
-	if len(r.Forwarders) == 0 {
+	return r.forwardTo(ctx, req, sub, r.Forwarders)
+}
+
+func (r *Resolver) forwardTo(ctx context.Context, req *dns.Msg, sub *ecs.Subnet, forwarders []string) (*dns.Msg, error) {
+	if len(forwarders) == 0 {
 		return nil, fmt.Errorf("no forwarders configured")
 	}
 	var lastErr error
-	for _, fwd := range r.Forwarders {
+	for _, fwd := range forwarders {
 		addr := fwd
 		if _, _, err := net.SplitHostPort(addr); err != nil {
 			addr = net.JoinHostPort(fwd, "53")

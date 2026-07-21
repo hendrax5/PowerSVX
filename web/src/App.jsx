@@ -920,14 +920,20 @@ function formatEventTime(t) {
 function Zones() {
   const { canWrite } = useAuth()
   const [zones, setZones] = useState([])
+  const [secondary, setSecondary] = useState([])
   const [name, setName] = useState('')
+  const [secName, setSecName] = useState('')
+  const [secMasters, setSecMasters] = useState('')
   const [err, setErr] = useState('')
+  const [secBusy, setSecBusy] = useState(false)
   const nav = useNavigate()
 
   const load = () =>
-    api
-      .zones()
-      .then((d) => setZones(d.zones || []))
+    Promise.all([api.zones(), api.secondary().catch(() => ({ zones: [] }))])
+      .then(([d, sec]) => {
+        setZones(d.zones || [])
+        setSecondary(sec.zones || [])
+      })
       .catch((e) => setErr(e.message))
 
   useEffect(() => {
@@ -950,6 +956,50 @@ function Zones() {
     if (!confirm(`Delete zone ${z}?`)) return
     try {
       await api.deleteZone(z)
+      await load()
+    } catch (ex) {
+      setErr(ex.message)
+    }
+  }
+
+  const addSecondary = async (e) => {
+    e.preventDefault()
+    setErr('')
+    setSecBusy(true)
+    try {
+      const masters = String(secMasters || '')
+        .split(/[\n,]+/)
+        .map((x) => x.trim())
+        .filter(Boolean)
+      await api.upsertSecondary({ name: secName.trim(), masters })
+      setSecName('')
+      setSecMasters('')
+      await load()
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setSecBusy(false)
+    }
+  }
+
+  const transferSecondary = async (z) => {
+    setErr('')
+    setSecBusy(true)
+    try {
+      await api.transferSecondary(z)
+      await load()
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setSecBusy(false)
+    }
+  }
+
+  const removeSecondary = async (z) => {
+    if (!confirm(`Remove secondary ${z}? (auth data left in store)`)) return
+    setErr('')
+    try {
+      await api.deleteSecondary(z)
       await load()
     } catch (ex) {
       setErr(ex.message)
@@ -1004,6 +1054,87 @@ function Zones() {
           </li>
         ))}
       </ul>
+
+      <section className="space-y-3 pt-4 border-t border-[var(--border)]">
+        <header>
+          <h2 className="text-lg font-medium">Secondary zones</h2>
+          <p className="text-xs text-[var(--muted)] mt-1">
+            AXFR pull from masters. Inbound NOTIFY triggers transfer. IXFR from this server is answered as
+            full AXFR.
+          </p>
+        </header>
+        {canWrite ? (
+          <form onSubmit={addSecondary} className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              <input
+                className="flex-1 min-w-[10rem] bg-[var(--bg)] border border-[var(--border)] cursor-text px-3 py-2 text-sm mono"
+                placeholder="slave.example.com"
+                value={secName}
+                onChange={(e) => setSecName(e.target.value)}
+                required
+                disabled={secBusy}
+              />
+              <input
+                className="flex-[2] min-w-[14rem] bg-[var(--bg)] border border-[var(--border)] cursor-text px-3 py-2 text-sm mono"
+                placeholder="master IP:port (comma-separated)"
+                value={secMasters}
+                onChange={(e) => setSecMasters(e.target.value)}
+                required
+                disabled={secBusy}
+              />
+              <button
+                type="submit"
+                disabled={secBusy}
+                className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm hover:opacity-90 disabled:opacity-50"
+              >
+                Add secondary
+              </button>
+            </div>
+          </form>
+        ) : null}
+        {secondary.length === 0 ? (
+          <p className="text-xs text-[var(--muted)]">No secondary zones.</p>
+        ) : (
+          <ul className="space-y-2">
+            {secondary.map((z) => (
+              <li key={z.name} className="panel px-4 py-3 space-y-2">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <div className="mono font-medium">{z.name}</div>
+                    <div className="text-xs text-[var(--muted)] mono mt-0.5">
+                      masters: {(z.masters || []).join(', ')}
+                    </div>
+                    <div className="text-xs text-[var(--muted)] mt-0.5">
+                      serial {z.serial || 0}
+                      {z.last_pull ? ` · last pull ${z.last_pull}` : ''}
+                      {z.last_error ? ` · error: ${z.last_error}` : ''}
+                    </div>
+                  </div>
+                  {canWrite ? (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={secBusy}
+                        className="text-xs hover:underline disabled:opacity-50"
+                        onClick={() => transferSecondary(z.name)}
+                      >
+                        Transfer now
+                      </button>
+                      <button
+                        type="button"
+                        className="text-xs text-[var(--danger)] hover:underline"
+                        onClick={() => removeSecondary(z.name)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   )
 }
@@ -1375,6 +1506,9 @@ function Settings() {
   const [section, setSection] = useState('dns')
   const [fwdInput, setFwdInput] = useState('')
   const [fwdEditIdx, setFwdEditIdx] = useState(-1)
+  const [fzZone, setFzZone] = useState('')
+  const [fzFwd, setFzFwd] = useState('')
+  const [fzEditIdx, setFzEditIdx] = useState(-1)
   const [rlWlInput, setRlWlInput] = useState('')
   const [rlWlEditIdx, setRlWlEditIdx] = useState(-1)
 
@@ -1394,6 +1528,12 @@ function Settings() {
     query_log_enabled: !!s.query_log_enabled,
     resolver_mode: s.resolver_mode === 'forward' ? 'forward' : 'recursive',
     forwarders: Array.isArray(s.forwarders) ? [...s.forwarders] : [],
+    forward_zones: Array.isArray(s.forward_zones)
+      ? s.forward_zones.map((z) => ({
+          zone: z.zone || '',
+          forwarders: Array.isArray(z.forwarders) ? [...z.forwarders] : [],
+        }))
+      : [],
     allow_query: Array.isArray(s.allow_query) ? s.allow_query.join('\n') : '',
     deny_query: Array.isArray(s.deny_query) ? s.deny_query.join('\n') : '',
   })
@@ -1409,6 +1549,15 @@ function Settings() {
     const bb = Array.isArray(b) ? b : linesToList(b)
     if (aa.length !== bb.length) return false
     return aa.every((v, i) => v === bb[i])
+  }
+
+  const sameForwardZones = (a, b) => {
+    const aa = Array.isArray(a) ? a : []
+    const bb = Array.isArray(b) ? b : []
+    if (aa.length !== bb.length) return false
+    return aa.every(
+      (z, i) => z.zone === bb[i].zone && sameList(z.forwarders || [], bb[i].forwarders || []),
+    )
   }
 
   const load = () =>
@@ -1430,7 +1579,8 @@ function Settings() {
     ((draft.resolver_mode === 'forward' ? 'forward' : 'recursive') !==
       (saved.resolver_mode === 'forward' ? 'forward' : 'recursive') ||
       !!draft.forward_on_fail !== (saved.forward_on_fail !== false) ||
-      !sameList(draft.forwarders, saved.forwarders || []))
+      !sameList(draft.forwarders, saved.forwarders || []) ||
+      !sameForwardZones(draft.forward_zones, saved.forward_zones || []))
   const dirtyFeatures =
     saved &&
     draft &&
@@ -1454,6 +1604,9 @@ function Settings() {
     setDraft(toDraft(saved))
     setFwdInput('')
     setFwdEditIdx(-1)
+    setFzZone('')
+    setFzFwd('')
+    setFzEditIdx(-1)
     setRlWlInput('')
     setRlWlEditIdx(-1)
     setOk('')
@@ -1480,6 +1633,10 @@ function Settings() {
         query_log_enabled: draft.query_log_enabled,
         resolver_mode: draft.resolver_mode,
         forwarders: draft.forwarders,
+        forward_zones: (draft.forward_zones || []).map((z) => ({
+          zone: z.zone,
+          forwarders: z.forwarders || [],
+        })),
         allow_query: linesToList(draft.allow_query),
         deny_query: linesToList(draft.deny_query),
       }
@@ -1488,6 +1645,9 @@ function Settings() {
       setDraft(toDraft(s))
       setFwdInput('')
       setFwdEditIdx(-1)
+      setFzZone('')
+      setFzFwd('')
+      setFzEditIdx(-1)
       setRlWlInput('')
       setRlWlEditIdx(-1)
       setOk('Saved — live now')
@@ -1536,6 +1696,55 @@ function Settings() {
       setFwdEditIdx(-1)
     } else if (fwdEditIdx > idx) {
       setFwdEditIdx((i) => i - 1)
+    }
+  }
+
+  const addOrUpdateForwardZone = () => {
+    const zone = fzZone.trim()
+    const fwd = linesToList(fzFwd)
+    if (!zone || fwd.length === 0) return
+    setOk('')
+    setErr('')
+    setDraft((d) => {
+      const list = [...(d.forward_zones || [])]
+      const entry = { zone, forwarders: fwd }
+      if (fzEditIdx >= 0 && fzEditIdx < list.length) {
+        list[fzEditIdx] = entry
+      } else {
+        const i = list.findIndex((z) => z.zone.toLowerCase() === zone.toLowerCase())
+        if (i >= 0) list[i] = entry
+        else list.push(entry)
+      }
+      return { ...d, forward_zones: list }
+    })
+    setFzZone('')
+    setFzFwd('')
+    setFzEditIdx(-1)
+  }
+
+  const editForwardZone = (idx) => {
+    const z = (draft.forward_zones || [])[idx]
+    if (!z) return
+    setFzZone(z.zone || '')
+    setFzFwd((z.forwarders || []).join(', '))
+    setFzEditIdx(idx)
+    setOk('')
+    setErr('')
+  }
+
+  const removeForwardZone = (idx) => {
+    setOk('')
+    setErr('')
+    setDraft((d) => ({
+      ...d,
+      forward_zones: (d.forward_zones || []).filter((_, i) => i !== idx),
+    }))
+    if (fzEditIdx === idx) {
+      setFzZone('')
+      setFzFwd('')
+      setFzEditIdx(-1)
+    } else if (fzEditIdx > idx) {
+      setFzEditIdx((i) => i - 1)
     }
   }
 
@@ -1839,6 +2048,99 @@ function Settings() {
                       onClick={() => {
                         setFwdInput('')
                         setFwdEditIdx(-1)
+                      }}
+                      className="btn btn-secondary min-h-[44px]"
+                    >
+                      Cancel
+                    </button>
+                  ) : null}
+                </form>
+              </div>
+              <div className="px-4 py-3 space-y-3 border-t border-[var(--border)]">
+                <div>
+                  <div className="text-sm font-medium">Conditional forward zones</div>
+                  <p className="text-xs text-[var(--muted)] mt-0.5">
+                    Longest-suffix match routes a domain (and subdomains) to specific upstreams before
+                    recursion / global forwarders.
+                  </p>
+                </div>
+                {(draft.forward_zones || []).length === 0 ? (
+                  <p className="text-xs text-[var(--muted)]">None configured.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {(draft.forward_zones || []).map((z, idx) => (
+                      <li
+                        key={`${z.zone}-${idx}`}
+                        className="flex flex-wrap items-center gap-2 border border-[var(--border)] px-3 py-2"
+                      >
+                        <div className="flex-1 min-w-[10rem]">
+                          <div className="mono text-sm">{z.zone}</div>
+                          <div className="text-xs text-[var(--muted)] mono">
+                            {(z.forwarders || []).join(', ')}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={busy || !isAdmin}
+                          onClick={() => editForwardZone(idx)}
+                          className="btn btn-secondary text-xs min-h-[36px] disabled:opacity-50"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy || !isAdmin}
+                          onClick={() => removeForwardZone(idx)}
+                          className="btn btn-secondary text-xs min-h-[36px] text-[var(--danger)] disabled:opacity-50"
+                        >
+                          Delete
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <form
+                  className="flex flex-wrap gap-2 items-end"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    addOrUpdateForwardZone()
+                  }}
+                >
+                  <label className="min-w-[10rem] flex-1 text-xs text-[var(--muted)] space-y-1">
+                    Zone
+                    <input
+                      value={fzZone}
+                      disabled={busy || !isAdmin}
+                      onChange={(e) => setFzZone(e.target.value)}
+                      placeholder="corp.local"
+                      className="input mono w-full min-h-[44px]"
+                    />
+                  </label>
+                  <label className="min-w-[14rem] flex-[2] text-xs text-[var(--muted)] space-y-1">
+                    Forwarders (comma or newline)
+                    <input
+                      value={fzFwd}
+                      disabled={busy || !isAdmin}
+                      onChange={(e) => setFzFwd(e.target.value)}
+                      placeholder="10.0.0.1:53, 10.0.0.2:53"
+                      className="input mono w-full min-h-[44px]"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={busy || !isAdmin || !fzZone.trim() || !fzFwd.trim()}
+                    className="btn btn-primary min-h-[44px] disabled:opacity-50"
+                  >
+                    {fzEditIdx >= 0 ? 'Update' : 'Add'}
+                  </button>
+                  {fzEditIdx >= 0 ? (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setFzZone('')
+                        setFzFwd('')
+                        setFzEditIdx(-1)
                       }}
                       className="btn btn-secondary min-h-[44px]"
                     >

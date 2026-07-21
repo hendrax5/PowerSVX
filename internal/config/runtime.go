@@ -21,6 +21,7 @@ type RuntimeSettings struct {
 	ForwardOnFail        *bool    `json:"forward_on_fail,omitempty"`
 	QueryLog             *bool    `json:"query_log_enabled,omitempty"`
 	Forwarders           []string `json:"forwarders"`
+	ForwardZones         []ForwardZoneConfig `json:"forward_zones"`
 	AllowQuery           []string `json:"allow_query"`
 	DenyQuery            []string `json:"deny_query"`
 }
@@ -92,6 +93,9 @@ func (c *Config) ApplyRuntimeSettings(s RuntimeSettings) {
 	}
 	if s.Forwarders != nil {
 		c.Resolver.Forwarders = append([]string(nil), s.Forwarders...)
+	}
+	if s.ForwardZones != nil {
+		c.Resolver.ForwardZones = append([]ForwardZoneConfig(nil), s.ForwardZones...)
 	}
 	// Distinguish omitted (nil) vs explicit empty list via JSON null vs [].
 	// When unmarshaling, missing keys leave nil; present arrays are non-nil.

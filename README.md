@@ -13,7 +13,7 @@ cd powersvx
 
 | Area | Capabilities |
 |------|----------------|
-| DNS | UDP/TCP, forward/recursive, L1+L2 cache, PostgreSQL zones, AXFR/NOTIFY |
+| DNS | UDP/TCP, forward/recursive, **conditional forward zones**, L1+L2 cache, PostgreSQL zones, AXFR/NOTIFY, **secondary AXFR pull** |
 | Encrypted | DoT, DoH, DoH3, DoQ, DNSSEC modes, TSIG |
 | Policy | RPZ (`nxdomain` / `nodata` / `pass` / **redirect** / **cname**), query ACL, rate limit, ECS, GeoDNS, views |
 | Control | REST API, React UI, query logs, audit log, RBAC users, settings Save |

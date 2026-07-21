@@ -38,6 +38,10 @@ negative_ttl = 60
 [resolver]
 mode = "recursive"
 forwarders = ["103.88.88.99:53", "203.119.13.77:53"]
+# Optional conditional/stub forwarders (longest-suffix match, checked before recursion):
+# [[resolver.forward_zones]]
+# zone = "corp.local"
+# forwarders = ["10.0.0.1:53", "10.0.0.2:53"]
 forward_on_fail = true
 dnssec_mode = "opportunistic"
 edns_buffer_size = 1232

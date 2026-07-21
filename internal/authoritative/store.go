@@ -3,6 +3,7 @@ package authoritative
 import (
 	"net"
 	"strings"
+	"strconv"
 	"sync"
 
 	"github.com/miekg/dns"
@@ -305,9 +306,83 @@ func buildRR(rec Record) (dns.RR, error) {
 	}
 }
 
+
 func TypeFromString(s string) uint16 {
 	if t, ok := dns.StringToType[strings.ToUpper(s)]; ok {
 		return t
 	}
 	return dns.TypeNone
+}
+
+// ReplaceZoneRecords replaces all records for one zone (creates the zone if missing).
+func (s *Store) ReplaceZoneRecords(zone string, recs []Record) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	zone = config.NormalizeName(zone)
+	cp := make([]Record, len(recs))
+	copy(cp, recs)
+	for i := range cp {
+		cp[i].Name = config.NormalizeName(cp[i].Name)
+	}
+	s.zones[zone] = cp
+}
+
+// RecordFromRR converts a wire RR into a store record (skips OPT).
+func RecordFromRR(rr dns.RR) (Record, bool) {
+	if rr == nil {
+		return Record{}, false
+	}
+	h := rr.Header()
+	if h.Rrtype == dns.TypeOPT {
+		return Record{}, false
+	}
+	rec := Record{Name: h.Name, Type: h.Rrtype, TTL: h.Ttl}
+	switch v := rr.(type) {
+	case *dns.A:
+		if v.A != nil {
+			rec.Content = v.A.String()
+		}
+	case *dns.AAAA:
+		if v.AAAA != nil {
+			rec.Content = v.AAAA.String()
+		}
+	case *dns.CNAME:
+		rec.Content = v.Target
+	case *dns.NS:
+		rec.Content = v.Ns
+	case *dns.TXT:
+		rec.Content = strings.Join(v.Txt, "")
+	case *dns.MX:
+		rec.Content = v.Mx
+		rec.Prio = v.Preference
+	case *dns.SOA:
+		rec.Content = strings.Join([]string{
+			v.Ns, v.Mbox,
+			strconv.FormatUint(uint64(v.Serial), 10),
+			strconv.FormatUint(uint64(v.Refresh), 10),
+			strconv.FormatUint(uint64(v.Retry), 10),
+			strconv.FormatUint(uint64(v.Expire), 10),
+			strconv.FormatUint(uint64(v.Minttl), 10),
+		}, " ")
+	case *dns.PTR:
+		rec.Content = v.Ptr
+	case *dns.SRV:
+		rec.Content = strings.Join([]string{
+			strconv.FormatUint(uint64(v.Priority), 10),
+			strconv.FormatUint(uint64(v.Weight), 10),
+			strconv.FormatUint(uint64(v.Port), 10),
+			v.Target,
+		}, " ")
+		rec.Prio = v.Priority
+	default:
+		fields := strings.Fields(rr.String())
+		if len(fields) < 5 {
+			return Record{}, false
+		}
+		rec.Content = strings.Join(fields[4:], " ")
+	}
+	if rec.Content == "" && rec.Type != dns.TypeTXT {
+		return Record{}, false
+	}
+	return rec, true
 }

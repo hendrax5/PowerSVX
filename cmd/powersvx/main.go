@@ -35,6 +35,7 @@ import (
 	"github.com/powersvx/powersvx/internal/ratelimit"
 	"github.com/powersvx/powersvx/internal/resolver"
 	"github.com/powersvx/powersvx/internal/rpz"
+	"github.com/powersvx/powersvx/internal/secondary"
 	"github.com/powersvx/powersvx/internal/server"
 	"github.com/powersvx/powersvx/internal/tlsutil"
 	"github.com/powersvx/powersvx/internal/tsig"
@@ -282,6 +283,16 @@ func main() {
 		ACME: acmeStore, Stats: stats, Anomaly: anom, Monitor: mon, Plugins: plugins, QLog: qlog,
 	}, log)
 
+	secMgr := secondary.New(secondary.DefaultPath(*dataDir), auth, log)
+	if err := secMgr.Load(); err != nil {
+		log.Warn("secondary zones load failed", "err", err)
+	} else {
+		dnsSrv.SetSecondary(secMgr)
+		secMgr.Start(context.Background())
+		defer secMgr.Stop()
+		log.Info("secondary manager ready", "zones", len(secMgr.List()))
+	}
+
 	rest := api.New(cfg, dnsSrv, db, tier, auth, log)
 	rest.SetDataDir(*dataDir)
 	rest.SetEvents(bus)
@@ -376,6 +387,7 @@ func main() {
 					SplitHorizon: cfg.SplitHorizon.Enabled,
 					ResolverMode: cfg.Resolver.Mode, ForwardOnFail: cfg.Resolver.ForwardOnFail,
 					QueryLog: cfg.Logging.QueryLogEnabled, Forwarders: cfg.Resolver.Forwarders,
+					ForwardZones: cfg.Resolver.ForwardZones,
 				})
 				if err := dnsSrv.SetQueryACL(cfg.ACL.AllowQuery, cfg.ACL.DenyQuery); err != nil {
 					log.Warn("acl reload failed", "err", err)

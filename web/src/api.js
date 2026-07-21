@@ -120,6 +120,21 @@ export const api = {
     request(`/api/v1/domains/whitelist?name=${encodeURIComponent(name)}`, { method: 'DELETE' }),
   lookup: (name, type) =>
     request('/api/v1/tools/lookup', { method: 'POST', body: JSON.stringify({ name, type }) }),
+  secondary: () => request('/api/v1/secondary'),
+  upsertSecondary: (body) =>
+    request('/api/v1/secondary', { method: 'POST', body: JSON.stringify(body) }),
+  updateSecondary: (name, body) =>
+    request(`/api/v1/secondary/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteSecondary: (name) =>
+    request(`/api/v1/secondary/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  transferSecondary: (name) =>
+    request(`/api/v1/secondary/${encodeURIComponent(name)}/transfer`, {
+      method: 'POST',
+      body: '{}',
+    }),
   events: () => request('/api/v1/events'),
   eventsStreamURL() {
     const token = getToken()

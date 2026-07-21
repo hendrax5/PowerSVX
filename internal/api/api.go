@@ -95,6 +95,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/zones", a.withAuth(a.handleZones))
 	mux.HandleFunc("/api/v1/zones/", a.withAuth(a.handleZoneSub))
 	mux.HandleFunc("/api/v1/settings", a.withAuth(a.handleSettings))
+	mux.HandleFunc("/api/v1/secondary", a.withAuth(a.handleSecondary))
+	mux.HandleFunc("/api/v1/secondary/", a.withAuth(a.handleSecondarySub))
 	mux.HandleFunc("/api/v1/rpz", a.withAuth(a.handleRPZ))
 	mux.HandleFunc("/api/v1/domains/", a.withAuth(a.handleDomains))
 	mux.HandleFunc("/api/v1/tools/lookup", a.withAuth(a.handleLookup))
@@ -668,6 +670,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			ForwardOnFail        *bool     `json:"forward_on_fail"`
 			QueryLog             *bool     `json:"query_log_enabled"`
 			Forwarders           *[]string `json:"forwarders"`
+			ForwardZones         *[]config.ForwardZoneConfig `json:"forward_zones"`
 			AllowQuery           *[]string `json:"allow_query"`
 			DenyQuery            *[]string `json:"deny_query"`
 		}
@@ -712,6 +715,14 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			cur.Forwarders = fwd
+		}
+		if body.ForwardZones != nil {
+			fz, err := config.NormalizeForwardZones(*body.ForwardZones)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			cur.ForwardZones = fz
 		}
 		a.srv.ApplyRuntimeFlags(cur)
 
@@ -773,6 +784,10 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if fwd == nil && a.cfg != nil {
 			fwd = a.cfg.Resolver.Forwarders
 		}
+		fz := cur.ForwardZones
+		if fz == nil && a.cfg != nil {
+			fz = a.cfg.Resolver.ForwardZones
+		}
 		rlLive := a.srv.RateLimitConfig()
 		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), config.RuntimeSettings{
 			GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
@@ -780,7 +795,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			RateLimitWhitelist: rlLive.Whitelist,
 			ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
 			ResolverMode: &mode, ForwardOnFail: &cur.ForwardOnFail, QueryLog: &cur.QueryLog,
-			Forwarders: fwd, AllowQuery: allow, DenyQuery: deny,
+			Forwarders: fwd, ForwardZones: fz, AllowQuery: allow, DenyQuery: deny,
 		})
 		writeJSON(w, http.StatusOK, a.settingsPayload())
 	default:
@@ -812,11 +827,16 @@ func (a *API) settingsPayload() map[string]any {
 	if forwarders == nil && a.cfg != nil {
 		forwarders = a.cfg.Resolver.Forwarders
 	}
+	forwardZones := f.ForwardZones
+	if forwardZones == nil && a.cfg != nil {
+		forwardZones = a.cfg.Resolver.ForwardZones
+	}
 	rl := a.srv.RateLimitConfig()
 	return map[string]any{
 		"resolver_mode":            f.ResolverMode,
 		"forward_on_fail":          f.ForwardOnFail,
 		"forwarders":               forwarders,
+		"forward_zones":            forwardZones,
 		"dnssec_mode":              a.cfg.Resolver.DNSSECMode,
 		"ecs_enabled":              f.ECS,
 		"rpz_enabled":              f.RPZ,
@@ -848,9 +868,9 @@ func (a *API) settingsPayload() map[string]any {
 			"geodns", "rpz_enabled", "rate_limit", "rate_limit_qps", "rate_limit_burst",
 			"rate_limit_block_duration", "rate_limit_whitelist",
 			"ecs_enabled", "split_horizon",
-			"resolver_mode", "forward_on_fail", "forwarders", "query_log_enabled", "allow_query", "deny_query",
+			"resolver_mode", "forward_on_fail", "forwarders", "forward_zones", "query_log_enabled", "allow_query", "deny_query",
 		},
-		"note": "Edit toggles, rate limit, query ACL, forwarders, and resolver mode, then Save. Persisted to data/runtime-settings.json. Empty allow_query = allow all. AXFR ACL and IP masking are TOML-only.",
+		"note": "Edit toggles, rate limit, query ACL, forwarders, conditional forward zones, and resolver mode, then Save. Persisted to data/runtime-settings.json. Empty allow_query = allow all. AXFR ACL and IP masking are TOML-only. IXFR is answered as full AXFR.",
 	}
 }
 
