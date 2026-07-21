@@ -59,11 +59,9 @@
 - Full NSEC3 / key rollover / HSM still deferred.
 
 ## AXFR sync (Tools)
-- Settings → Tools → **AXFR**. Default **disabled**.
-- Default sources: Kominfo secondaries `182.23.79.202` and `139.255.196.202` (editable in UI; also `[kominfo_sync] targets` / `axfr_sync_targets`).
-- When enabled: those IPs may AXFR/IXFR without global `allow_axfr` / TSIG; zone changes send NOTIFY.
-- **Sync now** walks all zones (NOTIFY → SOA check) with live progress; `axfr_ok` appears after a successful pull.
-- Persisted in `runtime-settings.json` as `axfr_sync_enabled` + `axfr_sync_targets` (legacy `kominfo_sync_enabled` still accepted).
+- Settings → Tools → **AXFR**. Two independent directions:
+  - **Outbound secondary (NOTIFY):** default **disabled**. Default sources Kominfo secondaries `182.23.79.202` / `139.255.196.202` (editable; also `[kominfo_sync] targets` / `axfr_sync_targets`). When enabled those IPs may AXFR/IXFR without global `allow_axfr` / TSIG; zone changes send NOTIFY. **Sync now** walks all zones (NOTIFY → SOA check). Persisted in `runtime-settings.json` as `axfr_sync_enabled` + `axfr_sync_targets` (legacy `kominfo_sync_enabled` still accepted).
+  - **Filter feeds (slave AXFR):** PowerSVX as slave pulls a configured zone via AXFR from masters; non-apex owner names (`A`/`AAAA`/`CNAME`/`NS`/`TXT`) enter the RPZ engine with an action (`nxdomain` / `nodata` / `pass` / `redirect` / `cname`). Policies use `format=axfr` with `zone` + `masters` in `data/rpz-policies.json` (same store as hosts feeds). Does **not** install the zone into the authoritative store (unlike Secondary zones on the Zones page). Inbound NOTIFY for a matching zone triggers a feed re-pull. HTTP hosts feeds remain under Tools → RPZ.
 
 ## GeoDNS
 - Uses MaxMind-compatible MMDB (`[geodns] database_path`).

@@ -67,6 +67,7 @@ type Server struct {
 	qlog         *database.QueryLogger
 	secondaryMgr *secondary.Manager
 	kominfo      *kominfo.Manager
+	onRPZNotify  func(zone string) bool
 	log          *slog.Logger
 	queryACLMu sync.RWMutex
 	queryACL   *acl.List
@@ -175,7 +176,16 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			zone = config.NormalizeName(req.Question[0].Name)
 		}
 		m := new(dns.Msg)
-		if s.secondaryMgr != nil && zone != "" && s.secondaryMgr.HandleNotify(zone) {
+		handled := false
+		if zone != "" {
+			if s.secondaryMgr != nil && s.secondaryMgr.HandleNotify(zone) {
+				handled = true
+			}
+			if s.onRPZNotify != nil && s.onRPZNotify(zone) {
+				handled = true
+			}
+		}
+		if handled {
 			m.SetReply(req)
 			metrics.QueriesTotal.WithLabelValues(proto, "notify").Inc()
 		} else {
@@ -887,6 +897,9 @@ func (s *Server) Secondary() *secondary.Manager { return s.secondaryMgr }
 func (s *Server) SetKominfo(m *kominfo.Manager) { s.kominfo = m }
 
 func (s *Server) Kominfo() *kominfo.Manager { return s.kominfo }
+
+// SetRPZNotifyHandler registers a callback for inbound NOTIFY that matches an axfr RPZ feed zone.
+func (s *Server) SetRPZNotifyHandler(fn func(zone string) bool) { s.onRPZNotify = fn }
 
 // SetQueryACL replaces the live DNS query ACL (allow/deny CIDRs).
 func (s *Server) SetQueryACL(allow, deny []string) error {

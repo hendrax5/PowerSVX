@@ -2628,8 +2628,8 @@ function AxfrSyncPanel({ isAdmin }) {
             AXFR
           </h2>
           <p className="text-sm text-[var(--muted)] mt-3 max-w-[52ch] leading-relaxed">
-            Push NOTIFY to secondary sources and allow them to pull full zone transfers. Default sources
-            point at Kominfo and can be edited.
+            Outbound: push NOTIFY so secondaries pull your zones. Inbound: slave AXFR filter feeds pull a
+            zone from masters and apply RPZ actions to owner names.
           </p>
         </div>
         <div className="flex flex-wrap lg:justify-end items-center gap-2 reveal reveal-delay-1">
@@ -2677,10 +2677,11 @@ function AxfrSyncPanel({ isAdmin }) {
           <div className="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 id="axfr-sources-heading" className="text-sm font-medium">
-                Sources
+                Outbound secondary (NOTIFY)
               </h3>
               <p className="text-xs text-[var(--muted)] mt-1 leading-relaxed max-w-[42ch]">
-                Host or host:port. These IPs may AXFR without global transfer ACL when sync is on.
+                Sources (host or host:port). These IPs may AXFR without global transfer ACL when sync is
+                on.
               </p>
             </div>
             <button
@@ -2874,7 +2875,366 @@ function AxfrSyncPanel({ isAdmin }) {
           </p>
         ) : null}
       </section>
+
+      <AxfrFilterFeedsPanel isAdmin={isAdmin} />
     </div>
+  )
+}
+
+const DEFAULT_AXFR_FILTER_MASTERS = ['182.23.79.202:53', '139.255.196.202:53']
+
+function AxfrFilterFeedsPanel({ isAdmin }) {
+  const defaultRedirectTarget = '139.255.196.196'
+  const [hostsPolicies, setHostsPolicies] = useState([])
+  const [policies, setPolicies] = useState([])
+  const [intervalSec, setIntervalSec] = useState(0)
+  const [status, setStatus] = useState(null)
+  const [name, setName] = useState('')
+  const [zone, setZone] = useState('')
+  const [mastersText, setMastersText] = useState(DEFAULT_AXFR_FILTER_MASTERS.join('\n'))
+  const [action, setAction] = useState('nxdomain')
+  const [target, setTarget] = useState('')
+  const [editName, setEditName] = useState(null)
+  const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const applyRPZ = (r) => {
+    setStatus(r)
+    const all = clonePolicies(r?.policies)
+    setHostsPolicies(all.filter((p) => (p.format || 'hosts') !== 'axfr'))
+    setPolicies(all.filter((p) => p.format === 'axfr'))
+    setIntervalSec(Number(r?.update_interval) || 0)
+  }
+
+  const load = () =>
+    api
+      .rpz()
+      .then(applyRPZ)
+      .catch((e) => setErr(e.message))
+
+  useEffect(() => {
+    load()
+  }, [])
+
+  useEffect(() => {
+    if (action === 'redirect' && !target) setTarget(defaultRedirectTarget)
+    if (action === 'cname' && target === defaultRedirectTarget) setTarget('')
+  }, [action, target])
+
+  useEffect(() => {
+    if (!status?.loading) return undefined
+    const t = setInterval(() => {
+      api
+        .rpz()
+        .then((r) => {
+          applyRPZ(r)
+          if (!r.loading) {
+            setOk(r.error ? '' : `Synced · ${r.entries} entries`)
+            if (r.error) setErr(r.error)
+          }
+        })
+        .catch((e) => setErr(e.message))
+    }, 2000)
+    return () => clearInterval(t)
+  }, [status?.loading])
+
+  const parseMasters = (text) =>
+    text
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => (s.includes(':') ? s : `${s}:53`))
+
+  const resetForm = () => {
+    setName('')
+    setZone('')
+    setMastersText(DEFAULT_AXFR_FILTER_MASTERS.join('\n'))
+    setAction('nxdomain')
+    setTarget('')
+    setEditName(null)
+  }
+
+  const startEdit = (p) => {
+    setErr('')
+    setOk('')
+    setEditName(p.name)
+    setName(p.name || '')
+    setZone(p.zone || p.source || '')
+    setMastersText((p.masters && p.masters.length ? p.masters : DEFAULT_AXFR_FILTER_MASTERS).join('\n'))
+    setAction(p.action || 'nxdomain')
+    setTarget(p.target || '')
+  }
+
+  const cancelEdit = () => {
+    setErr('')
+    setOk('')
+    resetForm()
+  }
+
+  const addOrUpdate = () => {
+    setErr('')
+    setOk('')
+    const n = name.trim()
+    const z = zone.trim()
+    const masters = parseMasters(mastersText)
+    const t = target.trim()
+    if (!n || !z) {
+      setErr('Name and zone are required')
+      return
+    }
+    if (!masters.length) {
+      setErr('At least one master (host or host:port) is required')
+      return
+    }
+    if (action === 'redirect' && !t) {
+      setErr(`Redirect needs a landing IP (e.g. ${defaultRedirectTarget})`)
+      return
+    }
+    if (action === 'cname' && !t) {
+      setErr('CNAME needs a landing hostname (e.g. block.local)')
+      return
+    }
+    const nextPolicy = {
+      name: n,
+      source: z,
+      zone: z,
+      masters,
+      format: 'axfr',
+      action,
+      target: action === 'redirect' || action === 'cname' ? t : '',
+    }
+    if (editName != null) {
+      if (policies.some((p) => p.name === n && p.name !== editName)) {
+        setErr(`Feed "${n}" already exists`)
+        return
+      }
+      setPolicies((list) => list.map((p) => (p.name === editName ? nextPolicy : p)))
+      setOk(`Updated "${n}" in list — Save & sync filters to apply`)
+      resetForm()
+      return
+    }
+    if (policies.some((p) => p.name === n) || hostsPolicies.some((p) => p.name === n)) {
+      setErr(`Policy "${n}" already exists`)
+      return
+    }
+    setPolicies((p) => [...p, nextPolicy])
+    resetForm()
+  }
+
+  const remove = (n) => {
+    setErr('')
+    setOk('')
+    setPolicies((p) => p.filter((x) => x.name !== n))
+    if (editName === n) resetForm()
+  }
+
+  const saveSync = async () => {
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const sec = Math.max(0, Number(intervalSec) || 0)
+      const r = await api.updateRPZ([...hostsPolicies, ...policies], false, sec)
+      applyRPZ(r)
+      setOk(r.loading ? 'Saved — syncing filter feeds…' : `Saved · ${r.entries} entries`)
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const resync = async () => {
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const r = await api.reloadRPZ()
+      applyRPZ(r)
+      setOk('Re-sync started…')
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const loading = !!status?.loading
+
+  return (
+    <section className="panel overflow-hidden reveal reveal-delay-3" aria-labelledby="axfr-filter-heading">
+      <div className="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 id="axfr-filter-heading" className="text-sm font-medium">
+            Filter feeds (slave AXFR)
+          </h3>
+          <p className="text-xs text-[var(--muted)] mt-1 leading-relaxed max-w-[56ch]">
+            Pull a zone from masters via AXFR; non-apex owner names enter the RPZ engine with the chosen
+            action. Does not install the zone as authoritative.
+          </p>
+          <p className="text-xs text-[var(--muted)] mt-1">
+            {status ? `${status.entries ?? 0} RPZ entries total` : '…'}
+            {loading ? ' · syncing…' : null}
+            {status?.last_loaded ? ` · last ${status.last_loaded}` : ''}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={!isAdmin || busy || loading}
+            onClick={resync}
+            className="btn btn-secondary text-xs min-h-[36px] disabled:opacity-50"
+          >
+            Re-sync
+          </button>
+          <button
+            type="button"
+            disabled={!isAdmin || busy || loading}
+            onClick={saveSync}
+            className="btn btn-primary text-xs min-h-[36px] disabled:opacity-50"
+          >
+            {busy ? 'Saving…' : 'Save & sync filters'}
+          </button>
+        </div>
+      </div>
+
+      <div className="px-4 py-3 space-y-3">
+        {err ? <ErrorBox msg={err} /> : null}
+        {ok ? (
+          <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
+            {ok}
+          </div>
+        ) : null}
+
+        <ul className="space-y-2 text-sm">
+          {policies.length ? (
+            policies.map((p) => (
+              <li
+                key={p.name}
+                className={`flex flex-wrap items-start justify-between gap-2 border-b border-[var(--border)]/60 pb-2 ${
+                  editName === p.name ? 'bg-[var(--accent-soft)] -mx-2 px-2 rounded-[var(--radius)]' : ''
+                }`}
+              >
+                <div className="min-w-0">
+                  <div className="font-medium">{p.name}</div>
+                  <div className="mono text-xs text-[var(--muted)] break-all">zone {p.zone || p.source}</div>
+                  <div className="mono text-xs text-[var(--muted)] break-all">
+                    masters {(p.masters || []).join(', ') || '—'}
+                  </div>
+                  <div className="text-xs text-[var(--muted)] mt-0.5">
+                    axfr · {p.action || 'nxdomain'}
+                    {p.target ? ` → ${p.target}` : ''}
+                  </div>
+                </div>
+                <div className="flex gap-1 shrink-0">
+                  <button
+                    type="button"
+                    disabled={!isAdmin || busy || loading}
+                    onClick={() => startEdit(p)}
+                    className="btn btn-ghost text-xs disabled:opacity-40"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!isAdmin || busy || loading}
+                    onClick={() => remove(p.name)}
+                    className="btn btn-ghost text-xs text-[var(--danger)] disabled:opacity-40"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </li>
+            ))
+          ) : (
+            <li className="text-sm text-[var(--muted)]">No slave filter feeds yet — add one below.</li>
+          )}
+        </ul>
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="text-xs text-[var(--muted)] space-y-1">
+            Name
+            <input
+              className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm text-[var(--text)]"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              disabled={!isAdmin || busy}
+              placeholder="kominfo-block"
+            />
+          </label>
+          <label className="text-xs text-[var(--muted)] space-y-1">
+            Zone
+            <input
+              className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
+              value={zone}
+              onChange={(e) => setZone(e.target.value)}
+              disabled={!isAdmin || busy}
+              placeholder="blocklist.example."
+            />
+          </label>
+          <label className="text-xs text-[var(--muted)] space-y-1 sm:col-span-2">
+            Masters (one per line)
+            <textarea
+              className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)] min-h-[4.5rem]"
+              value={mastersText}
+              onChange={(e) => setMastersText(e.target.value)}
+              disabled={!isAdmin || busy}
+              placeholder={DEFAULT_AXFR_FILTER_MASTERS.join('\n')}
+            />
+          </label>
+          <label className="text-xs text-[var(--muted)] space-y-1">
+            Action
+            <select
+              className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm text-[var(--text)]"
+              value={action}
+              onChange={(e) => setAction(e.target.value)}
+              disabled={!isAdmin || busy}
+            >
+              <option value="nxdomain">nxdomain</option>
+              <option value="nodata">nodata</option>
+              <option value="pass">pass</option>
+              <option value="redirect">redirect (sinkhole IP)</option>
+              <option value="cname">cname (landing host)</option>
+            </select>
+          </label>
+          {action === 'redirect' || action === 'cname' ? (
+            <label className="text-xs text-[var(--muted)] space-y-1">
+              {action === 'redirect' ? 'Landing IP' : 'Landing hostname'}
+              <input
+                className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+                disabled={!isAdmin || busy}
+                placeholder={action === 'redirect' ? defaultRedirectTarget : 'block.corp.local'}
+              />
+            </label>
+          ) : (
+            <div />
+          )}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={!isAdmin || busy || loading}
+            onClick={addOrUpdate}
+            className="btn btn-secondary disabled:opacity-50"
+          >
+            {editName != null ? 'Save changes' : 'Add feed to list'}
+          </button>
+          {editName != null ? (
+            <button
+              type="button"
+              disabled={!isAdmin || busy || loading}
+              onClick={cancelEdit}
+              className="btn btn-ghost disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </section>
   )
 }
 
@@ -2882,7 +3242,8 @@ function RPZPanel({ initial, onChange }) {
   const defaultRedirectTarget = '139.255.196.196'
   const defaultName = 'trustpositif'
   const defaultSource = 'https://trustpositif.komdigi.go.id/assets/db/domains_isp'
-  const [policies, setPolicies] = useState(() => clonePolicies(initial?.policies))
+  const [policies, setPolicies] = useState(() => hostsOnlyPolicies(initial?.policies))
+  const [axfrPolicies, setAxfrPolicies] = useState(() => axfrOnlyPolicies(initial?.policies))
   const [intervalSec, setIntervalSec] = useState(() => Number(initial?.update_interval) || 0)
   const [status, setStatus] = useState(initial)
   const [name, setName] = useState(defaultName)
@@ -2895,7 +3256,8 @@ function RPZPanel({ initial, onChange }) {
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    setPolicies(clonePolicies(initial?.policies))
+    setPolicies(hostsOnlyPolicies(initial?.policies))
+    setAxfrPolicies(axfrOnlyPolicies(initial?.policies))
     setIntervalSec(Number(initial?.update_interval) || 0)
     setStatus(initial)
   }, [initial])
@@ -2912,6 +3274,8 @@ function RPZPanel({ initial, onChange }) {
         .rpz()
         .then((r) => {
           setStatus(r)
+          setPolicies(hostsOnlyPolicies(r.policies))
+          setAxfrPolicies(axfrOnlyPolicies(r.policies))
           onChange?.(r)
           if (!r.loading) {
             setOk(r.error ? '' : `Synced · ${r.entries} entries`)
@@ -2973,7 +3337,10 @@ function RPZPanel({ initial, onChange }) {
       target: action === 'redirect' || action === 'cname' ? t : '',
     }
     if (editName != null) {
-      if (policies.some((p) => p.name === n && p.name !== editName)) {
+      if (
+        policies.some((p) => p.name === n && p.name !== editName) ||
+        axfrPolicies.some((p) => p.name === n)
+      ) {
         setErr(`Policy "${n}" already exists`)
         return
       }
@@ -2982,7 +3349,7 @@ function RPZPanel({ initial, onChange }) {
       resetForm()
       return
     }
-    if (policies.some((p) => p.name === n)) {
+    if (policies.some((p) => p.name === n) || axfrPolicies.some((p) => p.name === n)) {
       setErr(`Policy "${n}" already exists`)
       return
     }
@@ -3002,9 +3369,10 @@ function RPZPanel({ initial, onChange }) {
     setOk('')
     try {
       const sec = Math.max(0, Number(intervalSec) || 0)
-      const r = await api.updateRPZ(policies, false, sec)
+      const r = await api.updateRPZ([...policies, ...axfrPolicies], false, sec)
       setStatus(r)
-      setPolicies(clonePolicies(r.policies))
+      setPolicies(hostsOnlyPolicies(r.policies))
+      setAxfrPolicies(axfrOnlyPolicies(r.policies))
       setIntervalSec(Number(r.update_interval) || 0)
       onChange?.(r)
       setOk(r.loading ? 'Saved — syncing feeds in background…' : `Saved · ${r.entries} entries`)
@@ -3039,7 +3407,8 @@ function RPZPanel({ initial, onChange }) {
         <div>
           <h2 className="text-sm font-medium">RPZ feeds</h2>
           <p className="text-xs text-[var(--muted)] mt-1">
-            HTTP URL or local file · hosts format · actions: nxdomain, nodata, pass, redirect (IP), cname
+            HTTP URL or local file · hosts format · actions: nxdomain, nodata, pass, redirect (IP), cname.
+            Slave AXFR filter feeds are managed under Tools → AXFR.
           </p>
           <p className="text-sm mt-2">
             {status?.enabled ? 'Enabled' : 'Disabled'} · {status?.entries ?? 0} entries
@@ -3208,7 +3577,17 @@ function clonePolicies(list) {
     format: p.format || 'hosts',
     action: p.action || 'nxdomain',
     target: p.target || '',
+    zone: p.zone || '',
+    masters: Array.isArray(p.masters) ? [...p.masters] : [],
   }))
+}
+
+function hostsOnlyPolicies(list) {
+  return clonePolicies(list).filter((p) => (p.format || 'hosts') !== 'axfr')
+}
+
+function axfrOnlyPolicies(list) {
+  return clonePolicies(list).filter((p) => p.format === 'axfr')
 }
 
 function UsersPanel() {

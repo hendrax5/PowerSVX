@@ -167,6 +167,7 @@ func main() {
 	for _, p := range cfg.RPZ.Policies {
 		policies = append(policies, rpz.PolicyConfig{
 			Name: p.Name, Source: p.Source, Format: p.Format, Action: rpz.Action(p.Action), Target: p.Target,
+			Zone: p.Zone, Masters: append([]string(nil), p.Masters...),
 		})
 	}
 	if len(policies) > 0 {
@@ -302,6 +303,7 @@ func main() {
 	rest.SetDataDir(*dataDir)
 	rest.SetEvents(bus)
 	rest.SetACME(acmeMgr)
+	dnsSrv.SetRPZNotifyHandler(rest.HandleRPZNotify)
 	auditLog := audit.New(500, log)
 	rest.SetAudit(auditLog)
 	if userStore != nil {

@@ -992,11 +992,9 @@ func normalizeRPZPolicies(in []config.RPZPolicyTOML) ([]config.RPZPolicyTOML, er
 		p.Source = strings.TrimSpace(p.Source)
 		p.Format = strings.TrimSpace(strings.ToLower(p.Format))
 		p.Action = strings.TrimSpace(strings.ToLower(p.Action))
+		p.Zone = strings.TrimSpace(p.Zone)
 		if p.Name == "" {
 			return nil, errRPZ("policy name required")
-		}
-		if p.Source == "" {
-			return nil, errRPZ("policy source required for " + p.Name)
 		}
 		if seen[p.Name] {
 			return nil, errRPZ("duplicate policy name: " + p.Name)
@@ -1005,8 +1003,32 @@ func normalizeRPZPolicies(in []config.RPZPolicyTOML) ([]config.RPZPolicyTOML, er
 		if p.Format == "" {
 			p.Format = "hosts"
 		}
-		if p.Format != "hosts" {
-			return nil, errRPZ("unsupported format (use hosts): " + p.Format)
+		switch p.Format {
+		case "hosts":
+			if p.Source == "" {
+				return nil, errRPZ("policy source required for " + p.Name)
+			}
+			p.Zone = ""
+			p.Masters = nil
+		case "axfr":
+			if p.Zone == "" {
+				return nil, errRPZ("axfr policy requires zone for " + p.Name)
+			}
+			p.Zone = config.NormalizeName(p.Zone)
+			masters, err := config.NormalizeForwarders(p.Masters)
+			if err != nil {
+				return nil, errRPZ("axfr masters for " + p.Name + ": " + err.Error())
+			}
+			if len(masters) == 0 {
+				return nil, errRPZ("axfr policy requires at least one master for " + p.Name)
+			}
+			p.Masters = masters
+			// Keep Source aligned with zone for display/fingerprint stability.
+			if p.Source == "" {
+				p.Source = p.Zone
+			}
+		default:
+			return nil, errRPZ("unsupported format (use hosts or axfr): " + p.Format)
 		}
 		if p.Action == "" {
 			p.Action = "nxdomain"
@@ -1033,6 +1055,22 @@ func normalizeRPZPolicies(in []config.RPZPolicyTOML) ([]config.RPZPolicyTOML, er
 	return out, nil
 }
 
+func rpzPolicyConfigs(pols []config.RPZPolicyTOML) []rpz.PolicyConfig {
+	out := make([]rpz.PolicyConfig, 0, len(pols))
+	for _, p := range pols {
+		out = append(out, rpz.PolicyConfig{
+			Name:    p.Name,
+			Source:  p.Source,
+			Format:  p.Format,
+			Action:  rpz.Action(p.Action),
+			Target:  p.Target,
+			Zone:    p.Zone,
+			Masters: append([]string(nil), p.Masters...),
+		})
+	}
+	return out
+}
+
 type rpzError string
 
 func (e rpzError) Error() string { return string(e) }
@@ -1046,12 +1084,7 @@ func (a *API) startRPZReload(sync bool) error {
 	if !eng.TryBeginLoad() {
 		return errRPZ("rpz sync already in progress")
 	}
-	var policies []rpz.PolicyConfig
-	for _, p := range a.cfg.RPZ.Policies {
-		policies = append(policies, rpz.PolicyConfig{
-			Name: p.Name, Source: p.Source, Format: p.Format, Action: rpz.Action(p.Action), Target: p.Target,
-		})
-	}
+	policies := rpzPolicyConfigs(a.cfg.RPZ.Policies)
 	run := func() {
 		n, err := a.srv.ReloadRPZ(policies, 15*time.Minute)
 		eng.EndLoad(err)
@@ -1067,6 +1100,30 @@ func (a *API) startRPZReload(sync bool) error {
 	}
 	go run()
 	return nil
+}
+
+// HandleRPZNotify returns true when zone matches an axfr RPZ feed and kicks a background reload.
+func (a *API) HandleRPZNotify(zone string) bool {
+	if a == nil || a.cfg == nil {
+		return false
+	}
+	zone = config.NormalizeName(zone)
+	match := false
+	for _, p := range a.cfg.RPZ.Policies {
+		if strings.EqualFold(strings.TrimSpace(p.Format), "axfr") && config.NormalizeName(p.Zone) == zone {
+			match = true
+			break
+		}
+	}
+	if !match {
+		return false
+	}
+	if err := a.startRPZReload(false); err != nil {
+		a.log.Debug("rpz notify reload skip", "zone", zone, "err", err)
+	} else {
+		a.log.Info("rpz axfr notify reload started", "zone", zone)
+	}
+	return true
 }
 
 // StartRPZAutoUpdate reloads feeds on update_interval (seconds). 0 disables.

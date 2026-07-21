@@ -354,11 +354,14 @@ func streamHosts(r io.Reader, hit Hit, t *trie) error {
 // PolicyConfig is one feed from TOML / UI.
 type PolicyConfig struct {
 	Name   string
-	Source string // file path or URL
-	Format string // hosts
+	Source string // file path or URL (hosts)
+	Format string // hosts | axfr
 	Action Action
 	// Target is required for redirect (IP) and cname (hostname).
 	Target string
+	// Zone + Masters for format=axfr (slave pull; owner names → RPZ).
+	Zone    string
+	Masters []string
 }
 
 // LoadPolicies merges all policies into the radix and snapshots to Badger when configured.
@@ -370,12 +373,23 @@ func (e *Engine) LoadPolicies(policies []PolicyConfig, timeout time.Duration) (i
 			action = ActionNXDOMAIN
 		}
 		hit := Hit{Action: action, Target: strings.TrimSpace(p.Target)}
-		src := p.Source
+		format := strings.ToLower(strings.TrimSpace(p.Format))
+		if format == "" {
+			format = "hosts"
+		}
 		var err error
-		if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
-			err = streamHostsURL(src, hit, timeout, merged)
-		} else {
-			err = streamHostsFile(src, hit, merged)
+		switch format {
+		case "axfr":
+			err = streamAXFR(p.Zone, p.Masters, hit, timeout, merged)
+		case "hosts":
+			src := p.Source
+			if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+				err = streamHostsURL(src, hit, timeout, merged)
+			} else {
+				err = streamHostsFile(src, hit, merged)
+			}
+		default:
+			err = fmt.Errorf("unsupported format %q", p.Format)
 		}
 		if err != nil {
 			return 0, fmt.Errorf("policy %s: %w", p.Name, err)

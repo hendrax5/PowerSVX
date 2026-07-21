@@ -191,10 +191,13 @@ type RateLimitConfig struct {
 type RPZPolicyTOML struct {
 	Name   string `toml:"name" json:"name"`
 	Source string `toml:"source" json:"source"`
-	Format string `toml:"format" json:"format"`
+	Format string `toml:"format" json:"format"` // hosts | axfr
 	Action string `toml:"action" json:"action"`
 	// Target: IP for redirect, hostname for cname.
 	Target string `toml:"target" json:"target,omitempty"`
+	// Zone + Masters are used when Format is "axfr" (PowerSVX as slave; names → RPZ).
+	Zone    string   `toml:"zone" json:"zone,omitempty"`
+	Masters []string `toml:"masters" json:"masters,omitempty"`
 }
 
 type RPZConfig struct {
