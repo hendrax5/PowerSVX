@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ type Config struct {
 	Metrics      MetricsConfig      `toml:"metrics"`
 	TSIG         TSIGConfig         `toml:"tsig"`
 	Transfer     TransferConfig     `toml:"transfer"`
+	Update       UpdateConfig       `toml:"update"`
 	ACL          ACLConfig          `toml:"acl"`
 	GeoDNS       GeoDNSConfig       `toml:"geodns"`
 	SplitHorizon SplitHorizonConfig `toml:"split_horizon"`
@@ -138,6 +140,25 @@ type TransferConfig struct {
 	Notify []string `toml:"notify"`
 	// AllowFrom CIDRs allowed to request AXFR (empty = any if AllowAXFR).
 	AllowFrom []string `toml:"allow_from"`
+}
+
+// UpdateConfig controls RFC 2136 dynamic DNS updates.
+type UpdateConfig struct {
+	// Enabled turns on OpcodeUpdate handling (default false).
+	Enabled bool `toml:"enabled"`
+	// RequireTSIG requires a valid TSIG on UPDATE when true.
+	RequireTSIG bool `toml:"require_tsig"`
+	// AllowFrom CIDRs allowed to send UPDATE (empty = any if Enabled).
+	AllowFrom []string `toml:"allow_from"`
+	// Policies optionally restrict which TSIG key may update which zones.
+	// Empty policies = any configured TSIG key may update any zone (when RequireTSIG).
+	Policies []UpdatePolicyTOML `toml:"policies"`
+}
+
+// UpdatePolicyTOML maps a TSIG key to zones it may update.
+type UpdatePolicyTOML struct {
+	Key   string   `toml:"key" json:"key"`     // TSIG key name
+	Zones []string `toml:"zones" json:"zones"` // empty = all zones
 }
 
 type LoggingConfig struct {
@@ -274,6 +295,7 @@ func Default() *Config {
 		},
 		TSIG:     TSIGConfig{Enabled: false},
 		Transfer: TransferConfig{AllowAXFR: false, RequireTSIG: true},
+		Update:   UpdateConfig{Enabled: false, RequireTSIG: true},
 		ACL:      ACLConfig{},
 		GeoDNS: GeoDNSConfig{
 			Enabled: false, DatabasePath: "./data/GeoLite2-City.mmdb", DefaultTag: "default",
@@ -335,12 +357,58 @@ func NormalizeResolverMode(mode string) string {
 	return "recursive"
 }
 
-// NormalizeForwarder accepts "1.1.1.1", "1.1.1.1:53", or "[::1]:53" and returns host:port.
+// NormalizeForwarder accepts:
+//   - "1.1.1.1", "1.1.1.1:53", "[::1]:53" → UDP host:port
+//   - "tls://host:853" or "tls://1.1.1.1:853#sni.example.com" → DoT
+//   - "https://host/dns-query" → DoH
 func NormalizeForwarder(raw string) (string, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return "", fmt.Errorf("empty forwarder")
 	}
+	lower := strings.ToLower(s)
+	switch {
+	case strings.HasPrefix(lower, "https://"), strings.HasPrefix(lower, "http://"):
+		u, err := url.Parse(s)
+		if err != nil || u.Host == "" {
+			return "", fmt.Errorf("invalid doh forwarder %q", raw)
+		}
+		if !strings.EqualFold(u.Scheme, "https") {
+			return "", fmt.Errorf("doh forwarder must use https://")
+		}
+		if u.Path == "" || u.Path == "/" {
+			u.Path = "/dns-query"
+		}
+		u.Fragment = ""
+		u.RawQuery = ""
+		return u.String(), nil
+	case strings.HasPrefix(lower, "tls://"):
+		rest := s[len("tls://"):]
+		sni := ""
+		if i := strings.IndexByte(rest, '#'); i >= 0 {
+			sni = strings.TrimSpace(rest[i+1:])
+			rest = rest[:i]
+		}
+		host, port, err := net.SplitHostPort(rest)
+		if err != nil {
+			host, port = rest, "853"
+		}
+		if port == "" {
+			port = "853"
+		}
+		if _, err := strconv.Atoi(port); err != nil {
+			return "", fmt.Errorf("invalid tls forwarder port %q", port)
+		}
+		if host == "" || strings.ContainsAny(host, " \t") {
+			return "", fmt.Errorf("invalid tls forwarder host %q", host)
+		}
+		out := "tls://" + net.JoinHostPort(host, port)
+		if sni != "" {
+			out += "#" + sni
+		}
+		return out, nil
+	}
+
 	host, port, err := net.SplitHostPort(s)
 	if err != nil {
 		host, port = s, "53"
@@ -352,12 +420,61 @@ func NormalizeForwarder(raw string) (string, error) {
 		return "", fmt.Errorf("invalid forwarder port %q", port)
 	}
 	if ip := net.ParseIP(host); ip == nil {
-		// allow hostnames
 		if host == "" || strings.ContainsAny(host, " \t") {
 			return "", fmt.Errorf("invalid forwarder host %q", host)
 		}
 	}
 	return net.JoinHostPort(host, port), nil
+}
+
+// ForwardTarget is a parsed upstream dial target.
+type ForwardTarget struct {
+	Network    string // "udp", "tcp-tls", "https"
+	Addr       string // host:port for udp/tls
+	URL        string // full URL for https
+	ServerName string // TLS SNI
+	Display    string // canonical form for logs/metrics
+}
+
+// ParseForwardTarget parses a normalized forwarder string.
+func ParseForwardTarget(raw string) (ForwardTarget, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ForwardTarget{}, fmt.Errorf("empty forwarder")
+	}
+	lower := strings.ToLower(s)
+	switch {
+	case strings.HasPrefix(lower, "https://"):
+		u, err := url.Parse(s)
+		if err != nil {
+			return ForwardTarget{}, err
+		}
+		return ForwardTarget{Network: "https", URL: s, Display: s, ServerName: u.Hostname()}, nil
+	case strings.HasPrefix(lower, "tls://"):
+		rest := s[len("tls://"):]
+		sni := ""
+		if i := strings.IndexByte(rest, '#'); i >= 0 {
+			sni = strings.TrimSpace(rest[i+1:])
+			rest = rest[:i]
+		}
+		host, port, err := net.SplitHostPort(rest)
+		if err != nil {
+			return ForwardTarget{}, fmt.Errorf("invalid tls forwarder %q", raw)
+		}
+		if sni == "" {
+			if net.ParseIP(host) == nil {
+				sni = host
+			}
+		}
+		addr := net.JoinHostPort(host, port)
+		return ForwardTarget{Network: "tcp-tls", Addr: addr, ServerName: sni, Display: s}, nil
+	default:
+		addr := s
+		if _, _, err := net.SplitHostPort(addr); err != nil {
+			addr = net.JoinHostPort(s, "53")
+		}
+		return ForwardTarget{Network: "udp", Addr: addr, Display: addr}, nil
+	}
 }
 
 // NormalizeForwarders validates and normalizes a forwarder list (deduped, order kept).

@@ -88,6 +88,10 @@ enabled = false
 allow_axfr = false
 require_tsig = true
 
+[update]
+enabled = false
+require_tsig = true
+
 [api]
 rest_enabled = true
 rest_bind = "0.0.0.0:5380"

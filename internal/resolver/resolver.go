@@ -86,9 +86,10 @@ func New(cfg config.ResolverConfig) *Resolver {
 		v6 = 56
 	}
 	fz, _ := config.NormalizeForwardZones(cfg.ForwardZones)
+	fwd, _ := config.NormalizeForwarders(cfg.Forwarders)
 	r := &Resolver{
 		Mode:          mode,
-		Forwarders:    cfg.Forwarders,
+		Forwarders:    fwd,
 		ForwardZones:  fz,
 		ForwardOnFail: cfg.ForwardOnFail,
 		RootHintsFile: cfg.RootHintsFile,
@@ -185,9 +186,14 @@ func (r *Resolver) forwardTo(ctx context.Context, req *dns.Msg, sub *ecs.Subnet,
 	}
 	var lastErr error
 	for _, fwd := range forwarders {
-		addr := fwd
-		if _, _, err := net.SplitHostPort(addr); err != nil {
-			addr = net.JoinHostPort(fwd, "53")
+		target, err := config.ParseForwardTarget(fwd)
+		if err != nil {
+			// Legacy host without port / normalize failure: treat as UDP :53
+			addr := fwd
+			if _, _, e := net.SplitHostPort(addr); e != nil {
+				addr = net.JoinHostPort(fwd, "53")
+			}
+			target = config.ForwardTarget{Network: "udp", Addr: addr, Display: addr}
 		}
 		msg := req.Copy()
 		msg.RecursionDesired = true
@@ -196,43 +202,31 @@ func (r *Resolver) forwardTo(ctx context.Context, req *dns.Msg, sub *ecs.Subnet,
 			ecs.Apply(msg, sub, r.BufSize)
 		}
 
-		type result struct {
-			resp *dns.Msg
-			err  error
-		}
-		ch := make(chan result, 1)
 		started := time.Now()
-		go func() {
-			resp, _, err := r.client.Exchange(msg, addr)
-			ch <- result{resp, err}
-		}()
-		select {
-		case <-ctx.Done():
-			if r.OnForwarder != nil {
-				r.OnForwarder(addr, false, time.Since(started).Milliseconds(), ctx.Err().Error())
-			}
-			return nil, ctx.Err()
-		case res := <-ch:
-			ms := time.Since(started).Milliseconds()
-			if res.err != nil {
-				lastErr = res.err
-				if r.OnForwarder != nil {
-					r.OnForwarder(addr, false, ms, res.err.Error())
-				}
-				continue
-			}
-			if res.resp == nil {
-				lastErr = fmt.Errorf("nil response from %s", addr)
-				if r.OnForwarder != nil {
-					r.OnForwarder(addr, false, ms, lastErr.Error())
-				}
-				continue
-			}
-			if r.OnForwarder != nil {
-				r.OnForwarder(addr, true, ms, "")
-			}
-			return res.resp, nil
+		resp, err := r.exchangeUpstream(ctx, msg, target)
+		ms := time.Since(started).Milliseconds()
+		label := target.Display
+		if label == "" {
+			label = target.Addr
 		}
+		if err != nil {
+			lastErr = err
+			if r.OnForwarder != nil {
+				r.OnForwarder(label, false, ms, err.Error())
+			}
+			continue
+		}
+		if resp == nil {
+			lastErr = fmt.Errorf("nil response from %s", label)
+			if r.OnForwarder != nil {
+				r.OnForwarder(label, false, ms, lastErr.Error())
+			}
+			continue
+		}
+		if r.OnForwarder != nil {
+			r.OnForwarder(label, true, ms, "")
+		}
+		return resp, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("all forwarders failed")

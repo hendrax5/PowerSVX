@@ -38,6 +38,8 @@ negative_ttl = 60
 [resolver]
 mode = "recursive"
 forwarders = ["103.88.88.99:53", "203.119.13.77:53"]
+# Optional encrypted outbound forwarders:
+# forwarders = ["tls://one.one.one.one:853", "https://cloudflare-dns.com/dns-query"]
 # Optional conditional/stub forwarders (longest-suffix match, checked before recursion):
 # [[resolver.forward_zones]]
 # zone = "corp.local"
@@ -93,6 +95,15 @@ allow_axfr = false
 require_tsig = true
 # notify = ["192.0.2.10:53"]
 # allow_from = ["10.0.0.0/8"]
+
+# RFC 2136 dynamic updates (DDNS). Off by default.
+[update]
+enabled = false
+require_tsig = true
+# allow_from = ["10.0.0.0/8"]
+# [[update.policies]]
+# key = "dhcp.example.com."
+# zones = ["example.com"]
 
 [api]
 rest_enabled = true

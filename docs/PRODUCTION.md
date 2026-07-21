@@ -24,12 +24,26 @@
 - `require_tsig = true` (default) needs a valid TSIG on the transfer.
 - `allow_from` CIDR ACL; `notify` lists secondaries for DNS NOTIFY after zone create.
 
+## Dynamic DNS (RFC 2136)
+- `[update] enabled = true` accepts OpcodeUpdate for zones already in the auth store.
+- `require_tsig` (default true) + `[tsig]` keys; optional `allow_from` CIDRs.
+- Optional `[[update.policies]]` map TSIG `key` → `zones` (empty zones = all).
+- Prerequisites: name/RRset existence (ANY/NONE) and exact RR match (IN).
+- Updates: add (IN), delete RRset (ANY), delete exact RR (NONE). SOA serial bumps; secondaries are NOTIFYed.
+
 ## Conditional forwarders
 - Global `[resolver] forwarders` plus optional `[[resolver.forward_zones]]` (`zone` + `forwarders`) for longest-suffix routing (stub/conditional). Editable in Settings.
+- Outbound schemes: `host:53` (UDP), `tls://host:853` (DoT, optional `#sni`), `https://host/dns-query` (DoH).
 
 ## TLS (DoT / DoH / DoH3 / DoQ)
 - Minimum TLS 1.3 for encrypted DNS listeners.
 - Place certs in `certs/` (`cert_file` / `key_file` in TOML).
+
+## DNSSEC validation (recursive / forward)
+- Modes: `off` | `opportunistic` | `validate` (`[resolver] dnssec_mode`).
+- Trusts upstream AD; verifies in-message RRSIG when DNSKEY is present.
+- NXDOMAIN/NODATA: consumes NSEC3/NSEC denial covers when present (incomplete proofs do not SERVFAIL).
+- Full root-anchored chain-of-trust still deferred.
 
 ## Backup / restore
 - `GET /api/v1/backup` — export zones + records (+ DS if signing).
@@ -60,6 +74,9 @@
 - Raft HA / multi-node failover
 - Redis L3 shared cache
 - Full OIDC/SAML SSO
+- True incremental IXFR journal
+- Root-anchored DNSSEC chain-of-trust
+- DHCP (only if LAN appliance is a product goal)
 - Multi-tenancy
 - HSM-backed DNSSEC keys
 - Full NSEC3 + automated key rollover

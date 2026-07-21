@@ -184,6 +184,12 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
+	if req != nil && req.Opcode == dns.OpcodeUpdate {
+		if s.handleUpdate(w, req, clientIP) {
+			return
+		}
+	}
+
 	logQuery := func(qname, qtype string, rcode int, cached bool) {
 		if s.qlog == nil || s.cfg == nil || !s.cfg.Logging.QueryLogEnabled || qname == "" || clientIP == "" {
 			return

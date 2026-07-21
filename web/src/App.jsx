@@ -1984,7 +1984,8 @@ function Settings() {
                 <div>
                   <div className="text-sm font-medium">Forwarders</div>
                   <p className="text-xs text-[var(--muted)] mt-0.5">
-                    Upstream resolvers for forward mode and recursive fallback. Example: 1.1.1.1 or 8.8.8.8:53
+                    Upstream resolvers for forward mode and recursive fallback. UDP `1.1.1.1:53`,
+                    DoT `tls://one.one.one.one:853`, or DoH `https://cloudflare-dns.com/dns-query`.
                   </p>
                 </div>
                 {(draft.forwarders || []).length === 0 ? (
@@ -2030,7 +2031,7 @@ function Settings() {
                       value={fwdInput}
                       disabled={busy || !isAdmin}
                       onChange={(e) => setFwdInput(e.target.value)}
-                      placeholder="1.1.1.1:53"
+                      placeholder="1.1.1.1:53 or tls://…"
                       className="input mono w-full min-h-[44px]"
                     />
                   </label>

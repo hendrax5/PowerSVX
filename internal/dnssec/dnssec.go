@@ -97,6 +97,13 @@ func evaluate(msg *dns.Msg) Result {
 		return Result{Reason: "upstream SERVFAIL"}
 	}
 
+	// NXDOMAIN / NODATA: verify NSEC3 (or NSEC) denial proofs when present.
+	if msg.Rcode == dns.RcodeNameError || (msg.Rcode == dns.RcodeSuccess && len(msg.Answer) == 0) {
+		if res, ok := evaluateDenial(msg); ok {
+			return res
+		}
+	}
+
 	keys := collectDNSKEYs(msg)
 	if len(keys) == 0 {
 		return Result{Reason: "no DNSKEY in message"}
@@ -136,6 +143,108 @@ func evaluate(msg *dns.Msg) Result {
 		return Result{Authenticated: true, Reason: "local RRSIG"}
 	}
 	return Result{Reason: "no RRSIG verified"}
+}
+
+// evaluateDenial checks authority NSEC3/NSEC covers for NXDOMAIN/NODATA.
+// ok=false means no usable denial RRs (fall through to other checks).
+func evaluateDenial(msg *dns.Msg) (Result, bool) {
+	if msg == nil || len(msg.Question) == 0 {
+		return Result{}, false
+	}
+	qname := dns.CanonicalName(msg.Question[0].Name)
+	qtype := msg.Question[0].Qtype
+
+	var nsec3s []*dns.NSEC3
+	var nsecs []*dns.NSEC
+	for _, rr := range msg.Ns {
+		switch v := rr.(type) {
+		case *dns.NSEC3:
+			nsec3s = append(nsec3s, v)
+		case *dns.NSEC:
+			nsecs = append(nsecs, v)
+		}
+	}
+	if len(nsec3s) == 0 && len(nsecs) == 0 {
+		return Result{}, false
+	}
+
+	if len(nsec3s) > 0 {
+		nameCovered := false
+		wildcardCovered := false
+		typeDenied := false
+		for _, n := range nsec3s {
+			if n.Match(qname) {
+				// Closest encloser / exact owner match: NODATA if type absent
+				if !typeBitmapHas(n.TypeBitMap, qtype) {
+					typeDenied = true
+				}
+				nameCovered = true
+			}
+			if n.Cover(qname) {
+				nameCovered = true
+			}
+			// Wildcard denial at *.closest-encloser is approximated via Cover on \052.<labels>
+			labels := dns.SplitDomainName(qname)
+			if len(labels) >= 1 {
+				wild := "*." + strings.Join(labels[1:], ".") + "."
+				if len(labels) == 1 {
+					wild = "*."
+				}
+				if n.Cover(dns.Fqdn(wild)) || n.Match(dns.Fqdn(wild)) {
+					wildcardCovered = true
+				}
+			}
+		}
+		if msg.Rcode == dns.RcodeNameError {
+			if nameCovered && wildcardCovered {
+				return Result{Authenticated: true, Reason: "nsec3 nxdomain cover"}, true
+			}
+			// Incomplete proof → treat as insecure, not bogus (avoid SERVFAIL on partial upstreams)
+			return Result{Reason: "incomplete nsec3 nxdomain proof"}, true
+		}
+		// NODATA
+		if typeDenied || nameCovered {
+			return Result{Authenticated: true, Reason: "nsec3 nodata"}, true
+		}
+		return Result{Reason: "incomplete nsec3 nodata proof"}, true
+	}
+
+	// Plain NSEC: owner exists without type, or covers name.
+	for _, n := range nsecs {
+		owner := dns.CanonicalName(n.Hdr.Name)
+		if owner == qname {
+			if !typeBitmapHas(n.TypeBitMap, qtype) {
+				return Result{Authenticated: true, Reason: "nsec nodata"}, true
+			}
+		}
+		if nsecCovers(n, qname) {
+			return Result{Authenticated: true, Reason: "nsec nxdomain cover"}, true
+		}
+	}
+	return Result{Reason: "incomplete nsec proof"}, true
+}
+
+func typeBitmapHas(types []uint16, qtype uint16) bool {
+	for _, t := range types {
+		if t == qtype {
+			return true
+		}
+	}
+	return false
+}
+
+func nsecCovers(n *dns.NSEC, name string) bool {
+	if n == nil {
+		return false
+	}
+	owner := dns.CanonicalName(n.Hdr.Name)
+	next := dns.CanonicalName(n.NextDomain)
+	name = dns.CanonicalName(name)
+	// Canonical order: owner < name < next (wrap-around if next <= owner)
+	if next <= owner {
+		return name > owner || name < next
+	}
+	return name > owner && name < next
 }
 
 type rrset struct {

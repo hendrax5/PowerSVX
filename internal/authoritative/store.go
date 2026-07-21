@@ -136,6 +136,85 @@ func (s *Store) DeleteRecord(zone, name string, qtype uint16) int {
 	return n
 }
 
+// DeleteRecordExact removes records matching name+type+content (+prio for MX).
+func (s *Store) DeleteRecordExact(zone string, want Record) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	zone = config.NormalizeName(zone)
+	want.Name = config.NormalizeName(want.Name)
+	want.Content = strings.TrimSpace(want.Content)
+	recs := s.zones[zone]
+	kept := recs[:0]
+	n := 0
+	for _, r := range recs {
+		if config.NormalizeName(r.Name) == want.Name &&
+			r.Type == want.Type &&
+			strings.EqualFold(strings.TrimSpace(r.Content), want.Content) &&
+			r.Prio == want.Prio {
+			n++
+			continue
+		}
+		kept = append(kept, r)
+	}
+	s.zones[zone] = kept
+	return n
+}
+
+// NameExists reports whether any RR exists at name in zone.
+func (s *Store) NameExists(zone, name string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	zone = config.NormalizeName(zone)
+	name = config.NormalizeName(name)
+	for _, r := range s.zones[zone] {
+		if config.NormalizeName(r.Name) == name {
+			return true
+		}
+	}
+	return false
+}
+
+// RRSetExists reports whether name+type exists in zone.
+func (s *Store) RRSetExists(zone, name string, qtype uint16) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	zone = config.NormalizeName(zone)
+	name = config.NormalizeName(name)
+	for _, r := range s.zones[zone] {
+		if config.NormalizeName(r.Name) == name && r.Type == qtype {
+			return true
+		}
+	}
+	return false
+}
+
+// BumpSOASerial increments the zone SOA serial (creates none). Returns new serial.
+func (s *Store) BumpSOASerial(zone string) (uint32, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	zone = config.NormalizeName(zone)
+	recs := s.zones[zone]
+	for i, r := range recs {
+		if r.Type != dns.TypeSOA {
+			continue
+		}
+		parts := strings.Fields(r.Content)
+		if len(parts) < 7 {
+			return 0, false
+		}
+		serial, err := strconv.ParseUint(parts[2], 10, 32)
+		if err != nil {
+			return 0, false
+		}
+		serial++
+		parts[2] = strconv.FormatUint(serial, 10)
+		recs[i].Content = strings.Join(parts, " ")
+		s.zones[zone] = recs
+		return uint32(serial), true
+	}
+	return 0, false
+}
+
 // Lookup returns RRs for qname/qtype filtered by view and geo tag.
 func (s *Store) Lookup(qname string, qtype uint16) (rrs []dns.RR, foundZone bool) {
 	return s.LookupScoped(qname, qtype, "", "")
