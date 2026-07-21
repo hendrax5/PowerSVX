@@ -1,6 +1,8 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
+  Area,
+  AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
@@ -308,6 +310,9 @@ function Dashboard() {
   const rcodes = data.rcodes || []
   const anomaly = data.anomaly || { alerts: [] }
   const anomalyAlerts = anomaly.alerts || []
+  const mon = data.monitor || {}
+  const health = data.health || { checks: {}, status: '—' }
+  const checks = health.checks || {}
   const hitRatio =
     s.cache_hits + s.cache_misses > 0
       ? ((100 * s.cache_hits) / (s.cache_hits + s.cache_misses)).toFixed(1)
@@ -319,13 +324,28 @@ function Dashboard() {
     { name: 'Limited', value: s.rate_limited },
   ]
   const rcodeChart = rcodes.map((r) => ({ name: r.rcode, value: r.count }))
+  const qpsChart = (mon.qps_series || []).map((p) => ({
+    t: new Date((p.t || 0) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    qps: Number(p.qps || 0),
+  }))
+  const pathChart = (mon.paths || []).map((p) => ({ name: p.key, value: p.count }))
+  const errChart = (mon.errors || []).map((p) => ({ name: p.key, value: p.count }))
+  const lat = mon.latency || {}
+  const res = mon.resources || {}
+  const healthItems = [
+    ['UDP :53', checks.dns_udp],
+    ['Database', checks.database],
+    ['Cache', checks.cache],
+    ['Forwarders', checks.forwarders],
+  ]
 
   return (
     <div className="space-y-6 max-w-6xl">
       <header className="reveal">
         <h1 className="text-2xl font-semibold">Dashboard</h1>
         <p className="text-[var(--muted)] text-sm mt-1">
-          v{s.version} · uptime {formatUptime(s.uptime_seconds)} · mode {s.mode}
+          v{s.version} · uptime {formatUptime(s.uptime_seconds)} · mode {s.mode} · QPS{' '}
+          {Number(mon.qps_now || 0).toFixed(0)}
         </p>
         <div className="flex flex-wrap gap-2 mt-3">
           <Badge on={s.dot_enabled} label="DoT" />
@@ -339,27 +359,109 @@ function Dashboard() {
         </div>
       </header>
 
+      <section className="panel p-3 reveal">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <h2 className="text-sm text-[var(--muted)]">Health</h2>
+          <span
+            className={`text-xs mono px-2 py-0.5 border ${
+              health.status === 'healthy'
+                ? 'border-[var(--ok)]/40 text-[var(--ok)]'
+                : 'border-[var(--warn)]/40 text-[var(--warn)]'
+            }`}
+          >
+            {health.status || '—'}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          {healthItems.map(([label, c]) => {
+            const st = c?.status || '—'
+            const ok = st === 'pass' || st === 'idle' || st === 'disabled'
+            return (
+              <div key={label} className="border border-[var(--border)] px-2.5 py-2 text-sm">
+                <div className="text-xs text-[var(--muted)]">{label}</div>
+                <div className={`mono text-sm ${ok ? '' : 'text-[var(--warn)]'}`}>{st}</div>
+                {c?.latency_ms != null ? (
+                  <div className="text-xs text-[var(--muted)]">{c.latency_ms} ms</div>
+                ) : null}
+                {c?.addr ? <div className="text-xs text-[var(--muted)] truncate mono">{c.addr}</div> : null}
+              </div>
+            )
+          })}
+        </div>
+      </section>
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 reveal reveal-delay-1">
-        <Stat label="Queries" value={s.queries_total} />
+        <Stat label="QPS" value={Number(mon.qps_now || 0).toFixed(0)} sub={`total ${s.queries_total}`} />
+        <Stat
+          label="Latency p50 / p95"
+          value={`${Number(lat.p50_ms || 0).toFixed(1)} / ${Number(lat.p95_ms || 0).toFixed(1)}`}
+          sub={`p99 ${Number(lat.p99_ms || 0).toFixed(1)} ms · n=${lat.samples || 0}`}
+        />
         <Stat label="Cache hit %" value={hitRatio} sub={`L1 size ${s.cache_l1_size}`} />
-        <Stat label="Zones" value={s.zones} />
-        <Stat label="RPZ / limited" value={s.rpz_entries} sub={`rate-limited ${s.rate_limited}`} />
+        <Stat
+          label="Resources"
+          value={`${res.goroutines ?? '—'} g`}
+          sub={`heap ${Number(res.heap_mb || 0).toFixed(0)} MB · GC ${res.num_gc ?? 0}`}
+        />
       </div>
 
       <div className="grid md:grid-cols-2 gap-4 reveal reveal-delay-2">
         <section className="panel p-4 h-64">
-          <h2 className="text-sm text-[var(--muted)] mb-3">Traffic snapshot</h2>
-          <ResponsiveContainer width="100%" height="85%">
-            <BarChart data={trafficChart}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#2c3340" />
-              <XAxis dataKey="name" stroke="#8b939e" fontSize={12} />
-              <YAxis stroke="#8b939e" fontSize={12} />
-              <Tooltip
-                contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
-              />
-              <Bar dataKey="value" fill="var(--accent)" radius={[2, 2, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          <h2 className="text-sm text-[var(--muted)] mb-3">QPS (15 min)</h2>
+          {qpsChart.length ? (
+            <ResponsiveContainer width="100%" height="85%">
+              <AreaChart data={qpsChart}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#2c3340" />
+                <XAxis dataKey="t" stroke="#8b939e" fontSize={10} minTickGap={28} />
+                <YAxis stroke="#8b939e" fontSize={12} allowDecimals={false} />
+                <Tooltip
+                  contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
+                />
+                <Area type="monotone" dataKey="qps" stroke="var(--accent)" fill="var(--accent)" fillOpacity={0.2} />
+              </AreaChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="text-sm text-[var(--muted)] pt-8 text-center">Waiting for traffic…</p>
+          )}
+        </section>
+        <section className="panel p-4 h-64">
+          <h2 className="text-sm text-[var(--muted)] mb-3">Resolver path</h2>
+          {pathChart.length ? (
+            <ResponsiveContainer width="100%" height="85%">
+              <BarChart data={pathChart}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#2c3340" />
+                <XAxis dataKey="name" stroke="#8b939e" fontSize={10} interval={0} angle={-20} textAnchor="end" height={50} />
+                <YAxis stroke="#8b939e" fontSize={12} />
+                <Tooltip
+                  contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
+                />
+                <Bar dataKey="value" fill="var(--accent)" radius={[2, 2, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="text-sm text-[var(--muted)] pt-8 text-center">No path samples yet</p>
+          )}
+        </section>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4 reveal reveal-delay-2">
+        <section className="panel p-4 h-64">
+          <h2 className="text-sm text-[var(--muted)] mb-3">Error kinds</h2>
+          {errChart.length ? (
+            <ResponsiveContainer width="100%" height="85%">
+              <BarChart data={errChart}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#2c3340" />
+                <XAxis dataKey="name" stroke="#8b939e" fontSize={11} />
+                <YAxis stroke="#8b939e" fontSize={12} />
+                <Tooltip
+                  contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
+                />
+                <Bar dataKey="value" fill="#f59e0b" radius={[2, 2, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="text-sm text-[var(--muted)] pt-8 text-center">No errors recorded</p>
+          )}
         </section>
         <section className="panel p-4 h-64">
           <h2 className="text-sm text-[var(--muted)] mb-3">RCODE distribution</h2>
@@ -378,6 +480,98 @@ function Dashboard() {
           ) : (
             <p className="text-sm text-[var(--muted)] pt-8 text-center">No query aggregates yet</p>
           )}
+        </section>
+      </div>
+
+      <div className="grid md:grid-cols-3 gap-4 reveal reveal-delay-3">
+        <section className="panel p-4">
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <h2 className="text-sm text-[var(--muted)]">Top clients</h2>
+            <a href="/settings" className="text-xs text-[var(--accent)] underline">
+              ACL settings
+            </a>
+          </div>
+          {(mon.top_clients || []).length ? (
+            <ul className="space-y-1 text-sm mono max-h-56 overflow-auto">
+              {mon.top_clients.map((n) => (
+                <li key={n.key} className="flex justify-between gap-3 border-b border-[var(--border)]/50 py-1.5">
+                  <a className="truncate text-[var(--accent)]" href={`/logs?client_ip=${encodeURIComponent(n.key)}`}>
+                    {n.key}
+                  </a>
+                  <span className="shrink-0">{n.count}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyState title="No client traffic yet" hint="Appears after allowed queries arrive." />
+          )}
+          {(mon.top_subnets || []).length ? (
+            <div className="mt-4">
+              <h3 className="text-xs text-[var(--muted)] mb-2">Top subnets</h3>
+              <ul className="space-y-1 text-sm mono max-h-32 overflow-auto">
+                {mon.top_subnets.map((n) => (
+                  <li key={n.key} className="flex justify-between gap-3 py-1">
+                    <span className="truncate">{n.key}</span>
+                    <span className="shrink-0 text-[var(--accent)]">{n.count}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </section>
+
+        <section className="panel p-4">
+          <h2 className="text-sm text-[var(--muted)] mb-1">ACL</h2>
+          {mon.acl_open_resolver ? (
+            <p className="text-xs text-[var(--warn)] mb-3 border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-2 py-1.5">
+              Open resolver: allow_query is empty — any client may query. Restrict in Settings.
+            </p>
+          ) : (
+            <p className="text-xs text-[var(--muted)] mb-3">Query ACL is restricted.</p>
+          )}
+          <div className="grid grid-cols-2 gap-2 mb-3">
+            <Stat label="Allowed" value={mon.acl_allow ?? 0} />
+            <Stat label="Denied" value={mon.acl_deny ?? 0} />
+          </div>
+          <a href="/settings" className="text-xs text-[var(--accent)] underline">
+            Edit allow / deny lists
+          </a>
+        </section>
+
+        <section className="panel p-4">
+          <h2 className="text-sm text-[var(--muted)] mb-1">Rate limit</h2>
+          <p className="text-xs text-[var(--muted)] mb-3">
+            Lifetime limited {mon.rate_limited_total ?? s.rate_limited ?? 0}
+            {s.ratelimit_enabled ? '' : ' · limiter off'}
+          </p>
+          {(mon.rate_limit_active || []).length ? (
+            <div className="mb-3">
+              <h3 className="text-xs text-[var(--muted)] mb-1">Currently blocked</h3>
+              <ul className="space-y-1 text-sm mono max-h-24 overflow-auto">
+                {mon.rate_limit_active.map((n) => (
+                  <li key={n.key} className="flex justify-between gap-2">
+                    <span className="truncate">{n.key}</span>
+                    <span className="text-[var(--warn)] shrink-0">{n.count}s</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="text-xs text-[var(--muted)] mb-3">No active blocks.</p>
+          )}
+          {(mon.rate_limit_top || []).length ? (
+            <div>
+              <h3 className="text-xs text-[var(--muted)] mb-1">Top offenders</h3>
+              <ul className="space-y-1 text-sm mono max-h-28 overflow-auto">
+                {mon.rate_limit_top.map((n) => (
+                  <li key={n.key} className="flex justify-between gap-2">
+                    <span className="truncate">{n.key}</span>
+                    <span className="shrink-0">{n.count}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </section>
       </div>
 
@@ -423,6 +617,23 @@ function Dashboard() {
           )}
         </section>
       </div>
+
+      <section className="panel p-4 reveal reveal-delay-3">
+        <h2 className="text-sm text-[var(--muted)] mb-3">Traffic snapshot</h2>
+        <div className="h-48">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={trafficChart}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2c3340" />
+              <XAxis dataKey="name" stroke="#8b939e" fontSize={12} />
+              <YAxis stroke="#8b939e" fontSize={12} />
+              <Tooltip
+                contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
+              />
+              <Bar dataKey="value" fill="var(--accent)" radius={[2, 2, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </section>
 
       <div className="reveal reveal-delay-3">
         <h2 className="text-sm text-[var(--muted)] mb-2">Zones</h2>
@@ -1100,6 +1311,8 @@ function Settings() {
   const [ok, setOk] = useState('')
   const [busy, setBusy] = useState(false)
   const [section, setSection] = useState('dns')
+  const [fwdInput, setFwdInput] = useState('')
+  const [fwdEditIdx, setFwdEditIdx] = useState(-1)
 
   const toggleKeys = ['geodns', 'rpz_enabled', 'rate_limit', 'ecs_enabled', 'split_horizon', 'forward_on_fail', 'query_log_enabled']
 
@@ -1109,9 +1322,10 @@ function Settings() {
     rate_limit: !!s.rate_limit,
     ecs_enabled: !!s.ecs_enabled,
     split_horizon: !!s.split_horizon,
-    forward_on_fail: !!s.forward_on_fail,
+    forward_on_fail: s.forward_on_fail !== false,
     query_log_enabled: !!s.query_log_enabled,
-    resolver_mode: s.resolver_mode === 'recursive' ? 'recursive' : 'forward',
+    resolver_mode: s.resolver_mode === 'forward' ? 'forward' : 'recursive',
+    forwarders: Array.isArray(s.forwarders) ? [...s.forwarders] : [],
     allow_query: Array.isArray(s.allow_query) ? s.allow_query.join('\n') : '',
     deny_query: Array.isArray(s.deny_query) ? s.deny_query.join('\n') : '',
   })
@@ -1123,7 +1337,7 @@ function Settings() {
       .filter(Boolean)
 
   const sameList = (a, b) => {
-    const aa = linesToList(a)
+    const aa = Array.isArray(a) ? a : linesToList(a)
     const bb = Array.isArray(b) ? b : linesToList(b)
     if (aa.length !== bb.length) return false
     return aa.every((v, i) => v === bb[i])
@@ -1145,8 +1359,10 @@ function Settings() {
   const dirtyDns =
     saved &&
     draft &&
-    (draft.resolver_mode !== (saved.resolver_mode === 'recursive' ? 'recursive' : 'forward') ||
-      !!draft.forward_on_fail !== !!saved.forward_on_fail)
+    ((draft.resolver_mode === 'forward' ? 'forward' : 'recursive') !==
+      (saved.resolver_mode === 'forward' ? 'forward' : 'recursive') ||
+      !!draft.forward_on_fail !== (saved.forward_on_fail !== false) ||
+      !sameList(draft.forwarders, saved.forwarders || []))
   const dirtyFeatures =
     saved &&
     draft &&
@@ -1164,6 +1380,8 @@ function Settings() {
   const discard = () => {
     if (!saved) return
     setDraft(toDraft(saved))
+    setFwdInput('')
+    setFwdEditIdx(-1)
     setOk('')
     setErr('')
   }
@@ -1183,18 +1401,61 @@ function Settings() {
         forward_on_fail: draft.forward_on_fail,
         query_log_enabled: draft.query_log_enabled,
         resolver_mode: draft.resolver_mode,
+        forwarders: draft.forwarders,
         allow_query: linesToList(draft.allow_query),
         deny_query: linesToList(draft.deny_query),
       }
       const s = await api.updateSettings(payload)
       setSaved(s)
       setDraft(toDraft(s))
+      setFwdInput('')
+      setFwdEditIdx(-1)
       setOk('Saved — live now')
       setRpz(await api.rpz())
     } catch (ex) {
       setErr(ex.message)
     } finally {
       setBusy(false)
+    }
+  }
+
+  const addOrUpdateForwarder = () => {
+    const v = fwdInput.trim()
+    if (!v) return
+    setOk('')
+    setErr('')
+    setDraft((d) => {
+      const list = [...(d.forwarders || [])]
+      if (fwdEditIdx >= 0 && fwdEditIdx < list.length) {
+        list[fwdEditIdx] = v
+      } else if (!list.includes(v)) {
+        list.push(v)
+      }
+      return { ...d, forwarders: list }
+    })
+    setFwdInput('')
+    setFwdEditIdx(-1)
+  }
+
+  const editForwarder = (idx) => {
+    setFwdInput((draft.forwarders || [])[idx] || '')
+    setFwdEditIdx(idx)
+    setOk('')
+    setErr('')
+  }
+
+  const removeForwarder = (idx) => {
+    setOk('')
+    setErr('')
+    setDraft((d) => ({
+      ...d,
+      forwarders: (d.forwarders || []).filter((_, i) => i !== idx),
+    }))
+    if (fwdEditIdx === idx) {
+      setFwdInput('')
+      setFwdEditIdx(-1)
+    } else if (fwdEditIdx > idx) {
+      setFwdEditIdx((i) => i - 1)
     }
   }
 
@@ -1363,6 +1624,82 @@ function Settings() {
                   />
                 </button>
               </div>
+              <div className="px-4 py-3 space-y-3">
+                <div>
+                  <div className="text-sm font-medium">Forwarders</div>
+                  <p className="text-xs text-[var(--muted)] mt-0.5">
+                    Upstream resolvers for forward mode and recursive fallback. Example: 1.1.1.1 or 8.8.8.8:53
+                  </p>
+                </div>
+                {(draft.forwarders || []).length === 0 ? (
+                  <p className="text-xs text-[var(--warn)]">No forwarders — add at least one for forward/fallback.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {(draft.forwarders || []).map((addr, idx) => (
+                      <li
+                        key={`${addr}-${idx}`}
+                        className="flex flex-wrap items-center gap-2 border border-[var(--border)] px-3 py-2"
+                      >
+                        <span className="mono text-sm flex-1 min-w-[8rem]">{addr}</span>
+                        <button
+                          type="button"
+                          disabled={busy || !isAdmin}
+                          onClick={() => editForwarder(idx)}
+                          className="btn btn-secondary text-xs min-h-[36px] disabled:opacity-50"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy || !isAdmin}
+                          onClick={() => removeForwarder(idx)}
+                          className="btn btn-secondary text-xs min-h-[36px] text-[var(--danger)] disabled:opacity-50"
+                        >
+                          Delete
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <form
+                  className="flex flex-wrap gap-2 items-end"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    addOrUpdateForwarder()
+                  }}
+                >
+                  <label className="flex-1 min-w-[12rem] text-xs text-[var(--muted)] space-y-1">
+                    {fwdEditIdx >= 0 ? 'Edit forwarder' : 'Add forwarder'}
+                    <input
+                      value={fwdInput}
+                      disabled={busy || !isAdmin}
+                      onChange={(e) => setFwdInput(e.target.value)}
+                      placeholder="1.1.1.1:53"
+                      className="input mono w-full min-h-[44px]"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={busy || !isAdmin || !fwdInput.trim()}
+                    className="btn btn-primary min-h-[44px] disabled:opacity-50"
+                  >
+                    {fwdEditIdx >= 0 ? 'Update' : 'Add'}
+                  </button>
+                  {fwdEditIdx >= 0 ? (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setFwdInput('')
+                        setFwdEditIdx(-1)
+                      }}
+                      className="btn btn-secondary min-h-[44px]"
+                    >
+                      Cancel
+                    </button>
+                  ) : null}
+                </form>
+              </div>
             </section>
           ) : null}
 
@@ -1466,7 +1803,6 @@ function Settings() {
                 {[
                   ['DNSSEC mode', saved.dnssec_mode],
                   ['DNS listen', saved.udp_addr],
-                  ['Forwarders', (saved.forwarders || []).join(', ') || '—'],
                   ['API auth', saved.auth_type],
                   ['Auth required', saved.auth_required ? 'yes' : 'no'],
                   ['Auth configured', saved.auth_configured ? 'yes' : 'no'],
@@ -2149,8 +2485,20 @@ function AuditLog() {
 }
 
 function QueryLogs() {
-  const [clientIP, setClientIP] = useState('')
-  const [draftIP, setDraftIP] = useState('')
+  const [clientIP, setClientIP] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get('client_ip') || ''
+    } catch {
+      return ''
+    }
+  })
+  const [draftIP, setDraftIP] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get('client_ip') || ''
+    } catch {
+      return ''
+    }
+  })
   const [logs, setLogs] = useState([])
   const [total, setTotal] = useState(0)
   const [enabled, setEnabled] = useState(true)

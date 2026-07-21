@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -26,6 +27,7 @@ import (
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
 	"github.com/powersvx/powersvx/internal/metrics"
+	"github.com/powersvx/powersvx/internal/monitor"
 	"github.com/powersvx/powersvx/internal/otelx"
 	"github.com/powersvx/powersvx/internal/plugin"
 	"github.com/powersvx/powersvx/internal/ratelimit"
@@ -56,6 +58,7 @@ type Server struct {
 	acme    *acme.ChallengeStore
 	stats   *analytics.Collector
 	anomaly *anomaly.Detector
+	mon     *monitor.Collector
 	plugins *plugin.Registry
 	qlog    *database.QueryLogger
 	log     *slog.Logger
@@ -94,6 +97,7 @@ type Deps struct {
 	ACME    *acme.ChallengeStore
 	Stats   *analytics.Collector
 	Anomaly *anomaly.Detector
+	Monitor *monitor.Collector
 	Plugins *plugin.Registry
 	QLog    *database.QueryLogger
 }
@@ -130,6 +134,7 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 		acme:     d.ACME,
 		stats:    d.Stats,
 		anomaly:  d.Anomaly,
+		mon:      d.Monitor,
 		plugins:  d.Plugins,
 		qlog:     d.QLog,
 		log:      log,
@@ -175,6 +180,20 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			Protocol:     proto,
 		})
 	}
+	note := func(path, rcode string, aclDenied, rateLimited, timeout bool) {
+		if s.mon == nil {
+			return
+		}
+		s.mon.Observe(monitor.Sample{
+			ClientIP:    clientIP,
+			Latency:     time.Since(start),
+			Path:        path,
+			RCode:       rcode,
+			ACLDenied:   aclDenied,
+			RateLimited: rateLimited,
+			Timeout:     timeout,
+		})
+	}
 
 	s.queryACLMu.RLock()
 	qacl := s.queryACL
@@ -192,6 +211,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			q := req.Question[0]
 			logQuery(config.NormalizeName(q.Name), dns.TypeToString[q.Qtype], dns.RcodeRefused, false)
 		}
+		note("acl_denied", "REFUSED", true, false, false)
 		return
 	}
 
@@ -210,6 +230,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			q := req.Question[0]
 			logQuery(config.NormalizeName(q.Name), dns.TypeToString[q.Qtype], dns.RcodeRefused, false)
 		}
+		note("ratelimited", "REFUSED", false, true, false)
 		return
 	}
 
@@ -218,6 +239,10 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		m.SetRcode(req, dns.RcodeFormatError)
 		_ = w.WriteMsg(m)
 		metrics.QueriesTotal.WithLabelValues(proto, "formerr").Inc()
+		if s.log != nil {
+			s.log.Debug("dns FORMERR empty question", "client", clientIP, "proto", proto)
+		}
+		note("formerr", "FORMERR", false, false, false)
 		return
 	}
 
@@ -248,6 +273,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			metrics.QueriesTotal.WithLabelValues(proto, "acme").Inc()
 			observe("NOERROR")
 			logQuery(qname, qtypeStr, dns.RcodeSuccess, false)
+			note("acme", "NOERROR", false, false, false)
 			return
 		}
 	}
@@ -292,6 +318,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			}
 			_ = plugin.ApplyDecision(w, req, d)
 			logQuery(qname, qtypeStr, rcode, false)
+			note("plugin", code, false, false, false)
 			return
 		}
 	}
@@ -334,6 +361,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 				metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
 				observe(code)
 				logQuery(qname, qtypeStr, rcode, false)
+				note("rpz", code, false, false, false)
 				return
 			}
 		}
@@ -347,6 +375,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
 		observe(dns.RcodeToString[entry.Rcode])
 		logQuery(qname, qtypeStr, entry.Rcode, true)
+		note("cache", dns.RcodeToString[entry.Rcode], false, false, false)
 		return
 	}
 	metrics.CacheMisses.Inc()
@@ -378,6 +407,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
 			observe(dns.RcodeToString[m.Rcode])
 			logQuery(qname, qtypeStr, m.Rcode, false)
+			note("auth", dns.RcodeToString[m.Rcode], false, false, false)
 			return
 		}
 	}
@@ -385,7 +415,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.res.Timeout)
 	defer cancel()
 
-	resp, err := s.res.ResolveWithECS(ctx, req, sub)
+	resp, via, err := s.res.ResolveWithECS(ctx, req, sub)
 	if err != nil {
 		s.log.Warn("resolve failed", "kind", "resolve", "name", qname, "err", err)
 		m := new(dns.Msg)
@@ -396,6 +426,11 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		metrics.QueriesTotal.WithLabelValues(proto, "servfail").Inc()
 		observe("SERVFAIL")
 		logQuery(qname, qtypeStr, dns.RcodeServerFailure, false)
+		isTimeout := errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "deadline exceeded")
+		if via == "" {
+			via = "servfail"
+		}
+		note(via, "SERVFAIL", false, false, isTimeout)
 		return
 	}
 
@@ -414,6 +449,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			metrics.QueriesTotal.WithLabelValues(proto, "dnssec_fail").Inc()
 			observe("SERVFAIL")
 			logQuery(qname, qtypeStr, dns.RcodeServerFailure, false)
+			note("dnssec_fail", "SERVFAIL", false, false, false)
 			return
 		}
 	}
@@ -423,6 +459,10 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
 	observe(dns.RcodeToString[resp.Rcode])
 	logQuery(qname, qtypeStr, resp.Rcode, false)
+	if via == "" {
+		via = "forward"
+	}
+	note(via, dns.RcodeToString[resp.Rcode], false, false, false)
 }
 
 func protocolFromWriter(w dns.ResponseWriter) string {
@@ -454,8 +494,8 @@ func (s *Server) storeAndWriteScoped(w dns.ResponseWriter, req, resp *dns.Msg, e
 
 func (s *Server) ListenAndServe() error {
 	handler := dns.HandlerFunc(s.ServeDNS)
-	tsigMap := map[string]string(nil)
-	if s.tsig != nil {
+	var tsigMap map[string]string
+	if s.tsig != nil && s.tsig.Len() > 0 {
 		tsigMap = s.tsig.Map()
 	}
 
@@ -464,6 +504,18 @@ func (s *Server) ListenAndServe() error {
 
 	errCh := make(chan error, 5)
 	s.doqCtx, s.doqCancel = context.WithCancel(context.Background())
+
+	accept := msgAcceptFunc
+	invalid := func(m []byte, err error) {
+		if s.log != nil {
+			n := len(m)
+			if n > 64 {
+				n = 64
+			}
+			s.log.Warn("dns message rejected", "err", err, "bytes", len(m), "head", fmt.Sprintf("%x", m[:n]))
+		}
+		metrics.QueriesTotal.WithLabelValues("udp", "formerr").Inc()
+	}
 
 	if s.cfg.Server.TProxy {
 		pc, err := tproxy.ListenUDP("udp", udpAddr)
@@ -475,8 +527,8 @@ func (s *Server) ListenAndServe() error {
 			_ = pc.Close()
 			return fmt.Errorf("tproxy tcp %s: %w", tcpAddr, err)
 		}
-		s.udp = &dns.Server{PacketConn: pc, Net: "udp", Handler: handler, UDPSize: 1232, TsigSecret: tsigMap}
-		s.tcp = &dns.Server{Listener: ln, Net: "tcp", Handler: handler, TsigSecret: tsigMap}
+		s.udp = &dns.Server{PacketConn: pc, Net: "udp", Handler: handler, UDPSize: 1232, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
+		s.tcp = &dns.Server{Listener: ln, Net: "tcp", Handler: handler, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
 		go func() {
 			s.log.Info("UDP listener starting", "addr", udpAddr, "tproxy", true)
 			errCh <- s.udp.ActivateAndServe()
@@ -486,8 +538,8 @@ func (s *Server) ListenAndServe() error {
 			errCh <- s.tcp.ActivateAndServe()
 		}()
 	} else {
-		s.udp = &dns.Server{Addr: udpAddr, Net: "udp", Handler: handler, UDPSize: 1232, TsigSecret: tsigMap}
-		s.tcp = &dns.Server{Addr: tcpAddr, Net: "tcp", Handler: handler, TsigSecret: tsigMap}
+		s.udp = &dns.Server{Addr: udpAddr, Net: "udp", Handler: handler, UDPSize: 1232, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
+		s.tcp = &dns.Server{Addr: tcpAddr, Net: "tcp", Handler: handler, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
 		go func() {
 			s.log.Info("UDP listener starting", "addr", udpAddr)
 			errCh <- s.udp.ListenAndServe()
@@ -502,7 +554,7 @@ func (s *Server) ListenAndServe() error {
 		dotAddr := s.cfg.ListenAddr(s.cfg.Server.DoTPort)
 		dotTLS := s.tlsCfg.Clone()
 		dotTLS.NextProtos = []string{"dot"}
-		s.dot = &dns.Server{Addr: dotAddr, Net: "tcp-tls", Handler: handler, TLSConfig: dotTLS, TsigSecret: tsigMap}
+		s.dot = &dns.Server{Addr: dotAddr, Net: "tcp-tls", Handler: handler, TLSConfig: dotTLS, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
 		s.dotOn = true
 		go func() {
 			s.log.Info("DoT listener starting", "addr", dotAddr)
@@ -679,25 +731,29 @@ func (s *Server) ReloadRPZ(policies []rpz.PolicyConfig, timeout time.Duration) (
 
 // RuntimeFlags are feature toggles editable via the API/UI.
 type RuntimeFlags struct {
-	GeoDNS        bool   `json:"geodns"`
-	RPZ           bool   `json:"rpz_enabled"`
-	RateLimit     bool   `json:"rate_limit"`
-	ECS           bool   `json:"ecs_enabled"`
-	SplitHorizon  bool   `json:"split_horizon"`
-	ResolverMode  string `json:"resolver_mode"`
-	ForwardOnFail bool   `json:"forward_on_fail"`
-	QueryLog      bool   `json:"query_log_enabled"`
+	GeoDNS        bool     `json:"geodns"`
+	RPZ           bool     `json:"rpz_enabled"`
+	RateLimit     bool     `json:"rate_limit"`
+	ECS           bool     `json:"ecs_enabled"`
+	SplitHorizon  bool     `json:"split_horizon"`
+	ResolverMode  string   `json:"resolver_mode"`
+	ForwardOnFail bool     `json:"forward_on_fail"`
+	QueryLog      bool     `json:"query_log_enabled"`
+	Forwarders    []string `json:"forwarders,omitempty"`
 }
 
 func (s *Server) RuntimeFlags() RuntimeFlags {
 	f := RuntimeFlags{
-		ResolverMode:  "forward",
+		ResolverMode:  "recursive",
 		ForwardOnFail: true,
 	}
 	if s.cfg != nil {
 		f.ResolverMode = config.NormalizeResolverMode(s.cfg.Resolver.Mode)
 		f.ForwardOnFail = s.cfg.Resolver.ForwardOnFail
 		f.QueryLog = s.cfg.Logging.QueryLogEnabled
+		if f.Forwarders == nil {
+			f.Forwarders = append([]string(nil), s.cfg.Resolver.Forwarders...)
+		}
 	}
 	if s.geo != nil {
 		f.GeoDNS = s.geo.Enabled()
@@ -712,6 +768,7 @@ func (s *Server) RuntimeFlags() RuntimeFlags {
 		f.ECS = s.res.ECSEnabled
 		f.ResolverMode = config.NormalizeResolverMode(s.res.Mode)
 		f.ForwardOnFail = s.res.ForwardOnFail
+		f.Forwarders = append([]string(nil), s.res.Forwarders...)
 	}
 	if s.views != nil {
 		f.SplitHorizon = s.views.Enabled()
@@ -733,6 +790,9 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 		s.res.SetECSEnabled(f.ECS)
 		s.res.SetMode(f.ResolverMode)
 		s.res.SetForwardOnFail(f.ForwardOnFail)
+		if f.Forwarders != nil {
+			s.res.SetForwarders(f.Forwarders)
+		}
 	}
 	if s.views != nil {
 		s.views.SetEnabled(f.SplitHorizon)
@@ -744,6 +804,9 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 		s.cfg.Resolver.ECSEnabled = f.ECS
 		s.cfg.Resolver.Mode = config.NormalizeResolverMode(f.ResolverMode)
 		s.cfg.Resolver.ForwardOnFail = f.ForwardOnFail
+		if f.Forwarders != nil {
+			s.cfg.Resolver.Forwarders = append([]string(nil), f.Forwarders...)
+		}
 		s.cfg.SplitHorizon.Enabled = f.SplitHorizon
 		s.cfg.Logging.QueryLogEnabled = f.QueryLog
 	}
@@ -778,11 +841,34 @@ func (s *Server) QueryACL() (allow, deny []string) {
 func (s *Server) QueryLogger() *database.QueryLogger     { return s.qlog }
 
 func (s *Server) Analytics() *analytics.Collector { return s.stats }
+func (s *Server) Monitor() *monitor.Collector     { return s.mon }
+
+// RateLimitBlocked returns currently blocked client IPs.
+func (s *Server) RateLimitBlocked(limit int) []monitor.Count {
+	if s == nil || s.limiter == nil {
+		return nil
+	}
+	blocked := s.limiter.SnapshotBlocked(limit)
+	out := make([]monitor.Count, 0, len(blocked))
+	for _, b := range blocked {
+		out = append(out, monitor.Count{Key: b.IP, Count: uint64(b.Remaining)})
+	}
+	return out
+}
 func (s *Server) Anomaly() *anomaly.Detector       { return s.anomaly }
 func (s *Server) Signer() *dnssec.Signer           { return s.signer }
 
 func (s *Server) ServeDNSMsg(req *dns.Msg) (*dns.Msg, []byte, error) {
-	rw := &memResponseWriter{}
+	return s.ServeDNSMsgFrom(req, "127.0.0.1")
+}
+
+// ServeDNSMsgFrom runs the DNS pipeline as if the query came from clientIP (DoH/DoQ).
+func (s *Server) ServeDNSMsgFrom(req *dns.Msg, clientIP string) (*dns.Msg, []byte, error) {
+	ip := net.ParseIP(clientIP)
+	if ip == nil {
+		ip = net.IPv4(127, 0, 0, 1)
+	}
+	rw := &memResponseWriter{remote: &net.UDPAddr{IP: ip, Port: 0}}
 	s.ServeDNS(rw, req)
 	if rw.msg != nil {
 		wire, err := rw.msg.Pack()
@@ -799,12 +885,18 @@ func (s *Server) ServeDNSMsg(req *dns.Msg) (*dns.Msg, []byte, error) {
 }
 
 type memResponseWriter struct {
-	msg  *dns.Msg
-	wire []byte
+	msg    *dns.Msg
+	wire   []byte
+	remote net.Addr
 }
 
-func (m *memResponseWriter) LocalAddr() net.Addr         { return &net.UDPAddr{IP: net.IPv4zero, Port: 0} }
-func (m *memResponseWriter) RemoteAddr() net.Addr        { return &net.UDPAddr{IP: net.IPv4zero, Port: 0} }
+func (m *memResponseWriter) LocalAddr() net.Addr { return &net.UDPAddr{IP: net.IPv4zero, Port: 0} }
+func (m *memResponseWriter) RemoteAddr() net.Addr {
+	if m.remote != nil {
+		return m.remote
+	}
+	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0}
+}
 func (m *memResponseWriter) WriteMsg(msg *dns.Msg) error { m.msg = msg; return nil }
 func (m *memResponseWriter) Write(b []byte) (int, error) {
 	m.wire = append([]byte(nil), b...)

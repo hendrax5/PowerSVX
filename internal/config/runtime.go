@@ -8,14 +8,15 @@ import (
 
 // RuntimeSettings is persisted UI-editable feature flags (survives restart).
 type RuntimeSettings struct {
-	GeoDNS        *bool   `json:"geodns,omitempty"`
-	RPZ           *bool   `json:"rpz_enabled,omitempty"`
-	RateLimit     *bool   `json:"rate_limit,omitempty"`
-	ECS           *bool   `json:"ecs_enabled,omitempty"`
-	SplitHorizon  *bool   `json:"split_horizon,omitempty"`
-	ResolverMode  *string `json:"resolver_mode,omitempty"`
+	GeoDNS        *bool    `json:"geodns,omitempty"`
+	RPZ           *bool    `json:"rpz_enabled,omitempty"`
+	RateLimit     *bool    `json:"rate_limit,omitempty"`
+	ECS           *bool    `json:"ecs_enabled,omitempty"`
+	SplitHorizon  *bool    `json:"split_horizon,omitempty"`
+	ResolverMode  *string  `json:"resolver_mode,omitempty"`
 	ForwardOnFail *bool    `json:"forward_on_fail,omitempty"`
 	QueryLog      *bool    `json:"query_log_enabled,omitempty"`
+	Forwarders    []string `json:"forwarders"`
 	AllowQuery    []string `json:"allow_query"`
 	DenyQuery     []string `json:"deny_query"`
 }
@@ -72,6 +73,9 @@ func (c *Config) ApplyRuntimeSettings(s RuntimeSettings) {
 	}
 	if s.QueryLog != nil {
 		c.Logging.QueryLogEnabled = *s.QueryLog
+	}
+	if s.Forwarders != nil {
+		c.Resolver.Forwarders = append([]string(nil), s.Forwarders...)
 	}
 	// Distinguish omitted (nil) vs explicit empty list via JSON null vs [].
 	// When unmarshaling, missing keys leave nil; present arrays are non-nil.

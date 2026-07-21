@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 
@@ -97,8 +98,18 @@ func (s *Server) handleDoH(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid DNS message", http.StatusBadRequest)
 		return
 	}
+	if len(req.Question) == 0 {
+		http.Error(w, "DNS message missing question", http.StatusBadRequest)
+		return
+	}
 
-	_, respWire, err := s.ServeDNSMsg(req)
+	clientIP := ""
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		clientIP = host
+	} else {
+		clientIP = r.RemoteAddr
+	}
+	_, respWire, err := s.ServeDNSMsgFrom(req, clientIP)
 	if err != nil || len(respWire) == 0 {
 		http.Error(w, "resolution failed", http.StatusInternalServerError)
 		return

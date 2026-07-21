@@ -28,6 +28,7 @@ import (
 	"github.com/powersvx/powersvx/internal/geo"
 	"github.com/powersvx/powersvx/internal/grpcapi"
 	"github.com/powersvx/powersvx/internal/metrics"
+	"github.com/powersvx/powersvx/internal/monitor"
 	"github.com/powersvx/powersvx/internal/otelx"
 	"github.com/powersvx/powersvx/internal/plugin"
 	"github.com/powersvx/powersvx/internal/ratelimit"
@@ -247,6 +248,10 @@ func main() {
 	acmeMgr := acme.NewManager(cfg.ACME, acmeStore, log)
 	stats := analytics.New(200)
 	anom := anomaly.New(50)
+	mon := monitor.New()
+	res.OnForwarder = func(addr string, ok bool, latencyMS int64, errMsg string) {
+		mon.RecordForwarder(addr, ok, latencyMS, errMsg)
+	}
 	qlog := database.NewQueryLogger(db, cfg.Logging.QueryLogEnabled, log)
 	defer qlog.Close()
 	var plugins *plugin.Registry
@@ -264,7 +269,7 @@ func main() {
 		Cache: tier, Res: res, Auth: auth, DNSSEC: sec, Signer: signer,
 		Limiter: limiter, RPZ: rpzEng, TSIG: tsigStore,
 		Views: views, Geo: geoRes, TLS: tlsCfg, Events: bus,
-		ACME: acmeStore, Stats: stats, Anomaly: anom, Plugins: plugins, QLog: qlog,
+		ACME: acmeStore, Stats: stats, Anomaly: anom, Monitor: mon, Plugins: plugins, QLog: qlog,
 	}, log)
 
 	rest := api.New(cfg, dnsSrv, db, tier, auth, log)
@@ -360,7 +365,7 @@ func main() {
 					RateLimit: cfg.RateLimit.Enabled, ECS: cfg.Resolver.ECSEnabled,
 					SplitHorizon: cfg.SplitHorizon.Enabled,
 					ResolverMode: cfg.Resolver.Mode, ForwardOnFail: cfg.Resolver.ForwardOnFail,
-					QueryLog: cfg.Logging.QueryLogEnabled,
+					QueryLog: cfg.Logging.QueryLogEnabled, Forwarders: cfg.Resolver.Forwarders,
 				})
 				if err := dnsSrv.SetQueryACL(cfg.ACL.AllowQuery, cfg.ACL.DenyQuery); err != nil {
 					log.Warn("acl reload failed", "err", err)

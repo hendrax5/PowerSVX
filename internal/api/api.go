@@ -24,6 +24,7 @@ import (
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/database"
 	"github.com/powersvx/powersvx/internal/eventlog"
+	"github.com/powersvx/powersvx/internal/monitor"
 	"github.com/powersvx/powersvx/internal/rpz"
 	"github.com/powersvx/powersvx/internal/server"
 )
@@ -225,6 +226,10 @@ func (a *API) spaHandler() http.Handler {
 }
 
 func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.healthPayload(r.Context()))
+}
+
+func (a *API) healthPayload(ctx context.Context) map[string]any {
 	checks := map[string]any{}
 	status := "healthy"
 	checks["dns_udp"] = map[string]any{"status": "pass", "addr": a.srv.UDPAddr()}
@@ -234,10 +239,10 @@ func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 	checks["dns_doq"] = statusOrDisabled(a.srv.DoQEnabled(), a.srv.DoQAddr())
 
 	if a.cfg.Database.Enabled {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		start := time.Now()
-		if a.db != nil && a.db.Ping(ctx) == nil {
+		if a.db != nil && a.db.Ping(cctx) == nil {
 			checks["database"] = map[string]any{"status": "pass", "latency_ms": time.Since(start).Milliseconds()}
 		} else {
 			checks["database"] = map[string]any{"status": "fail"}
@@ -255,6 +260,36 @@ func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 	checks["cache"] = map[string]any{"status": "pass", "hit_ratio": ratio, "l1_size": size}
 	checks["rpz"] = map[string]any{"status": "pass", "entries": a.srv.RPZCount()}
 
+	// Forwarder health from monitor
+	fwdStatus := "unknown"
+	fwdDetail := map[string]any{"status": "unknown"}
+	if mon := a.srv.Monitor(); mon != nil {
+		allow, _ := a.srv.QueryACL()
+		snap := mon.Snapshot(allow, nil)
+		if len(snap.Forwarders) == 0 {
+			fwdDetail = map[string]any{"status": "idle", "note": "no forwarder attempts yet"}
+			fwdStatus = "idle"
+		} else {
+			failing := 0
+			for _, f := range snap.Forwarders {
+				if f.LastStatus != "ok" && f.Fail > 0 && f.OK == 0 {
+					failing++
+				}
+			}
+			if failing == len(snap.Forwarders) {
+				fwdStatus = "fail"
+				status = "degraded"
+			} else if failing > 0 {
+				fwdStatus = "degraded"
+			} else {
+				fwdStatus = "pass"
+			}
+			fwdDetail = map[string]any{"status": fwdStatus, "forwarders": snap.Forwarders}
+		}
+	}
+	checks["forwarders"] = fwdDetail
+	_ = fwdStatus
+
 	authInfo := map[string]any{
 		"auth_type": a.cfg.API.AuthType,
 	}
@@ -263,9 +298,9 @@ func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 		authInfo["admin_password_from_env"] = a.users.EnvAdminPasswordSet()
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	return map[string]any{
 		"status": status, "checks": checks, "auth": authInfo, "uptime_seconds": int(time.Since(a.start).Seconds()),
-	})
+	}
 }
 
 func statusOrDisabled(on bool, addr string) map[string]any {
@@ -328,6 +363,15 @@ func (a *API) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	} else {
 		payload["anomaly"] = map[string]any{"alerts": []any{}, "warm": 0}
 	}
+
+	allow, _ := a.srv.QueryACL()
+	active := a.srv.RateLimitBlocked(15)
+	if mon := a.srv.Monitor(); mon != nil {
+		payload["monitor"] = mon.Snapshot(allow, active)
+	} else {
+		payload["monitor"] = monitor.New().Snapshot(allow, active)
+	}
+	payload["health"] = a.healthPayload(r.Context())
 	writeJSON(w, http.StatusOK, payload)
 }
 
@@ -617,6 +661,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			ResolverMode  *string   `json:"resolver_mode"`
 			ForwardOnFail *bool     `json:"forward_on_fail"`
 			QueryLog      *bool     `json:"query_log_enabled"`
+			Forwarders    *[]string `json:"forwarders"`
 			AllowQuery    *[]string `json:"allow_query"`
 			DenyQuery     *[]string `json:"deny_query"`
 		}
@@ -654,6 +699,14 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if body.QueryLog != nil {
 			cur.QueryLog = *body.QueryLog
 		}
+		if body.Forwarders != nil {
+			fwd, err := config.NormalizeForwarders(*body.Forwarders)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			cur.Forwarders = fwd
+		}
 		a.srv.ApplyRuntimeFlags(cur)
 		if body.AllowQuery != nil || body.DenyQuery != nil {
 			allow, deny := a.srv.QueryACL()
@@ -670,11 +723,15 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		mode := cur.ResolverMode
 		allow, deny := a.srv.QueryACL()
+		fwd := cur.Forwarders
+		if fwd == nil && a.cfg != nil {
+			fwd = a.cfg.Resolver.Forwarders
+		}
 		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), config.RuntimeSettings{
 			GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 			ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
 			ResolverMode: &mode, ForwardOnFail: &cur.ForwardOnFail, QueryLog: &cur.QueryLog,
-			AllowQuery: allow, DenyQuery: deny,
+			Forwarders: fwd, AllowQuery: allow, DenyQuery: deny,
 		})
 		writeJSON(w, http.StatusOK, a.settingsPayload())
 	default:
@@ -685,10 +742,14 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 func (a *API) settingsPayload() map[string]any {
 	f := a.srv.RuntimeFlags()
 	allow, deny := a.srv.QueryACL()
+	forwarders := f.Forwarders
+	if forwarders == nil && a.cfg != nil {
+		forwarders = a.cfg.Resolver.Forwarders
+	}
 	return map[string]any{
 		"resolver_mode":            f.ResolverMode,
 		"forward_on_fail":          f.ForwardOnFail,
-		"forwarders":               a.cfg.Resolver.Forwarders,
+		"forwarders":               forwarders,
 		"dnssec_mode":              a.cfg.Resolver.DNSSECMode,
 		"ecs_enabled":              f.ECS,
 		"rpz_enabled":              f.RPZ,
@@ -714,9 +775,9 @@ func (a *API) settingsPayload() map[string]any {
 		"tls_min_version": "1.3",
 		"editable": []string{
 			"geodns", "rpz_enabled", "rate_limit", "ecs_enabled", "split_horizon",
-			"resolver_mode", "forward_on_fail", "query_log_enabled", "allow_query", "deny_query",
+			"resolver_mode", "forward_on_fail", "forwarders", "query_log_enabled", "allow_query", "deny_query",
 		},
-		"note": "Edit toggles, query ACL, and resolver mode, then Save. Persisted to data/runtime-settings.json. Empty allow_query = allow all. AXFR ACL and IP masking are TOML-only.",
+		"note": "Edit toggles, query ACL, forwarders, and resolver mode, then Save. Persisted to data/runtime-settings.json. Empty allow_query = allow all. AXFR ACL and IP masking are TOML-only.",
 	}
 }
 

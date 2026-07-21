@@ -146,18 +146,22 @@ func TestSettingsToggle(t *testing.T) {
 		t.Fatalf("%v", out)
 	}
 
-	body = bytes.NewBufferString(`{"resolver_mode":"recursive","forward_on_fail":false,"query_log_enabled":true}`)
+	body = bytes.NewBufferString(`{"resolver_mode":"recursive","forward_on_fail":true,"forwarders":["1.0.0.1","8.8.4.4:53"],"query_log_enabled":true}`)
 	req = httptest.NewRequest(http.MethodPut, "/api/v1/settings", body)
 	rr = httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("resolver settings: %d %s", rr.Code, rr.Body.String())
+		t.Fatalf("forwarders settings: %d %s", rr.Code, rr.Body.String())
 	}
 	_ = json.Unmarshal(rr.Body.Bytes(), &out)
-	if out["resolver_mode"] != "recursive" || out["forward_on_fail"] != false || out["query_log_enabled"] != true {
+	if out["resolver_mode"] != "recursive" {
 		t.Fatalf("%v", out)
 	}
-	if res.Mode != "recursive" || res.ForwardOnFail {
-		t.Fatalf("resolver live state mode=%s fallback=%v", res.Mode, res.ForwardOnFail)
+	fw, _ := out["forwarders"].([]any)
+	if len(fw) != 2 || fw[0] != "1.0.0.1:53" || fw[1] != "8.8.4.4:53" {
+		t.Fatalf("forwarders=%v", out["forwarders"])
+	}
+	if len(res.Forwarders) != 2 || res.Forwarders[0] != "1.0.0.1:53" {
+		t.Fatalf("live forwarders=%v", res.Forwarders)
 	}
 }

@@ -128,3 +128,39 @@ func (l *Limiter) Allow(ipStr string) bool {
 	b.tokens--
 	return true
 }
+
+// BlockedIP is a currently blocked client.
+type BlockedIP struct {
+	IP        string    `json:"ip"`
+	Until     time.Time `json:"until"`
+	Remaining int       `json:"remaining_sec"`
+}
+
+// SnapshotBlocked returns currently blocked IPs (not yet expired).
+func (l *Limiter) SnapshotBlocked(limit int) []BlockedIP {
+	if l == nil {
+		return nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]BlockedIP, 0, len(l.blocked))
+	for ip, until := range l.blocked {
+		if now.Before(until) {
+			out = append(out, BlockedIP{
+				IP:        ip,
+				Until:     until,
+				Remaining: int(until.Sub(now).Seconds()) + 1,
+			})
+		} else {
+			delete(l.blocked, ip)
+		}
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}

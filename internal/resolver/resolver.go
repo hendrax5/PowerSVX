@@ -26,6 +26,8 @@ type Resolver struct {
 	ECSPrefixV6   uint8
 	client        *dns.Client
 	extraRoots    []string
+	// OnForwarder is called after each forwarder attempt (addr, ok, latencyMS, errMsg).
+	OnForwarder func(addr string, ok bool, latencyMS int64, errMsg string)
 }
 
 func (r *Resolver) SetECSEnabled(on bool) {
@@ -47,6 +49,13 @@ func (r *Resolver) SetForwardOnFail(on bool) {
 		return
 	}
 	r.ForwardOnFail = on
+}
+
+func (r *Resolver) SetForwarders(addrs []string) {
+	if r == nil {
+		return
+	}
+	r.Forwarders = append([]string(nil), addrs...)
 }
 
 func New(cfg config.ResolverConfig) *Resolver {
@@ -93,26 +102,40 @@ func New(cfg config.ResolverConfig) *Resolver {
 }
 
 func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
-	return r.ResolveWithECS(ctx, req, nil)
+	msg, _, err := r.ResolveWithECS(ctx, req, nil)
+	return msg, err
 }
 
 // ResolveWithECS forwards/resolves, optionally attaching ECS subnet.
-func (r *Resolver) ResolveWithECS(ctx context.Context, req *dns.Msg, sub *ecs.Subnet) (*dns.Msg, error) {
+// Path is "recursive", "forward", or "fallback" (recursive failed then forwarder succeeded/failed).
+func (r *Resolver) ResolveWithECS(ctx context.Context, req *dns.Msg, sub *ecs.Subnet) (*dns.Msg, string, error) {
 	if len(req.Question) == 0 {
-		return nil, fmt.Errorf("empty question")
+		return nil, "", fmt.Errorf("empty question")
 	}
 	q := req.Question[0]
 	q.Name = config.NormalizeName(q.Name)
 
 	switch r.Mode {
 	case "recursive":
-		msg, err := r.resolveRecursive(ctx, q.Name, q.Qtype)
-		if err != nil && r.ForwardOnFail && len(r.Forwarders) > 0 {
-			return r.forward(ctx, req, sub)
+		// Leave headroom so forward_on_fail can still answer before clients time out.
+		recBudget := r.Timeout * 2 / 3
+		if recBudget < time.Second {
+			recBudget = r.Timeout
 		}
-		return msg, err
+		rctx, cancel := context.WithTimeout(ctx, recBudget)
+		msg, err := r.resolveRecursive(rctx, q.Name, q.Qtype)
+		cancel()
+		if err != nil && r.ForwardOnFail && len(r.Forwarders) > 0 {
+			// Recursive often exhausts its budget; give forwarders a fresh timeout.
+			fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), r.Timeout)
+			defer fcancel()
+			msg, err = r.forward(fctx, req, sub)
+			return msg, "fallback", err
+		}
+		return msg, "recursive", err
 	default:
-		return r.forward(ctx, req, sub)
+		msg, err := r.forward(ctx, req, sub)
+		return msg, "forward", err
 	}
 }
 
@@ -138,21 +161,35 @@ func (r *Resolver) forward(ctx context.Context, req *dns.Msg, sub *ecs.Subnet) (
 			err  error
 		}
 		ch := make(chan result, 1)
+		started := time.Now()
 		go func() {
 			resp, _, err := r.client.Exchange(msg, addr)
 			ch <- result{resp, err}
 		}()
 		select {
 		case <-ctx.Done():
+			if r.OnForwarder != nil {
+				r.OnForwarder(addr, false, time.Since(started).Milliseconds(), ctx.Err().Error())
+			}
 			return nil, ctx.Err()
 		case res := <-ch:
+			ms := time.Since(started).Milliseconds()
 			if res.err != nil {
 				lastErr = res.err
+				if r.OnForwarder != nil {
+					r.OnForwarder(addr, false, ms, res.err.Error())
+				}
 				continue
 			}
 			if res.resp == nil {
 				lastErr = fmt.Errorf("nil response from %s", addr)
+				if r.OnForwarder != nil {
+					r.OnForwarder(addr, false, ms, lastErr.Error())
+				}
 				continue
+			}
+			if r.OnForwarder != nil {
+				r.OnForwarder(addr, true, ms, "")
 			}
 			return res.resp, nil
 		}

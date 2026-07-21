@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -240,7 +242,7 @@ func Default() *Config {
 			TTLSeconds: 300, NegativeTTL: 60,
 		},
 		Resolver: ResolverConfig{
-			Mode: "forward",
+			Mode: "recursive",
 			Forwarders: []string{"1.1.1.1:53", "8.8.8.8:53"},
 			ForwardOnFail: true,
 			DNSSECMode: "off", QNameMinimization: true,
@@ -318,10 +320,53 @@ func normalizeDNSSEC(cfg *Config) {
 
 // NormalizeResolverMode returns "recursive" or "forward".
 func NormalizeResolverMode(mode string) string {
-	if strings.EqualFold(strings.TrimSpace(mode), "recursive") {
-		return "recursive"
+	if strings.EqualFold(strings.TrimSpace(mode), "forward") {
+		return "forward"
 	}
-	return "forward"
+	return "recursive"
+}
+
+// NormalizeForwarder accepts "1.1.1.1", "1.1.1.1:53", or "[::1]:53" and returns host:port.
+func NormalizeForwarder(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", fmt.Errorf("empty forwarder")
+	}
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		host, port = s, "53"
+	}
+	if port == "" {
+		port = "53"
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return "", fmt.Errorf("invalid forwarder port %q", port)
+	}
+	if ip := net.ParseIP(host); ip == nil {
+		// allow hostnames
+		if host == "" || strings.ContainsAny(host, " \t") {
+			return "", fmt.Errorf("invalid forwarder host %q", host)
+		}
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
+// NormalizeForwarders validates and normalizes a forwarder list (deduped, order kept).
+func NormalizeForwarders(in []string) ([]string, error) {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		addr, err := NormalizeForwarder(raw)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[addr]; ok {
+			continue
+		}
+		seen[addr] = struct{}{}
+		out = append(out, addr)
+	}
+	return out, nil
 }
 
 func (c *Config) DSN() string {

@@ -198,7 +198,8 @@ func hasAnswer(msg *dns.Msg, qname string, qtype uint16) bool {
 		if dns.CanonicalName(h.Name) != qname {
 			continue
 		}
-		if h.Rrtype == qtype || h.Rrtype == dns.TypeCNAME {
+		// CNAME alone is not a final answer for A/AAAA/etc.; iterate() chases it.
+		if h.Rrtype == qtype {
 			return true
 		}
 	}

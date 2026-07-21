@@ -19,6 +19,8 @@ key_file = "/etc/PowerSVX/certs/privkey.pem"
 [database]
 enabled = true
 type = "postgres"
+# Bridge Compose: host = "postgres", port = 5432
+# Host network (network_mode: host): use host = "127.0.0.1", port = 5433
 host = "postgres"
 port = 5432
 database = "PowerSVX"
@@ -34,7 +36,7 @@ ttl_seconds = 300
 negative_ttl = 60
 
 [resolver]
-mode = "forward"
+mode = "recursive"
 forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
 forward_on_fail = true
 dnssec_mode = "opportunistic"
