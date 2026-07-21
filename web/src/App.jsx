@@ -2459,6 +2459,7 @@ function AxfrSyncPanel({ isAdmin }) {
   const [data, setData] = useState(null)
   const [draftTargets, setDraftTargets] = useState([])
   const [newTarget, setNewTarget] = useState('')
+  const [editAddr, setEditAddr] = useState(null)
   const [err, setErr] = useState('')
   const [ok, setOk] = useState('')
   const [busy, setBusy] = useState(false)
@@ -2513,6 +2514,8 @@ function AxfrSyncPanel({ isAdmin }) {
     try {
       const next = await api.setAxfrSync({ targets: draftTargets })
       applySnapshot(next)
+      setEditAddr(null)
+      setNewTarget('')
       setOk('Sources saved')
     } catch (ex) {
       setErr(ex.message)
@@ -2523,14 +2526,43 @@ function AxfrSyncPanel({ isAdmin }) {
 
   const resetDefaults = () => {
     setDraftTargets([...DEFAULT_SOURCES])
+    setEditAddr(null)
+    setNewTarget('')
     setOk('')
     setErr('')
   }
 
-  const addTarget = () => {
+  const startEditTarget = (addr) => {
+    setErr('')
+    setOk('')
+    setEditAddr(addr)
+    setNewTarget(addr)
+  }
+
+  const cancelEditTarget = () => {
+    setEditAddr(null)
+    setNewTarget('')
+    setErr('')
+  }
+
+  const addOrUpdateTarget = () => {
     const raw = newTarget.trim()
     if (!raw) return
     const normalized = raw.includes(':') ? raw : `${raw}:53`
+    if (editAddr != null) {
+      if (
+        draftTargets.some((t) => (t === normalized || t === raw) && t !== editAddr)
+      ) {
+        setErr('Source already listed')
+        return
+      }
+      setDraftTargets(draftTargets.map((t) => (t === editAddr ? normalized : t)))
+      setEditAddr(null)
+      setNewTarget('')
+      setErr('')
+      setOk('Source updated in list — Save sources to apply')
+      return
+    }
     if (draftTargets.includes(normalized) || draftTargets.includes(raw)) {
       setErr('Source already listed')
       return
@@ -2542,6 +2574,10 @@ function AxfrSyncPanel({ isAdmin }) {
 
   const removeTarget = (addr) => {
     setDraftTargets(draftTargets.filter((t) => t !== addr))
+    if (editAddr === addr) {
+      setEditAddr(null)
+      setNewTarget('')
+    }
   }
 
   const syncNow = async () => {
@@ -2665,48 +2701,70 @@ function AxfrSyncPanel({ isAdmin }) {
               draftTargets.map((addr, i) => (
                 <li
                   key={addr}
-                  className="flex items-center gap-3 px-4 py-2.5 axfr-row"
+                  className={`flex items-center gap-3 px-4 py-2.5 axfr-row ${
+                    editAddr === addr ? 'bg-[var(--accent-soft)]' : ''
+                  }`}
                   style={{ '--index': i }}
                 >
                   <span className="mono text-sm flex-1 break-all">{addr}</span>
-                  <button
-                    type="button"
-                    disabled={!isAdmin || busy}
-                    onClick={() => removeTarget(addr)}
-                    className="text-xs text-[var(--muted)] hover:text-[var(--danger)] transition-colors duration-200 disabled:opacity-40 active:scale-[0.98]"
-                  >
-                    Remove
-                  </button>
+                  <div className="flex gap-1 shrink-0">
+                    <button
+                      type="button"
+                      disabled={!isAdmin || busy}
+                      onClick={() => startEditTarget(addr)}
+                      className="btn btn-ghost text-xs disabled:opacity-40"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!isAdmin || busy}
+                      onClick={() => removeTarget(addr)}
+                      className="btn btn-ghost text-xs text-[var(--danger)] disabled:opacity-40"
+                    >
+                      Remove
+                    </button>
+                  </div>
                 </li>
               ))
             )}
           </ul>
           <div className="px-4 py-3 border-t border-[var(--border)] flex flex-col sm:flex-row gap-2">
             <label className="flex-1 space-y-1.5">
-              <span className="sr-only">Add source</span>
+              <span className="sr-only">{editAddr != null ? 'Edit source' : 'Add source'}</span>
               <input
                 value={newTarget}
                 onChange={(e) => setNewTarget(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault()
-                    addTarget()
+                    addOrUpdateTarget()
                   }
                 }}
                 disabled={!isAdmin || busy}
                 placeholder="182.23.79.202 or host:53"
-                className="w-full mono text-sm"
+                className="w-full mono text-sm input"
               />
             </label>
             <div className="flex gap-2">
               <button
                 type="button"
                 disabled={!isAdmin || busy || !newTarget.trim()}
-                onClick={addTarget}
+                onClick={addOrUpdateTarget}
                 className="btn btn-secondary min-h-[44px] disabled:opacity-50"
               >
-                Add
+                {editAddr != null ? 'Save' : 'Add'}
               </button>
+              {editAddr != null ? (
+                <button
+                  type="button"
+                  disabled={!isAdmin || busy}
+                  onClick={cancelEditTarget}
+                  className="btn btn-ghost min-h-[44px] disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              ) : null}
               <button
                 type="button"
                 disabled={!isAdmin || busy || !targetsDirty}
@@ -2822,13 +2880,16 @@ function AxfrSyncPanel({ isAdmin }) {
 
 function RPZPanel({ initial, onChange }) {
   const defaultRedirectTarget = '139.255.196.196'
+  const defaultName = 'trustpositif'
+  const defaultSource = 'https://trustpositif.komdigi.go.id/assets/db/domains_isp'
   const [policies, setPolicies] = useState(() => clonePolicies(initial?.policies))
   const [intervalSec, setIntervalSec] = useState(() => Number(initial?.update_interval) || 0)
   const [status, setStatus] = useState(initial)
-  const [name, setName] = useState('trustpositif')
-  const [source, setSource] = useState('https://trustpositif.komdigi.go.id/assets/db/domains_isp')
+  const [name, setName] = useState(defaultName)
+  const [source, setSource] = useState(defaultSource)
   const [action, setAction] = useState('nxdomain')
   const [target, setTarget] = useState('')
+  const [editName, setEditName] = useState(null)
   const [err, setErr] = useState('')
   const [ok, setOk] = useState('')
   const [busy, setBusy] = useState(false)
@@ -2862,7 +2923,31 @@ function RPZPanel({ initial, onChange }) {
     return () => clearInterval(t)
   }, [status?.loading, onChange])
 
-  const add = () => {
+  const resetForm = () => {
+    setName(defaultName)
+    setSource(defaultSource)
+    setAction('nxdomain')
+    setTarget('')
+    setEditName(null)
+  }
+
+  const startEdit = (p) => {
+    setErr('')
+    setOk('')
+    setEditName(p.name)
+    setName(p.name || '')
+    setSource(p.source || '')
+    setAction(p.action || 'nxdomain')
+    setTarget(p.target || '')
+  }
+
+  const cancelEdit = () => {
+    setErr('')
+    setOk('')
+    resetForm()
+  }
+
+  const addOrUpdate = () => {
     setErr('')
     setOk('')
     const n = name.trim()
@@ -2880,26 +2965,35 @@ function RPZPanel({ initial, onChange }) {
       setErr('CNAME needs a landing hostname (e.g. block.local)')
       return
     }
+    const nextPolicy = {
+      name: n,
+      source: s,
+      format: 'hosts',
+      action,
+      target: action === 'redirect' || action === 'cname' ? t : '',
+    }
+    if (editName != null) {
+      if (policies.some((p) => p.name === n && p.name !== editName)) {
+        setErr(`Policy "${n}" already exists`)
+        return
+      }
+      setPolicies((list) => list.map((p) => (p.name === editName ? nextPolicy : p)))
+      setOk(`Updated "${n}" in list — Save & sync to apply`)
+      resetForm()
+      return
+    }
     if (policies.some((p) => p.name === n)) {
       setErr(`Policy "${n}" already exists`)
       return
     }
-    setPolicies((p) => [
-      ...p,
-      {
-        name: n,
-        source: s,
-        format: 'hosts',
-        action,
-        target: action === 'redirect' || action === 'cname' ? t : '',
-      },
-    ])
+    setPolicies((p) => [...p, nextPolicy])
   }
 
   const remove = (n) => {
     setErr('')
     setOk('')
     setPolicies((p) => p.filter((x) => x.name !== n))
+    if (editName === n) resetForm()
   }
 
   const saveSync = async () => {
@@ -3006,7 +3100,9 @@ function RPZPanel({ initial, onChange }) {
           policies.map((p) => (
             <li
               key={p.name}
-              className="flex flex-wrap items-start justify-between gap-2 border-b border-[var(--border)]/60 pb-2"
+              className={`flex flex-wrap items-start justify-between gap-2 border-b border-[var(--border)]/60 pb-2 ${
+                editName === p.name ? 'bg-[var(--accent-soft)] -mx-2 px-2 rounded-[var(--radius)]' : ''
+              }`}
             >
               <div className="min-w-0">
                 <div className="font-medium">{p.name}</div>
@@ -3016,14 +3112,24 @@ function RPZPanel({ initial, onChange }) {
                   {p.target ? ` → ${p.target}` : ''}
                 </div>
               </div>
-              <button
-                type="button"
-                disabled={busy || loading}
-                onClick={() => remove(p.name)}
-                className="text-[var(--danger)] text-xs cursor-pointer disabled:opacity-40"
-              >
-                Remove
-              </button>
+              <div className="flex gap-1 shrink-0">
+                <button
+                  type="button"
+                  disabled={busy || loading}
+                  onClick={() => startEdit(p)}
+                  className="btn btn-ghost text-xs disabled:opacity-40"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  disabled={busy || loading}
+                  onClick={() => remove(p.name)}
+                  className="btn btn-ghost text-xs text-[var(--danger)] disabled:opacity-40"
+                >
+                  Remove
+                </button>
+              </div>
             </li>
           ))
         ) : (
@@ -3076,14 +3182,21 @@ function RPZPanel({ initial, onChange }) {
           />
         </label>
       </div>
-      <button
-        type="button"
-        disabled={busy || loading}
-        onClick={add}
-        className="btn btn-secondary"
-      >
-        Add feed to list
-      </button>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={busy || loading}
+          onClick={addOrUpdate}
+          className="btn btn-secondary"
+        >
+          {editName != null ? 'Save changes' : 'Add feed to list'}
+        </button>
+        {editName != null ? (
+          <button type="button" disabled={busy || loading} onClick={cancelEdit} className="btn btn-ghost">
+            Cancel
+          </button>
+        ) : null}
+      </div>
     </section>
   )
 }
