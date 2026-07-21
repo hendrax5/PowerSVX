@@ -654,17 +654,22 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.settingsPayload())
 	case http.MethodPut, http.MethodPatch:
 		var body struct {
-			GeoDNS        *bool     `json:"geodns"`
-			RPZ           *bool     `json:"rpz_enabled"`
-			RateLimit     *bool     `json:"rate_limit"`
-			ECS           *bool     `json:"ecs_enabled"`
-			SplitHorizon  *bool     `json:"split_horizon"`
-			ResolverMode  *string   `json:"resolver_mode"`
-			ForwardOnFail *bool     `json:"forward_on_fail"`
-			QueryLog      *bool     `json:"query_log_enabled"`
-			Forwarders    *[]string `json:"forwarders"`
-			AllowQuery    *[]string `json:"allow_query"`
-			DenyQuery     *[]string `json:"deny_query"`
+			GeoDNS               *bool     `json:"geodns"`
+			RPZ                  *bool     `json:"rpz_enabled"`
+			RateLimit            *bool     `json:"rate_limit"`
+			RateLimitQPS         *int      `json:"rate_limit_qps"`
+			RateLimitBurst       *int      `json:"rate_limit_burst"`
+			RateLimitBlockDur    *int      `json:"rate_limit_block_duration"`
+			RateLimitWhitelist   *[]string `json:"rate_limit_whitelist"`
+			ClearRateLimitBlocks *bool     `json:"clear_rate_limit_blocks"`
+			ECS                  *bool     `json:"ecs_enabled"`
+			SplitHorizon         *bool     `json:"split_horizon"`
+			ResolverMode         *string   `json:"resolver_mode"`
+			ForwardOnFail        *bool     `json:"forward_on_fail"`
+			QueryLog             *bool     `json:"query_log_enabled"`
+			Forwarders           *[]string `json:"forwarders"`
+			AllowQuery           *[]string `json:"allow_query"`
+			DenyQuery            *[]string `json:"deny_query"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
@@ -709,6 +714,46 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			cur.Forwarders = fwd
 		}
 		a.srv.ApplyRuntimeFlags(cur)
+
+		rl := a.srv.RateLimitConfig()
+		qps, burst, block := rl.QPS, rl.Burst, rl.BlockDuration
+		wl := append([]string(nil), rl.Whitelist...)
+		rlChanged := false
+		if body.RateLimitQPS != nil {
+			if *body.RateLimitQPS < 1 {
+				http.Error(w, "rate_limit_qps must be >= 1", http.StatusBadRequest)
+				return
+			}
+			qps = *body.RateLimitQPS
+			rlChanged = true
+		}
+		if body.RateLimitBurst != nil {
+			if *body.RateLimitBurst < 1 {
+				http.Error(w, "rate_limit_burst must be >= 1", http.StatusBadRequest)
+				return
+			}
+			burst = *body.RateLimitBurst
+			rlChanged = true
+		}
+		if body.RateLimitBlockDur != nil {
+			if *body.RateLimitBlockDur < 1 {
+				http.Error(w, "rate_limit_block_duration must be >= 1", http.StatusBadRequest)
+				return
+			}
+			block = *body.RateLimitBlockDur
+			rlChanged = true
+		}
+		if body.RateLimitWhitelist != nil {
+			wl = normalizeCIDRList(*body.RateLimitWhitelist)
+			rlChanged = true
+		}
+		if rlChanged {
+			a.srv.ApplyRateLimitConfig(qps, burst, block, wl)
+		}
+		if body.ClearRateLimitBlocks != nil && *body.ClearRateLimitBlocks {
+			a.srv.ClearRateLimitBlocks()
+		}
+
 		if body.AllowQuery != nil || body.DenyQuery != nil {
 			allow, deny := a.srv.QueryACL()
 			if body.AllowQuery != nil {
@@ -728,8 +773,11 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if fwd == nil && a.cfg != nil {
 			fwd = a.cfg.Resolver.Forwarders
 		}
+		rlLive := a.srv.RateLimitConfig()
 		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), config.RuntimeSettings{
 			GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
+			RateLimitQPS: &rlLive.QPS, RateLimitBurst: &rlLive.Burst, RateLimitBlockDur: &rlLive.BlockDuration,
+			RateLimitWhitelist: rlLive.Whitelist,
 			ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
 			ResolverMode: &mode, ForwardOnFail: &cur.ForwardOnFail, QueryLog: &cur.QueryLog,
 			Forwarders: fwd, AllowQuery: allow, DenyQuery: deny,
@@ -740,6 +788,23 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func normalizeCIDRList(in []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, c := range in {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if _, ok := seen[c]; ok {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	return out
+}
+
 func (a *API) settingsPayload() map[string]any {
 	f := a.srv.RuntimeFlags()
 	allow, deny := a.srv.QueryACL()
@@ -747,6 +812,7 @@ func (a *API) settingsPayload() map[string]any {
 	if forwarders == nil && a.cfg != nil {
 		forwarders = a.cfg.Resolver.Forwarders
 	}
+	rl := a.srv.RateLimitConfig()
 	return map[string]any{
 		"resolver_mode":            f.ResolverMode,
 		"forward_on_fail":          f.ForwardOnFail,
@@ -757,6 +823,10 @@ func (a *API) settingsPayload() map[string]any {
 		"geodns":                   f.GeoDNS,
 		"split_horizon":            f.SplitHorizon,
 		"rate_limit":               f.RateLimit,
+		"rate_limit_qps":           rl.QPS,
+		"rate_limit_burst":         rl.Burst,
+		"rate_limit_block_duration": rl.BlockDuration,
+		"rate_limit_whitelist":     rl.Whitelist,
 		"query_log_enabled":        f.QueryLog,
 		"query_log_mask_ip":        a.cfg.Logging.QueryLogMaskIP,
 		"query_log_retention_days": a.cfg.Logging.QueryLogRetentionDays,
@@ -775,10 +845,12 @@ func (a *API) settingsPayload() map[string]any {
 		"auth_configured": a.authConfigured(),
 		"tls_min_version": "1.3",
 		"editable": []string{
-			"geodns", "rpz_enabled", "rate_limit", "ecs_enabled", "split_horizon",
+			"geodns", "rpz_enabled", "rate_limit", "rate_limit_qps", "rate_limit_burst",
+			"rate_limit_block_duration", "rate_limit_whitelist",
+			"ecs_enabled", "split_horizon",
 			"resolver_mode", "forward_on_fail", "forwarders", "query_log_enabled", "allow_query", "deny_query",
 		},
-		"note": "Edit toggles, query ACL, forwarders, and resolver mode, then Save. Persisted to data/runtime-settings.json. Empty allow_query = allow all. AXFR ACL and IP masking are TOML-only.",
+		"note": "Edit toggles, rate limit, query ACL, forwarders, and resolver mode, then Save. Persisted to data/runtime-settings.json. Empty allow_query = allow all. AXFR ACL and IP masking are TOML-only.",
 	}
 }
 

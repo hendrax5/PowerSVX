@@ -33,10 +33,14 @@ func (p *processSampler) sample() (cpuPct, rssMB float64) {
 			if delta < 0 {
 				delta = 0
 			}
-			// Percent of a single core (can exceed 100 on multi-threaded bursts).
-			p.cpuPct = (delta / wall) * 100
-			if p.cpuPct > 100*float64(runtime.NumCPU()) {
-				p.cpuPct = 100 * float64(runtime.NumCPU())
+			// Percent of total host capacity (0–100), not "one core".
+			cores := float64(runtime.NumCPU())
+			if cores < 1 {
+				cores = 1
+			}
+			p.cpuPct = (delta / wall) * 100 / cores
+			if p.cpuPct > 100 {
+				p.cpuPct = 100
 			}
 		}
 	}

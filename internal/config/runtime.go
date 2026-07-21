@@ -8,17 +8,21 @@ import (
 
 // RuntimeSettings is persisted UI-editable feature flags (survives restart).
 type RuntimeSettings struct {
-	GeoDNS        *bool    `json:"geodns,omitempty"`
-	RPZ           *bool    `json:"rpz_enabled,omitempty"`
-	RateLimit     *bool    `json:"rate_limit,omitempty"`
-	ECS           *bool    `json:"ecs_enabled,omitempty"`
-	SplitHorizon  *bool    `json:"split_horizon,omitempty"`
-	ResolverMode  *string  `json:"resolver_mode,omitempty"`
-	ForwardOnFail *bool    `json:"forward_on_fail,omitempty"`
-	QueryLog      *bool    `json:"query_log_enabled,omitempty"`
-	Forwarders    []string `json:"forwarders"`
-	AllowQuery    []string `json:"allow_query"`
-	DenyQuery     []string `json:"deny_query"`
+	GeoDNS               *bool    `json:"geodns,omitempty"`
+	RPZ                  *bool    `json:"rpz_enabled,omitempty"`
+	RateLimit            *bool    `json:"rate_limit,omitempty"`
+	RateLimitQPS         *int     `json:"rate_limit_qps,omitempty"`
+	RateLimitBurst       *int     `json:"rate_limit_burst,omitempty"`
+	RateLimitBlockDur    *int     `json:"rate_limit_block_duration,omitempty"`
+	RateLimitWhitelist   []string `json:"rate_limit_whitelist"`
+	ECS                  *bool    `json:"ecs_enabled,omitempty"`
+	SplitHorizon         *bool    `json:"split_horizon,omitempty"`
+	ResolverMode         *string  `json:"resolver_mode,omitempty"`
+	ForwardOnFail        *bool    `json:"forward_on_fail,omitempty"`
+	QueryLog             *bool    `json:"query_log_enabled,omitempty"`
+	Forwarders           []string `json:"forwarders"`
+	AllowQuery           []string `json:"allow_query"`
+	DenyQuery            []string `json:"deny_query"`
 }
 
 func RuntimeSettingsPath(dir string) string {
@@ -58,6 +62,18 @@ func (c *Config) ApplyRuntimeSettings(s RuntimeSettings) {
 	}
 	if s.RateLimit != nil {
 		c.RateLimit.Enabled = *s.RateLimit
+	}
+	if s.RateLimitQPS != nil && *s.RateLimitQPS > 0 {
+		c.RateLimit.DefaultQPS = *s.RateLimitQPS
+	}
+	if s.RateLimitBurst != nil && *s.RateLimitBurst > 0 {
+		c.RateLimit.DefaultBurst = *s.RateLimitBurst
+	}
+	if s.RateLimitBlockDur != nil && *s.RateLimitBlockDur > 0 {
+		c.RateLimit.BlockDuration = *s.RateLimitBlockDur
+	}
+	if s.RateLimitWhitelist != nil {
+		c.RateLimit.Whitelist = append([]string(nil), s.RateLimitWhitelist...)
 	}
 	if s.ECS != nil {
 		c.Resolver.ECSEnabled = *s.ECS

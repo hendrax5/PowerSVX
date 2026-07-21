@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -40,21 +41,7 @@ func New(enabled bool, qps, burst int, blockSeconds int, whitelistCIDRs []string
 		burst:     float64(burst),
 		blockDur:  time.Duration(blockSeconds) * time.Second,
 		enabled:   enabled,
-	}
-	for _, cidr := range whitelistCIDRs {
-		_, n, err := net.ParseCIDR(cidr)
-		if err != nil {
-			ip := net.ParseIP(cidr)
-			if ip == nil {
-				continue
-			}
-			bits := 32
-			if ip.To4() == nil {
-				bits = 128
-			}
-			n = &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}
-		}
-		l.whitelist = append(l.whitelist, n)
+		whitelist: parseWhitelist(whitelistCIDRs),
 	}
 	return l
 }
@@ -74,6 +61,94 @@ func (l *Limiter) SetEnabled(on bool) {
 	}
 	l.mu.Lock()
 	l.enabled = on
+	l.mu.Unlock()
+}
+
+// Config is the live rate-limit parameters.
+type Config struct {
+	Enabled       bool     `json:"enabled"`
+	QPS           int      `json:"qps"`
+	Burst         int      `json:"burst"`
+	BlockDuration int      `json:"block_duration"`
+	Whitelist     []string `json:"whitelist"`
+}
+
+// Configure updates QPS/burst/block duration/whitelist atomically.
+func (l *Limiter) Configure(qps, burst, blockSeconds int, whitelistCIDRs []string) {
+	if l == nil {
+		return
+	}
+	if qps <= 0 {
+		qps = 100
+	}
+	if burst <= 0 {
+		burst = 200
+	}
+	if blockSeconds <= 0 {
+		blockSeconds = 300
+	}
+	nets := parseWhitelist(whitelistCIDRs)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.qps = float64(qps)
+	l.burst = float64(burst)
+	l.blockDur = time.Duration(blockSeconds) * time.Second
+	l.whitelist = nets
+	// Reset buckets so new limits apply immediately; keep blocked until expiry.
+	l.buckets = make(map[string]*bucket)
+}
+
+func parseWhitelist(cidrs []string) []*net.IPNet {
+	var out []*net.IPNet
+	for _, cidr := range cidrs {
+		cidr = strings.TrimSpace(cidr)
+		if cidr == "" {
+			continue
+		}
+		_, n, err := net.ParseCIDR(cidr)
+		if err != nil {
+			ip := net.ParseIP(cidr)
+			if ip == nil {
+				continue
+			}
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			n = &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// SnapshotConfig returns current limiter parameters.
+func (l *Limiter) SnapshotConfig() Config {
+	if l == nil {
+		return Config{}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	wl := make([]string, 0, len(l.whitelist))
+	for _, n := range l.whitelist {
+		wl = append(wl, n.String())
+	}
+	return Config{
+		Enabled:       l.enabled,
+		QPS:           int(l.qps),
+		Burst:         int(l.burst),
+		BlockDuration: int(l.blockDur / time.Second),
+		Whitelist:     wl,
+	}
+}
+
+// ClearBlocked removes temporary IP blocks.
+func (l *Limiter) ClearBlocked() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.blocked = make(map[string]time.Time)
 	l.mu.Unlock()
 }
 

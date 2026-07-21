@@ -798,6 +798,9 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 	if s.limiter != nil {
 		s.limiter.SetEnabled(f.RateLimit)
 	}
+	if s.cfg != nil {
+		s.cfg.RateLimit.Enabled = f.RateLimit
+	}
 	if s.res != nil {
 		s.res.SetECSEnabled(f.ECS)
 		s.res.SetMode(f.ResolverMode)
@@ -855,6 +858,44 @@ func (s *Server) QueryLogger() *database.QueryLogger     { return s.qlog }
 func (s *Server) Analytics() *analytics.Collector { return s.stats }
 func (s *Server) Monitor() *monitor.Collector     { return s.mon }
 func (s *Server) Allowlist() *allowlist.List      { return s.allow }
+
+func (s *Server) RateLimitConfig() ratelimit.Config {
+	if s == nil || s.limiter == nil {
+		if s != nil && s.cfg != nil {
+			return ratelimit.Config{
+				Enabled:       s.cfg.RateLimit.Enabled,
+				QPS:           s.cfg.RateLimit.DefaultQPS,
+				Burst:         s.cfg.RateLimit.DefaultBurst,
+				BlockDuration: s.cfg.RateLimit.BlockDuration,
+				Whitelist:     append([]string(nil), s.cfg.RateLimit.Whitelist...),
+			}
+		}
+		return ratelimit.Config{}
+	}
+	return s.limiter.SnapshotConfig()
+}
+
+// ApplyRateLimitConfig updates live limiter parameters and cfg snapshot.
+func (s *Server) ApplyRateLimitConfig(qps, burst, blockSec int, whitelist []string) {
+	if s == nil {
+		return
+	}
+	if s.limiter != nil {
+		s.limiter.Configure(qps, burst, blockSec, whitelist)
+	}
+	if s.cfg != nil {
+		s.cfg.RateLimit.DefaultQPS = qps
+		s.cfg.RateLimit.DefaultBurst = burst
+		s.cfg.RateLimit.BlockDuration = blockSec
+		s.cfg.RateLimit.Whitelist = append([]string(nil), whitelist...)
+	}
+}
+
+func (s *Server) ClearRateLimitBlocks() {
+	if s != nil && s.limiter != nil {
+		s.limiter.ClearBlocked()
+	}
+}
 
 // RateLimitBlocked returns currently blocked client IPs.
 func (s *Server) RateLimitBlocked(limit int) []monitor.Count {

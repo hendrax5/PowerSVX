@@ -402,7 +402,7 @@ function Dashboard() {
         <Stat
           label="CPU / RAM"
           value={`${Number(res.cpu_percent || 0).toFixed(1)}%`}
-          sub={`RSS ${Number(res.rss_mb || 0).toFixed(0)} MB · ${res.goroutines ?? '—'} g · ${res.num_cpu ?? '—'} CPU`}
+          sub={`of host · RSS ${Number(res.rss_mb || 0).toFixed(0)} MB · ${res.num_cpu ?? '—'} cores · ${res.goroutines ?? '—'} g`}
         />
       </div>
 
@@ -1364,6 +1364,8 @@ function Settings() {
   const [section, setSection] = useState('dns')
   const [fwdInput, setFwdInput] = useState('')
   const [fwdEditIdx, setFwdEditIdx] = useState(-1)
+  const [rlWlInput, setRlWlInput] = useState('')
+  const [rlWlEditIdx, setRlWlEditIdx] = useState(-1)
 
   const toggleKeys = ['geodns', 'rpz_enabled', 'rate_limit', 'ecs_enabled', 'split_horizon', 'forward_on_fail', 'query_log_enabled']
 
@@ -1371,6 +1373,10 @@ function Settings() {
     geodns: !!s.geodns,
     rpz_enabled: !!s.rpz_enabled,
     rate_limit: !!s.rate_limit,
+    rate_limit_qps: Number(s.rate_limit_qps) || 200,
+    rate_limit_burst: Number(s.rate_limit_burst) || 400,
+    rate_limit_block_duration: Number(s.rate_limit_block_duration) || 300,
+    rate_limit_whitelist: Array.isArray(s.rate_limit_whitelist) ? [...s.rate_limit_whitelist] : [],
     ecs_enabled: !!s.ecs_enabled,
     split_horizon: !!s.split_horizon,
     forward_on_fail: s.forward_on_fail !== false,
@@ -1417,7 +1423,11 @@ function Settings() {
   const dirtyFeatures =
     saved &&
     draft &&
-    toggleKeys.filter((k) => k !== 'forward_on_fail').some((k) => !!draft[k] !== !!saved[k])
+    (toggleKeys.filter((k) => k !== 'forward_on_fail').some((k) => !!draft[k] !== !!saved[k]) ||
+      Number(draft.rate_limit_qps) !== Number(saved.rate_limit_qps || 0) ||
+      Number(draft.rate_limit_burst) !== Number(saved.rate_limit_burst || 0) ||
+      Number(draft.rate_limit_block_duration) !== Number(saved.rate_limit_block_duration || 0) ||
+      !sameList(draft.rate_limit_whitelist, saved.rate_limit_whitelist || []))
   const dirtyAcl =
     saved && draft && (!sameList(draft.allow_query, saved.allow_query) || !sameList(draft.deny_query, saved.deny_query))
   const dirty = !!(dirtyDns || dirtyFeatures || dirtyAcl)
@@ -1433,6 +1443,8 @@ function Settings() {
     setDraft(toDraft(saved))
     setFwdInput('')
     setFwdEditIdx(-1)
+    setRlWlInput('')
+    setRlWlEditIdx(-1)
     setOk('')
     setErr('')
   }
@@ -1447,6 +1459,10 @@ function Settings() {
         geodns: draft.geodns,
         rpz_enabled: draft.rpz_enabled,
         rate_limit: draft.rate_limit,
+        rate_limit_qps: Number(draft.rate_limit_qps) || 200,
+        rate_limit_burst: Number(draft.rate_limit_burst) || 400,
+        rate_limit_block_duration: Number(draft.rate_limit_block_duration) || 300,
+        rate_limit_whitelist: draft.rate_limit_whitelist || [],
         ecs_enabled: draft.ecs_enabled,
         split_horizon: draft.split_horizon,
         forward_on_fail: draft.forward_on_fail,
@@ -1461,6 +1477,8 @@ function Settings() {
       setDraft(toDraft(s))
       setFwdInput('')
       setFwdEditIdx(-1)
+      setRlWlInput('')
+      setRlWlEditIdx(-1)
       setOk('Saved — live now')
       setRpz(await api.rpz())
     } catch (ex) {
@@ -1507,6 +1525,73 @@ function Settings() {
       setFwdEditIdx(-1)
     } else if (fwdEditIdx > idx) {
       setFwdEditIdx((i) => i - 1)
+    }
+  }
+
+  const addOrUpdateRlWl = () => {
+    const v = rlWlInput.trim()
+    if (!v) return
+    setOk('')
+    setErr('')
+    setDraft((d) => {
+      const list = [...(d.rate_limit_whitelist || [])]
+      if (rlWlEditIdx >= 0 && rlWlEditIdx < list.length) {
+        list[rlWlEditIdx] = v
+      } else {
+        list.push(v)
+      }
+      return { ...d, rate_limit_whitelist: list }
+    })
+    setRlWlInput('')
+    setRlWlEditIdx(-1)
+  }
+
+  const editRlWl = (idx) => {
+    setRlWlInput((draft.rate_limit_whitelist || [])[idx] || '')
+    setRlWlEditIdx(idx)
+  }
+
+  const removeRlWl = (idx) => {
+    setOk('')
+    setErr('')
+    setDraft((d) => ({
+      ...d,
+      rate_limit_whitelist: (d.rate_limit_whitelist || []).filter((_, i) => i !== idx),
+    }))
+    if (rlWlEditIdx === idx) {
+      setRlWlInput('')
+      setRlWlEditIdx(-1)
+    } else if (rlWlEditIdx > idx) {
+      setRlWlEditIdx((i) => i - 1)
+    }
+  }
+
+  const copyAclToRlWhitelist = () => {
+    const fromAcl = linesToList(draft.allow_query)
+    setDraft((d) => {
+      const merged = [...(d.rate_limit_whitelist || [])]
+      for (const c of fromAcl) {
+        if (!merged.includes(c)) merged.push(c)
+      }
+      return { ...d, rate_limit_whitelist: merged }
+    })
+    setOk('')
+    setErr('')
+  }
+
+  const clearRlBlocks = async () => {
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const s = await api.updateSettings({ clear_rate_limit_blocks: true })
+      setSaved(s)
+      setDraft(toDraft(s))
+      setOk('Cleared temporary rate-limit blocks')
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -1796,6 +1881,139 @@ function Settings() {
                   </button>
                 </div>
               ))}
+            </section>
+          ) : null}
+
+          {section === 'features' ? (
+            <section className="panel px-4 py-4 space-y-4 mt-4" aria-labelledby="settings-rl-heading">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <h2 id="settings-rl-heading" className="text-sm font-medium">
+                    Rate limit parameters
+                  </h2>
+                  <p className="text-xs text-[var(--muted)] mt-1">
+                    QPS / burst per client IP. Whitelist skips the limiter (separate from query ACL).
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy || !isAdmin}
+                  onClick={clearRlBlocks}
+                  className="btn btn-secondary text-xs min-h-[36px] disabled:opacity-40"
+                >
+                  Clear active blocks
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <label className="text-xs text-[var(--muted)] space-y-1 block">
+                  QPS
+                  <input
+                    type="number"
+                    min={1}
+                    disabled={busy || !isAdmin}
+                    className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-2 text-sm mono"
+                    value={draft.rate_limit_qps}
+                    onChange={(e) => setDraft((d) => ({ ...d, rate_limit_qps: e.target.value }))}
+                  />
+                </label>
+                <label className="text-xs text-[var(--muted)] space-y-1 block">
+                  Burst
+                  <input
+                    type="number"
+                    min={1}
+                    disabled={busy || !isAdmin}
+                    className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-2 text-sm mono"
+                    value={draft.rate_limit_burst}
+                    onChange={(e) => setDraft((d) => ({ ...d, rate_limit_burst: e.target.value }))}
+                  />
+                </label>
+                <label className="text-xs text-[var(--muted)] space-y-1 block">
+                  Block duration (sec)
+                  <input
+                    type="number"
+                    min={1}
+                    disabled={busy || !isAdmin}
+                    className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-2 text-sm mono"
+                    value={draft.rate_limit_block_duration}
+                    onChange={(e) => setDraft((d) => ({ ...d, rate_limit_block_duration: e.target.value }))}
+                  />
+                </label>
+              </div>
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-xs text-[var(--muted)]">Rate-limit whitelist</h3>
+                  <button
+                    type="button"
+                    disabled={busy || !isAdmin}
+                    onClick={copyAclToRlWhitelist}
+                    className="text-xs text-[var(--accent)] underline disabled:opacity-40"
+                  >
+                    Copy from query ACL
+                  </button>
+                </div>
+                {(draft.rate_limit_whitelist || []).length === 0 ? (
+                  <p className="text-xs text-[var(--warn)]">No whitelist — all ACL clients are still rate-limited.</p>
+                ) : (
+                  <ul className="space-y-1 text-sm mono">
+                    {(draft.rate_limit_whitelist || []).map((addr, idx) => (
+                      <li
+                        key={`${addr}-${idx}`}
+                        className="flex justify-between gap-2 border-b border-[var(--border)]/50 py-1.5 items-center"
+                      >
+                        <span className="truncate">{addr}</span>
+                        <span className="flex gap-2 shrink-0">
+                          <button
+                            type="button"
+                            disabled={busy || !isAdmin}
+                            onClick={() => editRlWl(idx)}
+                            className="text-xs text-[var(--accent)] disabled:opacity-40"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy || !isAdmin}
+                            onClick={() => removeRlWl(idx)}
+                            className="text-xs text-[var(--warn)] disabled:opacity-40"
+                          >
+                            Delete
+                          </button>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    addOrUpdateRlWl()
+                  }}
+                  className="flex flex-wrap gap-2"
+                >
+                  <input
+                    className="flex-1 min-w-[10rem] bg-[var(--bg)] border border-[var(--border)] px-2 py-2 text-sm mono"
+                    placeholder="103.172.70.0/23"
+                    disabled={busy || !isAdmin}
+                    value={rlWlInput}
+                    onChange={(e) => setRlWlInput(e.target.value)}
+                  />
+                  <button type="submit" disabled={busy || !isAdmin || !rlWlInput.trim()} className="btn btn-primary text-sm disabled:opacity-40">
+                    {rlWlEditIdx >= 0 ? 'Update' : 'Add'}
+                  </button>
+                  {rlWlEditIdx >= 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRlWlInput('')
+                        setRlWlEditIdx(-1)
+                      }}
+                      className="btn btn-secondary text-sm"
+                    >
+                      Cancel
+                    </button>
+                  ) : null}
+                </form>
+              </div>
             </section>
           ) : null}
 
@@ -2173,6 +2391,7 @@ function UsersPanel() {
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState('operator')
+  const [editing, setEditing] = useState(false)
   const [err, setErr] = useState('')
   const [ok, setOk] = useState('')
   const [busy, setBusy] = useState(false)
@@ -2191,6 +2410,22 @@ function UsersPanel() {
 
   if (!isAdmin || me?.auth_type !== 'local') return null
 
+  const resetForm = () => {
+    setName('')
+    setPassword('')
+    setRole('operator')
+    setEditing(false)
+  }
+
+  const startEdit = (u) => {
+    setName(u.name)
+    setPassword('')
+    setRole(u.role || 'operator')
+    setEditing(true)
+    setOk('')
+    setErr('')
+  }
+
   const save = async (e) => {
     e.preventDefault()
     setBusy(true)
@@ -2198,8 +2433,8 @@ function UsersPanel() {
     setOk('')
     try {
       await api.upsertUser({ name, password, role })
-      setPassword('')
-      setOk('User saved')
+      setOk(editing ? `Updated ${name}` : `Created ${name}`)
+      resetForm()
       await load()
     } catch (ex) {
       setErr(ex.message)
@@ -2212,6 +2447,7 @@ function UsersPanel() {
     setErr('')
     try {
       await api.deleteUser(n)
+      if (editing && name === n) resetForm()
       await load()
     } catch (ex) {
       setErr(ex.message)
@@ -2222,7 +2458,7 @@ function UsersPanel() {
     <section className="panel p-4 space-y-3">
       <h2 className="text-sm font-medium">Local users</h2>
       <p className="text-xs text-[var(--muted)]">
-        Admin / operator / readonly. API tokens for scripts stay in TOML ([[api.tokens]]).
+        Click Edit to change role or password (leave password blank to keep). API tokens stay in TOML.
       </p>
       {err ? <ErrorBox msg={err} /> : null}
       {ok ? (
@@ -2232,13 +2468,26 @@ function UsersPanel() {
       ) : null}
       <ul className="text-sm divide-y divide-[var(--border)]">
         {users.map((u) => (
-          <li key={u.name} className="flex justify-between gap-2 py-2">
+          <li key={u.name} className="flex justify-between gap-2 py-2 items-center">
             <span className="mono">
               {u.name} <span className="text-[var(--muted)]">· {u.role}</span>
             </span>
-            <button type="button" className="text-xs text-[var(--muted)] hover:text-[var(--accent)]" onClick={() => remove(u.name)}>
-              Delete
-            </button>
+            <span className="flex gap-2 shrink-0">
+              <button
+                type="button"
+                className="text-xs text-[var(--accent)] hover:underline"
+                onClick={() => startEdit(u)}
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                className="text-xs text-[var(--muted)] hover:text-[var(--warn)]"
+                onClick={() => remove(u.name)}
+              >
+                Delete
+              </button>
+            </span>
           </li>
         ))}
       </ul>
@@ -2249,13 +2498,15 @@ function UsersPanel() {
           value={name}
           onChange={(e) => setName(e.target.value)}
           required
+          disabled={editing}
         />
         <input
           type="password"
           className="bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm"
-          placeholder="password"
+          placeholder={editing ? 'new password (optional)' : 'password'}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
+          required={!editing}
         />
         <select
           className="bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm"
@@ -2266,13 +2517,20 @@ function UsersPanel() {
           <option value="operator">operator</option>
           <option value="readonly">readonly</option>
         </select>
-        <button
-          type="submit"
-          disabled={busy}
-          className="md:col-span-3 bg-[var(--accent)] text-[#0e1014] font-medium px-4 py-2 text-sm disabled:opacity-40"
-        >
-          Add / update user
-        </button>
+        <div className="md:col-span-3 flex flex-wrap gap-2">
+          <button
+            type="submit"
+            disabled={busy}
+            className="bg-[var(--accent)] text-[#0e1014] font-medium px-4 py-2 text-sm disabled:opacity-40"
+          >
+            {busy ? 'Saving…' : editing ? 'Update user' : 'Add user'}
+          </button>
+          {editing ? (
+            <button type="button" onClick={resetForm} className="border border-[var(--border)] px-4 py-2 text-sm">
+              Cancel edit
+            </button>
+          ) : null}
+        </div>
       </form>
     </section>
   )
