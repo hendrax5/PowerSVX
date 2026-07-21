@@ -21,25 +21,29 @@ function useAuth() {
 
 function LoadingBlock({ label = 'Loading' }) {
   return (
-    <div className="space-y-3" role="status" aria-live="polite" aria-busy="true">
+    <div className="space-y-4 max-w-[var(--content-max)]" role="status" aria-live="polite" aria-busy="true">
       <span className="sr-only">{label}</span>
-      <div className="h-8 w-48 bg-[var(--bg-panel)] animate-pulse border border-[var(--border)]" />
+      <div className="h-9 w-52 rounded-[var(--radius)] bg-[var(--bg-panel)] animate-pulse" />
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="h-20 panel animate-pulse bg-[var(--bg-panel)]" />
+          <div
+            key={i}
+            className="h-[5.25rem] rounded-[var(--radius-lg)] bg-[var(--bg-panel)] animate-pulse"
+            style={{ animationDelay: `${i * 60}ms` }}
+          />
         ))}
       </div>
-      <div className="h-40 panel animate-pulse bg-[var(--bg-panel)]" />
+      <div className="h-44 rounded-[var(--radius-lg)] bg-[var(--bg-panel)] animate-pulse" />
     </div>
   )
 }
 
 function EmptyState({ title, hint, action }) {
   return (
-    <div className="panel px-4 py-8 text-center" role="status">
-      <p className="text-sm font-medium">{title}</p>
-      {hint ? <p className="text-xs text-[var(--muted)] mt-2 max-w-md mx-auto">{hint}</p> : null}
-      {action || null}
+    <div className="panel px-5 py-10 text-left sm:text-center" role="status">
+      <p className="text-base font-semibold tracking-tight">{title}</p>
+      {hint ? <p className="text-sm text-[var(--muted)] mt-2 max-w-md sm:mx-auto leading-relaxed">{hint}</p> : null}
+      {action ? <div className="mt-5">{action}</div> : null}
     </div>
   )
 }
@@ -86,44 +90,46 @@ function Shell({ children }) {
     nav('/login')
   }
   return (
-    <div className="min-h-full flex flex-col md:flex-row">
+    <div className="min-h-[100dvh] flex flex-col md:flex-row">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-2 focus:left-2 focus:bg-[var(--accent)] focus:text-[#0e1014] focus:px-3 focus:py-2.5"
+        className="sr-only focus:not-sr-only focus:absolute focus:z-[60] focus:top-3 focus:left-3 focus:bg-[var(--accent)] focus:text-[#15120e] focus:px-3 focus:py-2.5 focus:rounded-[var(--radius)]"
       >
         Skip to content
       </a>
       <aside
-        className="md:w-56 shrink-0 border-b md:border-b-0 md:border-r border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-5 flex md:flex-col gap-4 md:gap-6 sticky top-0 z-20 md:static"
+        className="md:w-60 shrink-0 border-b md:border-b-0 md:border-r border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-elevated)_92%,transparent)] px-4 py-5 flex md:flex-col gap-4 md:gap-7 sticky top-0 z-[30] md:static backdrop-blur-md"
         aria-label="Sidebar"
       >
         <div className="reveal">
-          <div className="text-[clamp(1.35rem,2vw,1.65rem)] font-bold tracking-tight leading-none" aria-label="PowerSVX">
-            <span className="text-[var(--text)]">Power</span>
-            <span className="text-[var(--accent)]">SVX</span>
+          <div className="brand-mark text-[clamp(1.45rem,2.2vw,1.75rem)]" aria-label="PowerSVX">
+            <span>Power</span>
+            <span className="svx">SVX</span>
           </div>
-          <div className="text-[11px] text-[var(--muted)] mt-2">
-            <span className="uppercase tracking-[0.14em] mono">DNS</span>
-            <span className="mx-1.5 text-[var(--border-strong)]">·</span>
-            <span aria-current="page">{hereLabel}</span>
+          <div className="text-[12px] text-[var(--muted)] mt-2.5 flex items-center gap-2">
+            <span className="mono text-[11px] tracking-wide">dns control</span>
+            <span className="text-[var(--border-strong)]" aria-hidden>
+              /
+            </span>
+            <span className="text-[var(--text)]" aria-current="page">
+              {hereLabel}
+            </span>
           </div>
         </div>
         <nav className="flex md:flex-col gap-3 flex-1 overflow-x-auto" aria-label="Primary">
           {navGroups.map((group) => (
             <div key={group.label} className="flex md:flex-col gap-1 shrink-0">
-              <div className="hidden md:block text-[10px] uppercase tracking-[0.12em] text-[var(--muted)] px-3 pt-1 pb-0.5">
-                {group.label}
-              </div>
+              <div className="hidden md:block label-quiet px-3 pt-1 pb-1">{group.label}</div>
               {group.links.map(([to, label]) => (
                 <NavLink
                   key={to}
                   to={to}
                   end={to === '/'}
                   className={({ isActive }) =>
-                    `relative px-3 py-2.5 min-h-[44px] flex items-center text-sm transition cursor-pointer whitespace-nowrap ${
+                    `nav-link px-3 py-2.5 min-h-[44px] flex items-center text-sm cursor-pointer whitespace-nowrap ${
                       isActive
-                        ? 'text-[var(--accent)] bg-[var(--accent-soft)] border-l-2 border-[var(--accent)] md:pl-[10px]'
-                        : 'text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-panel)] border-l-2 border-transparent'
+                        ? 'is-active text-[var(--text)] pl-[14px]'
+                        : 'text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-panel)]'
                     }`
                   }
                 >
@@ -136,9 +142,9 @@ function Shell({ children }) {
         <div className="space-y-2 md:mt-auto w-full max-w-xs text-xs">
           {me?.auth_required ? (
             <>
-              <div className="text-[var(--muted)]">
-                <span className="text-[var(--text)]">{me.name}</span>
-                <span className="mx-1">·</span>
+              <div className="text-[var(--muted)] px-1">
+                <span className="text-[var(--text)] font-medium">{me.name}</span>
+                <span className="mx-1.5 text-[var(--border-strong)]">·</span>
                 <span className="text-[var(--accent)]">{me.role}</span>
               </div>
               <button type="button" onClick={logout} className="btn btn-secondary w-full min-h-[44px]">
@@ -146,11 +152,13 @@ function Shell({ children }) {
               </button>
             </>
           ) : (
-            <div className="text-[var(--muted)]">Open access</div>
+            <div className="text-[var(--muted)] px-1">Open access</div>
           )}
         </div>
       </aside>
-      <main id="main" tabIndex={-1} className="flex-1 p-5 md:p-8 overflow-auto outline-none">{children}</main>
+      <main id="main" tabIndex={-1} className="flex-1 p-5 md:p-8 lg:p-10 overflow-auto outline-none">
+        <div className="mx-auto w-full max-w-[var(--content-max)]">{children}</div>
+      </main>
     </div>
   )
 }
@@ -203,21 +211,22 @@ function LoginPage() {
   }
 
   return (
-    <div className="min-h-full flex items-center justify-center p-6">
-      <form onSubmit={submit} className="panel w-full max-w-sm p-6 space-y-4">
+    <div className="login-shell">
+      <form onSubmit={submit} className="login-card space-y-5 reveal">
         <div>
-          <div className="text-2xl font-bold tracking-tight">
-            <span className="text-[var(--text)]">Power</span>
-            <span className="text-[var(--accent)]">SVX</span>
+          <div className="brand-mark text-3xl">
+            <span>Power</span>
+            <span className="svx">SVX</span>
           </div>
-          <p className="text-sm text-[var(--muted)] mt-2">
-            Username <span className="mono text-[var(--text)]">admin</span> · password from{' '}
-            <span className="mono text-[var(--text)]">ADMIN_PASSWORD</span> in <span className="mono">.env</span>
-            {' '}(not API_TOKEN)
+          <p className="text-sm text-[var(--muted)] mt-3 leading-relaxed">
+            Sign in with local admin. Default user{' '}
+            <span className="mono text-[var(--text)]">admin</span> — password from{' '}
+            <span className="mono text-[var(--text)]">ADMIN_PASSWORD</span> in{' '}
+            <span className="mono">.env</span> (not API_TOKEN).
           </p>
         </div>
         {err ? <ErrorBox msg={err} detail={errDetail !== err ? errDetail : undefined} /> : null}
-        <label className="text-xs text-[var(--muted)] flex flex-col gap-1">
+        <label className="label-quiet flex flex-col gap-1.5">
           Username
           <input
             className="input"
@@ -227,7 +236,7 @@ function LoginPage() {
             required
           />
         </label>
-        <label className="text-xs text-[var(--muted)] flex flex-col gap-1">
+        <label className="label-quiet flex flex-col gap-1.5">
           Password
           <input
             type="password"
@@ -257,14 +266,12 @@ function RequireAuth({ children }) {
 
 function Stat({ label, value, sub }) {
   return (
-    <div
-      className="panel px-3 py-3 border-l-2 border-l-[var(--accent)] hover:border-[var(--border-strong)] transition-colors"
-    >
-      <div className="text-[10px] uppercase tracking-[0.12em] text-[var(--muted)]">{label}</div>
-      <div className="text-[clamp(1.35rem,2.2vw,1.75rem)] font-semibold mt-1 mono leading-none tabular-nums">
+    <div className="stat-card px-3.5 py-3.5">
+      <div className="label-quiet">{label}</div>
+      <div className="text-[clamp(1.4rem,2.2vw,1.8rem)] font-semibold mt-1.5 mono leading-none tabular-nums tracking-tight">
         {value}
       </div>
-      {sub ? <div className="text-[11px] text-[var(--muted)] mt-2">{sub}</div> : null}
+      {sub ? <div className="text-[11px] text-[var(--muted)] mt-2 leading-snug">{sub}</div> : null}
     </div>
   )
 }
@@ -272,14 +279,13 @@ function Stat({ label, value, sub }) {
 function Badge({ on, label }) {
   return (
     <span
-      className={`inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wide px-2 py-1 border mono ${
+      className={`inline-flex items-center gap-1.5 text-[11px] font-medium tracking-wide px-2 py-1 mono rounded-[var(--radius-sm)] ${
         on
-          ? 'border-[var(--accent)]/50 text-[var(--accent)] bg-[var(--accent-soft)]'
-          : 'border-[var(--border)] text-[var(--muted)]'
+          ? 'text-[var(--accent)] bg-[var(--accent-soft)] ring-1 ring-[color-mix(in_srgb,var(--accent)_35%,transparent)]'
+          : 'text-[var(--muted)] bg-[var(--bg)] ring-1 ring-[var(--border)]'
       }`}
-      style={{ borderRadius: 'var(--radius)' }}
     >
-      <span className={`h-1.5 w-1.5 ${on ? 'bg-[var(--accent)]' : 'bg-[var(--muted)]'}`} />
+      <span className={`h-1.5 w-1.5 rounded-[1px] ${on ? 'bg-[var(--accent)]' : 'bg-[var(--muted)]'}`} />
       {label}
     </span>
   )
@@ -338,24 +344,24 @@ function Dashboard() {
   ]
 
   return (
-    <div className="space-y-6 max-w-6xl">
+    <div className="space-y-6">
       <header className="reveal">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-semibold">Dashboard</h1>
-            <p className="text-[var(--muted)] text-sm mt-1">
+            <h1 className="page-title">Dashboard</h1>
+            <p className="page-sub">
               v{s.version} · uptime {formatUptime(s.uptime_seconds)} · mode {s.mode} · QPS{' '}
               {Number(mon.qps_now || 0).toFixed(0)}
             </p>
           </div>
           <a
             href="/analytics"
-            className="text-sm text-[var(--accent)] underline shrink-0 mt-1"
+            className="text-sm text-[var(--accent)] hover:underline underline-offset-4 shrink-0 mt-1"
           >
             Longer trends in Analytics →
           </a>
         </div>
-        <div className="flex flex-wrap gap-2 mt-3">
+        <div className="flex flex-wrap gap-2 mt-4">
           <Badge on={s.dot_enabled} label="DoT" />
           <Badge on={s.doh_enabled} label="DoH" />
           <Badge on={!!s.doh3_enabled} label="DoH3" />
@@ -423,9 +429,9 @@ function Dashboard() {
           {qpsChart.length ? (
             <ResponsiveContainer width="100%" height="85%">
               <AreaChart data={qpsChart}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#2c3340" />
-                <XAxis dataKey="t" stroke="#8b939e" fontSize={10} minTickGap={28} />
-                <YAxis stroke="#8b939e" fontSize={12} allowDecimals={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#322f2a" />
+                <XAxis dataKey="t" stroke="#a39e93" fontSize={10} minTickGap={28} />
+                <YAxis stroke="#a39e93" fontSize={12} allowDecimals={false} />
                 <Tooltip
                   contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
                 />
@@ -441,9 +447,9 @@ function Dashboard() {
           {pathChart.length ? (
             <ResponsiveContainer width="100%" height="85%">
               <BarChart data={pathChart}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#2c3340" />
-                <XAxis dataKey="name" stroke="#8b939e" fontSize={10} interval={0} angle={-20} textAnchor="end" height={50} />
-                <YAxis stroke="#8b939e" fontSize={12} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#322f2a" />
+                <XAxis dataKey="name" stroke="#a39e93" fontSize={10} interval={0} angle={-20} textAnchor="end" height={50} />
+                <YAxis stroke="#a39e93" fontSize={12} />
                 <Tooltip
                   contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
                 />
@@ -462,13 +468,13 @@ function Dashboard() {
           {errChart.length ? (
             <ResponsiveContainer width="100%" height="85%">
               <BarChart data={errChart}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#2c3340" />
-                <XAxis dataKey="name" stroke="#8b939e" fontSize={11} />
-                <YAxis stroke="#8b939e" fontSize={12} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#322f2a" />
+                <XAxis dataKey="name" stroke="#a39e93" fontSize={11} />
+                <YAxis stroke="#a39e93" fontSize={12} />
                 <Tooltip
                   contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
                 />
-                <Bar dataKey="value" fill="#f59e0b" radius={[2, 2, 0, 0]} />
+                <Bar dataKey="value" fill="var(--warn)" radius={[2, 2, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           ) : (
@@ -480,13 +486,13 @@ function Dashboard() {
           {rcodeChart.length ? (
             <ResponsiveContainer width="100%" height="85%">
               <BarChart data={rcodeChart}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#2c3340" />
-                <XAxis dataKey="name" stroke="#8b939e" fontSize={11} />
-                <YAxis stroke="#8b939e" fontSize={12} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#322f2a" />
+                <XAxis dataKey="name" stroke="#a39e93" fontSize={11} />
+                <YAxis stroke="#a39e93" fontSize={12} />
                 <Tooltip
                   contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
                 />
-                <Bar dataKey="value" fill="#94a3b8" radius={[2, 2, 0, 0]} />
+                <Bar dataKey="value" fill="var(--muted)" radius={[2, 2, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           ) : (
@@ -685,9 +691,9 @@ function Dashboard() {
         <div className="h-48">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={trafficChart}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#2c3340" />
-              <XAxis dataKey="name" stroke="#8b939e" fontSize={12} />
-              <YAxis stroke="#8b939e" fontSize={12} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#322f2a" />
+              <XAxis dataKey="name" stroke="#a39e93" fontSize={12} />
+              <YAxis stroke="#a39e93" fontSize={12} />
               <Tooltip
                 contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
               />
@@ -1009,7 +1015,7 @@ function Zones() {
   return (
     <div className="space-y-6 max-w-3xl">
       <header>
-        <h1 className="text-2xl font-semibold">Zones</h1>
+        <h1 className="page-title">Zones</h1>
         <p className="text-sm text-[var(--muted)] mt-1">Authoritative zones and records</p>
       </header>
       {err ? <ErrorBox msg={err} /> : null}
@@ -1259,7 +1265,7 @@ function ZoneDetail() {
         ← Zones
       </button>
       <header>
-        <h1 className="text-2xl font-semibold mono">{zone}</h1>
+        <h1 className="page-title mono">{zone}</h1>
       </header>
       {err ? <ErrorBox msg={err} /> : null}
       {ok ? (
@@ -1451,7 +1457,7 @@ function Lookup() {
   return (
     <div className="space-y-6 max-w-2xl">
       <header>
-        <h1 className="text-2xl font-semibold">Lookup</h1>
+        <h1 className="page-title">Lookup</h1>
         <p className="text-sm text-[var(--muted)] mt-1">Resolve via this PowerSVX instance</p>
       </header>
       <form onSubmit={run} className="flex flex-wrap gap-2">
@@ -1862,7 +1868,7 @@ function Settings() {
     <div className="space-y-4 max-w-5xl pb-24">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Settings</h1>
+          <h1 className="page-title">Settings</h1>
           <p className="text-sm text-[var(--muted)] mt-1">
             {sectionTitle?.label}
             <span className="mx-1.5 text-[var(--border-strong)]">·</span>
@@ -2999,7 +3005,7 @@ function ErrorBox({ msg, detail, hint }) {
   const mapped = friendlyApiError(msg)
   return (
     <div
-      className="border border-[var(--danger)]/40 bg-[var(--danger)]/10 text-[var(--danger)] text-sm px-3 py-2 space-y-1"
+      className="rounded-[var(--radius)] border border-[var(--danger)]/35 bg-[var(--danger)]/10 text-[var(--danger)] text-sm px-3 py-2.5 space-y-1"
       role="alert"
       title={detail || undefined}
     >
@@ -3060,7 +3066,7 @@ function AuditLog() {
     <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Audit</h1>
+          <h1 className="page-title">Audit</h1>
           <p className="text-sm text-[var(--muted)] mt-1">
             Control-plane API mutations and auth failures (in-memory ring).
           </p>
@@ -3159,7 +3165,7 @@ function Analytics() {
     <div className="space-y-4 max-w-[1400px]">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Analytics</h1>
+          <h1 className="page-title">Analytics</h1>
           <p className="text-sm text-[var(--muted)] mt-1">
             Grafana trends (Prometheus). Live ops stay on{' '}
             <a href="/" className="text-[var(--accent)] underline">
@@ -3294,7 +3300,7 @@ function DomainsPage() {
   return (
     <div className="space-y-6 max-w-3xl">
       <header>
-        <h1 className="text-2xl font-semibold">Domains</h1>
+        <h1 className="page-title">Domains</h1>
         <p className="text-sm text-[var(--muted)] mt-1">
           Search the RPZ blacklist and manage the whitelist (bypasses blocklists).
         </p>
@@ -3472,7 +3478,7 @@ function QueryLogs() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-2xl font-semibold">Query logs</h1>
+        <h1 className="page-title">Query logs</h1>
         <p className="text-sm text-[var(--muted)] mt-1">
           Per-query traffic from PostgreSQL. Filter by client IP to inspect a single user.
         </p>
