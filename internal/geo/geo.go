@@ -125,18 +125,26 @@ func (r *Resolver) Lookup(ipStr string) Info {
 	if db == nil {
 		return def
 	}
-	rec, err := db.City(ip)
-	if err != nil {
-		return def
+	if rec, err := db.City(ip); err == nil && rec != nil {
+		info := Info{
+			Country:   rec.Country.IsoCode,
+			Continent: rec.Continent.Code,
+			City:      "",
+		}
+		if name, ok := rec.City.Names["en"]; ok {
+			info.City = name
+		}
+		info.Tag = preferTag(info.Country, info.Continent, r.defaultTag)
+		return info
 	}
-	info := Info{
-		Country:   rec.Country.IsoCode,
-		Continent: rec.Continent.Code,
-		City:      "",
+	// Country-only DBs (e.g. DB-IP Country Lite) reject City().
+	if c, err := db.Country(ip); err == nil && c != nil {
+		info := Info{
+			Country:   c.Country.IsoCode,
+			Continent: c.Continent.Code,
+		}
+		info.Tag = preferTag(info.Country, info.Continent, r.defaultTag)
+		return info
 	}
-	if name, ok := rec.City.Names["en"]; ok {
-		info.City = name
-	}
-	info.Tag = preferTag(info.Country, info.Continent, r.defaultTag)
-	return info
+	return def
 }

@@ -33,7 +33,7 @@ RUN npm run build
 FROM debian:bookworm-slim
 RUN set -eux; \
     for i in 1 2 3 4 5; do \
-      apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata wget \
+      apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata wget gzip \
         && break; \
       echo "apt retry $i"; sleep 3; \
     done; \

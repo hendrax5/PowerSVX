@@ -50,7 +50,7 @@ policies = [
 
 [geodns]
 enabled = true
-database_path = "./data/GeoLite2-City.mmdb"
+database_path = "./data/dbip-country-lite.mmdb"
 default_tag = "default"
 overrides = [
   { ip = "127.0.0.1", country = "ID", continent = "AS", tag = "ID" }

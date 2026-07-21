@@ -298,7 +298,7 @@ func Default() *Config {
 		Update:   UpdateConfig{Enabled: false, RequireTSIG: true},
 		ACL:      ACLConfig{},
 		GeoDNS: GeoDNSConfig{
-			Enabled: false, DatabasePath: "./data/GeoLite2-City.mmdb", DefaultTag: "default",
+			Enabled: false, DatabasePath: "./data/dbip-country-lite.mmdb", DefaultTag: "default",
 		},
 		SplitHorizon: SplitHorizonConfig{Enabled: false},
 		ACME: ACMEConfig{

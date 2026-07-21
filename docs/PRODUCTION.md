@@ -58,6 +58,12 @@
 - Publish the returned **DS** at the parent / registrar.
 - Full NSEC3 / key rollover / HSM still deferred.
 
+## GeoDNS
+- Uses MaxMind-compatible MMDB (`[geodns] database_path`).
+- **Docker default:** DB-IP Country Lite (`/data/dbip-country-lite.mmdb`), auto-downloaded by `deploy/docker/entrypoint.sh` on start if missing or older than ~35 days (CC BY 4.0 — attribute [DB-IP](https://db-ip.com)).
+- Skip with `GEODB_AUTO_DOWNLOAD=0`. Override path with `GEODB_PATH`.
+- Lookup uses City DB when present, otherwise Country DB.
+
 ## Query logs
 - Requires PostgreSQL + `query_log_enabled = true`.
 - `query_log_mask_ip = true` stores /24 (IPv4) or /48 (IPv6).

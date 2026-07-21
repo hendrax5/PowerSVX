@@ -70,7 +70,7 @@ policies = [
 
 [geodns]
 enabled = false
-database_path = "/var/lib/powersvx/GeoLite2-City.mmdb"
+database_path = "/var/lib/powersvx/dbip-country-lite.mmdb"
 default_tag = "default"
 
 [split_horizon]

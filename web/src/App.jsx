@@ -2178,7 +2178,21 @@ function Settings() {
                     </div>
                     <div className="text-xs text-[var(--muted)] mt-0.5">{hint}</div>
                     {key === 'geodns' && saved.geodns_db ? (
-                      <div className="text-xs mono text-[var(--muted)] mt-1">{saved.geodns_db}</div>
+                      <div className="text-xs mono text-[var(--muted)] mt-1 space-y-1">
+                        <div>{saved.geodns_db}</div>
+                        <div>
+                          IP geolocation by{' '}
+                          <a
+                            href="https://db-ip.com"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[var(--accent)] hover:underline"
+                          >
+                            DB-IP
+                          </a>{' '}
+                          (Country Lite, CC BY 4.0). Docker auto-downloads on start if missing.
+                        </div>
+                      </div>
                     ) : null}
                   </div>
                   <button
