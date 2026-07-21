@@ -1,0 +1,50 @@
+# PowerSVX Linux — host networking (production VPS)
+#
+# Use when you need real client IPs (ACL / rate-limit / query log) and
+# DNS on host :53. Do NOT overwrite this with the default bridge compose.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --build
+#
+# DB: with host network, PowerSVX must reach Postgres via the published host port:
+#   configs/powersvx.docker.toml → host = "127.0.0.1", port = 5433
+#
+# Prometheus scrapes metrics via host.docker.internal:9100 (see prometheus.yml job powersvx-host).
+
+services:
+  powersvx:
+    network_mode: host
+    ports: !override []
+    # depends_on still works; host networking ignores compose networks
+    cap_add:
+      - NET_BIND_SERVICE
+      - NET_ADMIN
+    volumes: !override
+      - powersvx-cache:/data/cache
+      - powersvx-data:/data
+      - ./configs/powersvx.docker.toml:/etc/PowerSVX/powersvx.toml:ro
+      - ./configs/sample-blocklist.txt:/etc/PowerSVX/sample-blocklist.txt:ro
+
+  postgres:
+    ports: !override
+      - "127.0.0.1:5433:5432"
+
+  prometheus:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports: !override
+      - "0.0.0.0:9091:9090"
+
+  grafana:
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_AUTH_ANONYMOUS_ENABLED=${GF_AUTH_ANONYMOUS_ENABLED:-true}
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    ports: !override
+      - "0.0.0.0:3000:3000"
+
+volumes:
+  powersvx-data:

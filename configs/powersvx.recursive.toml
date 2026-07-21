@@ -11,7 +11,7 @@ ttl_seconds = 300
 negative_ttl = 60
 [resolver]
 mode = "recursive"
-forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
+forwarders = ["103.88.88.99:53", "203.119.13.77:53"]
 forward_on_fail = true
 timeout_ms = 5000
 [api]

@@ -1384,7 +1384,7 @@ function Settings() {
     geodns: !!s.geodns,
     rpz_enabled: !!s.rpz_enabled,
     rate_limit: !!s.rate_limit,
-    rate_limit_qps: Number(s.rate_limit_qps) || 200,
+    rate_limit_qps: Number(s.rate_limit_qps) || 2000,
     rate_limit_burst: Number(s.rate_limit_burst) || 400,
     rate_limit_block_duration: Number(s.rate_limit_block_duration) || 300,
     rate_limit_whitelist: Array.isArray(s.rate_limit_whitelist) ? [...s.rate_limit_whitelist] : [],
@@ -1470,7 +1470,7 @@ function Settings() {
         geodns: draft.geodns,
         rpz_enabled: draft.rpz_enabled,
         rate_limit: draft.rate_limit,
-        rate_limit_qps: Number(draft.rate_limit_qps) || 200,
+        rate_limit_qps: Number(draft.rate_limit_qps) || 2000,
         rate_limit_burst: Number(draft.rate_limit_burst) || 400,
         rate_limit_block_duration: Number(draft.rate_limit_block_duration) || 300,
         rate_limit_whitelist: draft.rate_limit_whitelist || [],
@@ -2125,6 +2125,7 @@ function Settings() {
 }
 
 function RPZPanel({ initial, onChange }) {
+  const defaultRedirectTarget = '139.255.196.196'
   const [policies, setPolicies] = useState(() => clonePolicies(initial?.policies))
   const [intervalSec, setIntervalSec] = useState(() => Number(initial?.update_interval) || 0)
   const [status, setStatus] = useState(initial)
@@ -2141,6 +2142,11 @@ function RPZPanel({ initial, onChange }) {
     setIntervalSec(Number(initial?.update_interval) || 0)
     setStatus(initial)
   }, [initial])
+
+  useEffect(() => {
+    if (action === 'redirect' && !target) setTarget(defaultRedirectTarget)
+    if (action === 'cname' && target === defaultRedirectTarget) setTarget('')
+  }, [action, target])
 
   useEffect(() => {
     if (!status?.loading) return undefined
@@ -2171,7 +2177,7 @@ function RPZPanel({ initial, onChange }) {
       return
     }
     if (action === 'redirect' && !t) {
-      setErr('Redirect needs a landing IP (e.g. 10.0.0.1)')
+      setErr(`Redirect needs a landing IP (e.g. ${defaultRedirectTarget})`)
       return
     }
     if (action === 'cname' && !t) {
@@ -2360,7 +2366,7 @@ function RPZPanel({ initial, onChange }) {
               className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
               value={target}
               onChange={(e) => setTarget(e.target.value)}
-              placeholder={action === 'redirect' ? '10.0.0.1' : 'block.corp.local'}
+              placeholder={action === 'redirect' ? defaultRedirectTarget : 'block.corp.local'}
             />
           </label>
         ) : null}

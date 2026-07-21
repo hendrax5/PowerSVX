@@ -133,6 +133,20 @@ For production Docker, prefer `configs/powersvx.docker.toml` plus a `.env` with 
 | 3000 | Grafana |
 | 5433 | Postgres |
 
+### Host networking (real client IPs / VPS)
+
+Published ports SNAT client IPs to the Docker bridge (`172.x`), which breaks ACL and rate-limit by source. On a dedicated DNS VPS use:
+
+```bash
+# DB must be reachable on the host loopback publish:
+#   configs/powersvx.docker.toml → host = "127.0.0.1", port = 5433
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --build
+```
+
+Do **not** overwrite a host-network deploy with the default bridge `docker-compose.yml` alone — that drops `network_mode: host` and PowerSVX will fail to reach Postgres at `127.0.0.1:5433`.
+
+Analytics UI (`/analytics`) embeds Grafana (`:3000`, board `powersvx-dns`). Prometheus scrapes via job `powersvx-host` → `host.docker.internal:9100`.
+
 Conflict with `systemd-resolved` on port 53:
 
 ```bash

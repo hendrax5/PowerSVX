@@ -27,7 +27,7 @@ negative_ttl = 60
 
 [resolver]
 mode = "forward"
-forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
+forwarders = ["103.88.88.99:53", "203.119.13.77:53"]
 dnssec_mode = "off"
 ecs_enabled = true
 ecs_prefix_v4 = 24
@@ -36,7 +36,7 @@ timeout_ms = 3000
 
 [rate_limit]
 enabled = true
-default_qps = 100
+default_qps = 2000
 default_burst = 200
 block_duration = 300
 whitelist = ["127.0.0.1/32", "::1/128"]
