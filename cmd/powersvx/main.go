@@ -168,13 +168,16 @@ func main() {
 		})
 	}
 	if len(policies) > 0 {
-		if ok, n, err := rpzEng.TryLoadDisk(policies); err != nil {
-			log.Warn("rpz disk load failed", "err", err)
-		} else if ok {
-			log.Info("rpz loaded from disk", "entries", n)
-		} else if rpzEng.TryBeginLoad() {
-			// Large HTTP feeds must not block API/DNS bind.
+		if rpzEng.TryBeginLoad() {
+			// Disk snapshots and large HTTP feeds must not block API/DNS bind.
 			go func() {
+				if ok, n, err := rpzEng.TryLoadDisk(policies); err != nil {
+					log.Warn("rpz disk load failed", "err", err)
+				} else if ok {
+					rpzEng.EndLoad(nil)
+					log.Info("rpz loaded from disk", "entries", n)
+					return
+				}
 				n, err := rpzEng.LoadPolicies(policies, 15*time.Minute)
 				rpzEng.EndLoad(err)
 				if err != nil {
