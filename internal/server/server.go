@@ -381,8 +381,15 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 
 	if entry, ok := s.cache.GetScoped(qname, qtype, ecsKey, viewName, geoTag); ok {
 		metrics.CacheHits.Inc()
-		wire := resolver.RewriteID(entry.Wire, req.Id)
-		_, _ = w.Write(wire)
+		cached := new(dns.Msg)
+		if err := cached.Unpack(entry.Wire); err != nil {
+			wire := resolver.RewriteID(entry.Wire, req.Id)
+			_, _ = w.Write(wire)
+		} else {
+			cached.Id = req.Id
+			resolver.PrepareClientResponse(req, cached)
+			_ = w.WriteMsg(cached)
+		}
 		metrics.QueriesTotal.WithLabelValues(proto, "cache").Inc()
 		metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
 		observe(dns.RcodeToString[entry.Rcode])
@@ -494,6 +501,7 @@ func (s *Server) storeAndWrite(w dns.ResponseWriter, req, resp *dns.Msg) {
 }
 
 func (s *Server) storeAndWriteScoped(w dns.ResponseWriter, req, resp *dns.Msg, ecsSubnet, viewName, geoTag string) {
+	resolver.PrepareClientResponse(req, resp)
 	wire, err := resolver.PackResponse(resp)
 	if err != nil {
 		_ = w.WriteMsg(resp)

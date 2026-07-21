@@ -201,7 +201,61 @@ func (r *Resolver) forward(ctx context.Context, req *dns.Msg, sub *ecs.Subnet) (
 }
 
 func setEDNS0(msg *dns.Msg, size uint16, do bool) {
+	// miekg's SetEdns0 always appends. Dig (BIND 9.18+) already sends OPT+COOKIE,
+	// so a second OPT makes upstream answer FORMERR / a malformed packet.
+	stripOPT(msg)
+	if size == 0 {
+		size = 1232
+	}
 	msg.SetEdns0(size, do)
+}
+
+func stripOPT(msg *dns.Msg) {
+	if msg == nil || len(msg.Extra) == 0 {
+		return
+	}
+	kept := make([]dns.RR, 0, len(msg.Extra))
+	for _, rr := range msg.Extra {
+		if rr == nil || rr.Header().Rrtype == dns.TypeOPT {
+			continue
+		}
+		kept = append(kept, rr)
+	}
+	msg.Extra = kept
+}
+
+// PrepareClientResponse strips upstream OPT and attaches client-facing EDNS
+// (UDP size, DO bit, echoed COOKIE) so dig does not report cookie mismatch
+// or a second mangled OPT record.
+func PrepareClientResponse(req, resp *dns.Msg) {
+	if resp == nil {
+		return
+	}
+	stripOPT(resp)
+	if req == nil {
+		return
+	}
+	opt := req.IsEdns0()
+	if opt == nil {
+		return
+	}
+	size := opt.UDPSize()
+	if size == 0 {
+		size = 1232
+	}
+	resp.SetEdns0(size, opt.Do())
+	ropt := resp.IsEdns0()
+	if ropt == nil {
+		return
+	}
+	for _, o := range opt.Option {
+		if c, ok := o.(*dns.EDNS0_COOKIE); ok {
+			ropt.Option = append(ropt.Option, &dns.EDNS0_COOKIE{
+				Code:   dns.EDNS0COOKIE,
+				Cookie: c.Cookie,
+			})
+		}
+	}
 }
 
 func MinTTL(msg *dns.Msg) uint32 {
