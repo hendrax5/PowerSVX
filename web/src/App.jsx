@@ -1,6 +1,16 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
+  ChartLine,
+  ClipboardText,
+  Gauge,
+  GearSix,
+  Globe,
+  MagnifyingGlass,
+  Scroll,
+  Stack,
+} from '@phosphor-icons/react'
+import {
   Area,
   AreaChart,
   Bar,
@@ -14,35 +24,55 @@ import {
 import { api, setToken } from './api'
 
 const AuthCtx = createContext({ me: null, refresh: async () => {}, canWrite: true, isAdmin: true })
+const ICON_WEIGHT = 'regular'
+const chartTip = {
+  background: 'var(--bg-elevated)',
+  border: '1px solid var(--border)',
+  borderRadius: 6,
+  color: 'var(--text)',
+  fontSize: 12,
+}
 
 function useAuth() {
   return useContext(AuthCtx)
+}
+
+function PageHeader({ eyebrow, title, sub, actions, className = '' }) {
+  return (
+    <header className={`page-head reveal ${className}`.trim()}>
+      <div>
+        {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
+        <h1 className="page-title">{title}</h1>
+        {sub ? <p className="page-sub">{sub}</p> : null}
+      </div>
+      {actions ? <div className="page-head-actions">{actions}</div> : null}
+    </header>
+  )
 }
 
 function LoadingBlock({ label = 'Loading' }) {
   return (
     <div className="space-y-4 max-w-[var(--content-max)]" role="status" aria-live="polite" aria-busy="true">
       <span className="sr-only">{label}</span>
-      <div className="h-9 w-52 rounded-[var(--radius)] bg-[var(--bg-panel)] animate-pulse" />
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="h-10 w-56 skeleton" />
+      <div className="metric-rail">
         {[0, 1, 2, 3].map((i) => (
-          <div
-            key={i}
-            className="h-[5.25rem] rounded-[var(--radius-lg)] bg-[var(--bg-panel)] animate-pulse"
-            style={{ animationDelay: `${i * 60}ms` }}
-          />
+          <div key={i} className="metric-cell">
+            <div className="h-3 w-16 skeleton" style={{ animationDelay: `${i * 60}ms` }} />
+            <div className="h-7 w-24 skeleton mt-3" style={{ animationDelay: `${i * 60 + 40}ms` }} />
+          </div>
         ))}
       </div>
-      <div className="h-44 rounded-[var(--radius-lg)] bg-[var(--bg-panel)] animate-pulse" />
+      <div className="h-52 skeleton" />
     </div>
   )
 }
 
 function EmptyState({ title, hint, action }) {
   return (
-    <div className="panel px-5 py-10 text-left sm:text-center" role="status">
+    <div className="px-1 py-8 text-left" role="status">
       <p className="text-base font-semibold tracking-tight">{title}</p>
-      {hint ? <p className="text-sm text-[var(--muted)] mt-2 max-w-md sm:mx-auto leading-relaxed">{hint}</p> : null}
+      {hint ? <p className="text-sm text-[var(--muted)] mt-2 max-w-[52ch] leading-relaxed">{hint}</p> : null}
       {action ? <div className="mt-5">{action}</div> : null}
     </div>
   )
@@ -56,23 +86,23 @@ function Shell({ children }) {
     {
       label: 'Operate',
       links: [
-        ['/', 'Dashboard'],
-        ['/domains', 'Domains'],
-        ['/zones', 'Zones'],
-        ['/lookup', 'Lookup'],
+        ['/', 'Dashboard', Gauge],
+        ['/domains', 'Domains', Globe],
+        ['/zones', 'Zones', Stack],
+        ['/lookup', 'Lookup', MagnifyingGlass],
       ],
     },
     {
       label: 'Observe',
       links: [
-        ['/analytics', 'Analytics'],
-        ['/logs', 'Query logs'],
-        ['/audit', 'Audit'],
+        ['/analytics', 'Analytics', ChartLine],
+        ['/logs', 'Query logs', Scroll],
+        ['/audit', 'Audit', ClipboardText],
       ],
     },
     {
       label: 'Configure',
-      links: [['/settings', 'Settings']],
+      links: [['/settings', 'Settings', GearSix]],
     },
   ]
   const hereLabel =
@@ -90,56 +120,45 @@ function Shell({ children }) {
     nav('/login')
   }
   return (
-    <div className="min-h-[100dvh] flex flex-col md:flex-row">
+    <div className="shell">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:z-[60] focus:top-3 focus:left-3 focus:bg-[var(--accent)] focus:text-[#15120e] focus:px-3 focus:py-2.5 focus:rounded-[var(--radius)]"
+        className="sr-only focus:not-sr-only focus:absolute focus:z-[60] focus:top-3 focus:left-3 focus:bg-[var(--accent)] focus:text-[#17140f] focus:px-3 focus:py-2.5 focus:rounded-[var(--radius)]"
       >
         Skip to content
       </a>
-      <aside
-        className="md:w-60 shrink-0 border-b md:border-b-0 md:border-r border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-elevated)_92%,transparent)] px-4 py-5 flex md:flex-col gap-4 md:gap-7 sticky top-0 z-[30] md:static backdrop-blur-md"
-        aria-label="Sidebar"
-      >
-        <div className="reveal">
-          <div className="brand-mark text-[clamp(1.45rem,2.2vw,1.75rem)]" aria-label="PowerSVX">
+      <aside className="shell-aside" aria-label="Sidebar">
+        <div className="shell-brand reveal">
+          <div className="brand-mark text-[clamp(1.4rem,2vw,1.7rem)]" aria-label="PowerSVX">
             <span>Power</span>
             <span className="svx">SVX</span>
           </div>
-          <div className="text-[12px] text-[var(--muted)] mt-2.5 flex items-center gap-2">
-            <span className="mono text-[11px] tracking-wide">dns control</span>
-            <span className="text-[var(--border-strong)]" aria-hidden>
-              /
-            </span>
-            <span className="text-[var(--text)]" aria-current="page">
-              {hereLabel}
-            </span>
+          <div className="crumb-live" aria-current="page">
+            <span className="pulse-dot on" aria-hidden />
+            <span>dns</span>
+            <span aria-hidden>/</span>
+            <strong>{hereLabel}</strong>
           </div>
         </div>
-        <nav className="flex md:flex-col gap-3 flex-1 overflow-x-auto" aria-label="Primary">
+        <nav className="shell-nav" aria-label="Primary">
           {navGroups.map((group) => (
-            <div key={group.label} className="flex md:flex-col gap-1 shrink-0">
-              <div className="hidden md:block label-quiet px-3 pt-1 pb-1">{group.label}</div>
-              {group.links.map(([to, label]) => (
+            <div key={group.label} className="shell-nav-group">
+              <div className="shell-nav-label">{group.label}</div>
+              {group.links.map(([to, label, Icon]) => (
                 <NavLink
                   key={to}
                   to={to}
                   end={to === '/'}
-                  className={({ isActive }) =>
-                    `nav-link px-3 py-2.5 min-h-[44px] flex items-center text-sm cursor-pointer whitespace-nowrap ${
-                      isActive
-                        ? 'is-active text-[var(--text)] pl-[14px]'
-                        : 'text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--bg-panel)]'
-                    }`
-                  }
+                  className={({ isActive }) => `nav-link ${isActive ? 'is-active' : ''}`}
                 >
+                  <Icon className="nav-ico" size={18} weight={ICON_WEIGHT} aria-hidden />
                   {label}
                 </NavLink>
               ))}
             </div>
           ))}
         </nav>
-        <div className="space-y-2 md:mt-auto w-full max-w-xs text-xs">
+        <div className="shell-user space-y-2 text-xs">
           {me?.auth_required ? (
             <>
               <div className="text-[var(--muted)] px-1">
@@ -147,7 +166,7 @@ function Shell({ children }) {
                 <span className="mx-1.5 text-[var(--border-strong)]">·</span>
                 <span className="text-[var(--accent)]">{me.role}</span>
               </div>
-              <button type="button" onClick={logout} className="btn btn-secondary w-full min-h-[44px]">
+              <button type="button" onClick={logout} className="btn btn-secondary w-full">
                 Log out
               </button>
             </>
@@ -156,8 +175,8 @@ function Shell({ children }) {
           )}
         </div>
       </aside>
-      <main id="main" tabIndex={-1} className="flex-1 p-5 md:p-8 lg:p-10 overflow-auto outline-none">
-        <div className="mx-auto w-full max-w-[var(--content-max)]">{children}</div>
+      <main id="main" tabIndex={-1} className="shell-main">
+        <div className="shell-main-inner">{children}</div>
       </main>
     </div>
   )
@@ -212,45 +231,55 @@ function LoginPage() {
 
   return (
     <div className="login-shell">
-      <form onSubmit={submit} className="login-card space-y-5 reveal">
+      <div className="login-brand-pane">
         <div>
-          <div className="brand-mark text-3xl">
+          <div className="brand-mark text-4xl md:text-5xl tracking-tighter">
             <span>Power</span>
             <span className="svx">SVX</span>
           </div>
-          <p className="text-sm text-[var(--muted)] mt-3 leading-relaxed">
-            Sign in with local admin. Default user{' '}
-            <span className="mono text-[var(--text)]">admin</span> — password from{' '}
-            <span className="mono text-[var(--text)]">ADMIN_PASSWORD</span> in{' '}
-            <span className="mono">.env</span> (not API_TOKEN).
+          <p className="text-sm text-[var(--muted)] mt-5 max-w-[36ch] leading-relaxed">
+            DNS control plane for resolve, filter, zones, and live ops.
           </p>
         </div>
-        {err ? <ErrorBox msg={err} detail={errDetail !== err ? errDetail : undefined} /> : null}
-        <label className="label-quiet flex flex-col gap-1.5">
-          Username
-          <input
-            className="input"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            autoComplete="username"
-            required
-          />
-        </label>
-        <label className="label-quiet flex flex-col gap-1.5">
-          Password
-          <input
-            type="password"
-            className="input"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-            required
-          />
-        </label>
-        <button type="submit" disabled={busy} className="btn btn-primary w-full min-h-[44px]">
-          {busy ? 'Signing in…' : 'Sign in'}
-        </button>
-      </form>
+        <p className="text-xs text-[var(--muted)] mono">recursive · rpz · axfr · observe</p>
+      </div>
+      <div className="login-form-pane">
+        <form onSubmit={submit} className="login-card space-y-5 reveal">
+          <div>
+            <p className="eyebrow">Sign in</p>
+            <h1 className="text-xl font-semibold tracking-tight">Local admin</h1>
+            <p className="text-sm text-[var(--muted)] mt-2 leading-relaxed">
+              Default user <span className="mono text-[var(--text)]">admin</span> — password from{' '}
+              <span className="mono text-[var(--text)]">ADMIN_PASSWORD</span>.
+            </p>
+          </div>
+          {err ? <ErrorBox msg={err} detail={errDetail !== err ? errDetail : undefined} /> : null}
+          <label className="field label-quiet">
+            Username
+            <input
+              className="input"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="username"
+              required
+            />
+          </label>
+          <label className="field label-quiet">
+            Password
+            <input
+              type="password"
+              className="input"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              required
+            />
+          </label>
+          <button type="submit" disabled={busy} className="btn btn-primary w-full">
+            {busy ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
+      </div>
     </div>
   )
 }
@@ -268,7 +297,7 @@ function Stat({ label, value, sub }) {
   return (
     <div className="stat-card px-3.5 py-3.5">
       <div className="label-quiet">{label}</div>
-      <div className="text-[clamp(1.4rem,2.2vw,1.8rem)] font-semibold mt-1.5 mono leading-none tabular-nums tracking-tight">
+      <div className="text-[clamp(1.3rem,2vw,1.65rem)] font-semibold mt-1.5 mono leading-none tabular-nums tracking-tight">
         {value}
       </div>
       {sub ? <div className="text-[11px] text-[var(--muted)] mt-2 leading-snug">{sub}</div> : null}
@@ -276,16 +305,20 @@ function Stat({ label, value, sub }) {
   )
 }
 
+function Metric({ label, value, sub }) {
+  return (
+    <div className="metric-cell">
+      <div className="metric-label">{label}</div>
+      <div className="metric-value">{value}</div>
+      {sub ? <div className="metric-sub">{sub}</div> : null}
+    </div>
+  )
+}
+
 function Badge({ on, label }) {
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 text-[11px] font-medium tracking-wide px-2 py-1 mono rounded-[var(--radius-sm)] ${
-        on
-          ? 'text-[var(--accent)] bg-[var(--accent-soft)] ring-1 ring-[color-mix(in_srgb,var(--accent)_35%,transparent)]'
-          : 'text-[var(--muted)] bg-[var(--bg)] ring-1 ring-[var(--border)]'
-      }`}
-    >
-      <span className={`h-1.5 w-1.5 rounded-[1px] ${on ? 'bg-[var(--accent)]' : 'bg-[var(--muted)]'}`} />
+    <span className={`badge-chip ${on ? 'on' : 'off'}`}>
+      <span className="badge-dot" aria-hidden />
       {label}
     </span>
   )
@@ -344,196 +377,177 @@ function Dashboard() {
   ]
 
   return (
-    <div className="space-y-6">
-      <header className="reveal">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h1 className="page-title">Dashboard</h1>
-            <p className="page-sub">
-              v{s.version} · uptime {formatUptime(s.uptime_seconds)} · mode {s.mode} · QPS{' '}
-              {Number(mon.qps_now || 0).toFixed(0)}
-            </p>
-          </div>
-          <a
-            href="/analytics"
-            className="text-sm text-[var(--accent)] hover:underline underline-offset-4 shrink-0 mt-1"
-          >
-            Longer trends in Analytics →
+    <div className="space-y-7">
+      <PageHeader
+        eyebrow="Operate"
+        title="Dashboard"
+        sub={`v${s.version} · uptime ${formatUptime(s.uptime_seconds)} · mode ${s.mode} · QPS ${Number(mon.qps_now || 0).toFixed(0)}`}
+        actions={
+          <a href="/analytics" className="btn btn-secondary">
+            Longer trends
           </a>
-        </div>
-        <div className="flex flex-wrap gap-2 mt-4">
-          <Badge on={s.dot_enabled} label="DoT" />
-          <Badge on={s.doh_enabled} label="DoH" />
-          <Badge on={!!s.doh3_enabled} label="DoH3" />
-          <Badge on={s.doq_enabled} label="DoQ" />
-          <Badge on={s.rpz_enabled} label="RPZ" />
-          <Badge on={s.ecs_enabled} label="ECS" />
-          <Badge on={s.geodns_enabled} label="GeoDNS" />
-          <Badge on={s.split_horizon_enabled} label="Split Horizon" />
-        </div>
-      </header>
+        }
+      />
 
-      <section className="panel p-3 reveal">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-          <h2 className="text-sm text-[var(--muted)]">Health</h2>
-          <span
-            className={`text-xs mono px-2 py-0.5 border ${
-              health.status === 'healthy'
-                ? 'border-[var(--ok)]/40 text-[var(--ok)]'
-                : 'border-[var(--warn)]/40 text-[var(--warn)]'
-            }`}
-          >
+      <div className="flex flex-wrap gap-2 reveal reveal-delay-1">
+        <Badge on={s.dot_enabled} label="DoT" />
+        <Badge on={s.doh_enabled} label="DoH" />
+        <Badge on={!!s.doh3_enabled} label="DoH3" />
+        <Badge on={s.doq_enabled} label="DoQ" />
+        <Badge on={s.rpz_enabled} label="RPZ" />
+        <Badge on={s.ecs_enabled} label="ECS" />
+        <Badge on={s.geodns_enabled} label="GeoDNS" />
+        <Badge on={s.split_horizon_enabled} label="Split Horizon" />
+      </div>
+
+      <section className="panel overflow-hidden reveal reveal-delay-1">
+        <div className="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2">
+          <h2 className="section-title mb-0">Health</h2>
+          <span className={`status-pill ${health.status === 'healthy' ? 'ok' : 'warn'}`}>
+            <span className={`pulse-dot ${health.status === 'healthy' ? 'on' : ''}`} aria-hidden />
             {health.status || '—'}
           </span>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 lg:grid-cols-4 divide-x divide-y lg:divide-y-0 divide-[var(--border)]">
           {healthItems.map(([label, c]) => {
             const st = c?.status || '—'
             const ok = st === 'pass' || st === 'idle' || st === 'disabled'
             return (
-              <div key={label} className="border border-[var(--border)] px-2.5 py-2 text-sm">
+              <div key={label} className="px-4 py-3.5">
                 <div className="text-xs text-[var(--muted)]">{label}</div>
-                <div className={`mono text-sm ${ok ? '' : 'text-[var(--warn)]'}`}>{st}</div>
+                <div className={`mono text-sm mt-1 ${ok ? '' : 'text-[var(--warn)]'}`}>{st}</div>
                 {c?.latency_ms != null ? (
-                  <div className="text-xs text-[var(--muted)]">{c.latency_ms} ms</div>
+                  <div className="text-xs text-[var(--muted)] mt-1">{c.latency_ms} ms</div>
                 ) : null}
-                {c?.addr ? <div className="text-xs text-[var(--muted)] truncate mono">{c.addr}</div> : null}
+                {c?.addr ? <div className="text-xs text-[var(--muted)] truncate mono mt-0.5">{c.addr}</div> : null}
               </div>
             )
           })}
         </div>
       </section>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 reveal reveal-delay-1">
-        <Stat label="QPS" value={Number(mon.qps_now || 0).toFixed(0)} sub={`total ${mon.queries_total ?? s.queries_total}`} />
-        <Stat
+      <div className="metric-rail reveal reveal-delay-2">
+        <Metric label="QPS" value={Number(mon.qps_now || 0).toFixed(0)} sub={`total ${mon.queries_total ?? s.queries_total}`} />
+        <Metric
           label="Blocked"
           value={`${Number(mon.blocked_percent || 0).toFixed(1)}%`}
           sub={`${mon.blocked_total ?? 0} blocked · RPZ ${s.rpz_entries ?? 0}`}
         />
-        <Stat
+        <Metric
           label="Latency p50 / p95"
           value={`${Number(lat.p50_ms || 0).toFixed(1)} / ${Number(lat.p95_ms || 0).toFixed(1)}`}
           sub={`p99 ${Number(lat.p99_ms || 0).toFixed(1)} ms`}
         />
-        <Stat
+        <Metric
           label="CPU / RAM"
           value={`${Number(res.cpu_percent || 0).toFixed(1)}%`}
-          sub={`of host · RSS ${Number(res.rss_mb || 0).toFixed(0)} MB · ${res.num_cpu ?? '—'} cores · ${res.goroutines ?? '—'} g`}
+          sub={`RSS ${Number(res.rss_mb || 0).toFixed(0)} MB · ${res.num_cpu ?? '—'} cores · ${res.goroutines ?? '—'} g`}
         />
       </div>
 
-      <div className="grid md:grid-cols-2 gap-4 reveal reveal-delay-2">
-        <section className="panel p-4 h-64">
-          <h2 className="text-sm text-[var(--muted)] mb-3">QPS (15 min)</h2>
+      <div className="bento bento-hero reveal reveal-delay-2">
+        <section className="panel chart-panel">
+          <h2>QPS (15 min)</h2>
           {qpsChart.length ? (
-            <ResponsiveContainer width="100%" height="85%">
+            <ResponsiveContainer width="100%" height={220}>
               <AreaChart data={qpsChart}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#322f2a" />
-                <XAxis dataKey="t" stroke="#a39e93" fontSize={10} minTickGap={28} />
-                <YAxis stroke="#a39e93" fontSize={12} allowDecimals={false} />
-                <Tooltip
-                  contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
-                />
-                <Area type="monotone" dataKey="qps" stroke="var(--accent)" fill="var(--accent)" fillOpacity={0.2} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis dataKey="t" stroke="var(--muted)" fontSize={10} minTickGap={28} />
+                <YAxis stroke="var(--muted)" fontSize={12} allowDecimals={false} />
+                <Tooltip contentStyle={chartTip} />
+                <Area type="monotone" dataKey="qps" stroke="var(--accent)" fill="var(--accent)" fillOpacity={0.18} />
               </AreaChart>
             </ResponsiveContainer>
           ) : (
-            <p className="text-sm text-[var(--muted)] pt-8 text-center">Waiting for traffic…</p>
+            <EmptyState title="Waiting for traffic" hint="QPS series fills as queries arrive." />
           )}
         </section>
-        <section className="panel p-4 h-64">
-          <h2 className="text-sm text-[var(--muted)] mb-3">Resolver path</h2>
+        <section className="panel chart-panel">
+          <h2>Resolver path</h2>
           {pathChart.length ? (
-            <ResponsiveContainer width="100%" height="85%">
+            <ResponsiveContainer width="100%" height={220}>
               <BarChart data={pathChart}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#322f2a" />
-                <XAxis dataKey="name" stroke="#a39e93" fontSize={10} interval={0} angle={-20} textAnchor="end" height={50} />
-                <YAxis stroke="#a39e93" fontSize={12} />
-                <Tooltip
-                  contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
-                />
-                <Bar dataKey="value" fill="var(--accent)" radius={[2, 2, 0, 0]} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis dataKey="name" stroke="var(--muted)" fontSize={10} interval={0} angle={-20} textAnchor="end" height={50} />
+                <YAxis stroke="var(--muted)" fontSize={12} />
+                <Tooltip contentStyle={chartTip} />
+                <Bar dataKey="value" fill="var(--accent)" radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           ) : (
-            <p className="text-sm text-[var(--muted)] pt-8 text-center">No path samples yet</p>
+            <EmptyState title="No path samples" hint="Appears after the resolver answers queries." />
           )}
         </section>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-4 reveal reveal-delay-2">
-        <section className="panel p-4 h-64">
-          <h2 className="text-sm text-[var(--muted)] mb-3">Error kinds</h2>
+      <div className="bento bento-split reveal reveal-delay-3">
+        <section className="panel chart-panel">
+          <h2>Error kinds</h2>
           {errChart.length ? (
-            <ResponsiveContainer width="100%" height="85%">
+            <ResponsiveContainer width="100%" height={200}>
               <BarChart data={errChart}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#322f2a" />
-                <XAxis dataKey="name" stroke="#a39e93" fontSize={11} />
-                <YAxis stroke="#a39e93" fontSize={12} />
-                <Tooltip
-                  contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
-                />
-                <Bar dataKey="value" fill="var(--warn)" radius={[2, 2, 0, 0]} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis dataKey="name" stroke="var(--muted)" fontSize={11} />
+                <YAxis stroke="var(--muted)" fontSize={12} />
+                <Tooltip contentStyle={chartTip} />
+                <Bar dataKey="value" fill="var(--warn)" radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           ) : (
-            <p className="text-sm text-[var(--muted)] pt-8 text-center">No errors recorded</p>
+            <EmptyState title="No errors recorded" hint="Error buckets stay empty while the resolver is healthy." />
           )}
         </section>
-        <section className="panel p-4 h-64">
-          <h2 className="text-sm text-[var(--muted)] mb-3">RCODE distribution</h2>
+        <section className="panel chart-panel">
+          <h2>RCODE distribution</h2>
           {rcodeChart.length ? (
-            <ResponsiveContainer width="100%" height="85%">
+            <ResponsiveContainer width="100%" height={200}>
               <BarChart data={rcodeChart}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#322f2a" />
-                <XAxis dataKey="name" stroke="#a39e93" fontSize={11} />
-                <YAxis stroke="#a39e93" fontSize={12} />
-                <Tooltip
-                  contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
-                />
-                <Bar dataKey="value" fill="var(--muted)" radius={[2, 2, 0, 0]} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis dataKey="name" stroke="var(--muted)" fontSize={11} />
+                <YAxis stroke="var(--muted)" fontSize={12} />
+                <Tooltip contentStyle={chartTip} />
+                <Bar dataKey="value" fill="var(--muted)" radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           ) : (
-            <p className="text-sm text-[var(--muted)] pt-8 text-center">No query aggregates yet</p>
+            <EmptyState title="No aggregates yet" hint="RCODE bars appear after query logging starts." />
           )}
         </section>
       </div>
 
-      <div className="grid md:grid-cols-3 gap-4 reveal reveal-delay-3">
+      <div className="bento bento-lists reveal reveal-delay-3">
         <section className="panel p-4">
-          <div className="flex items-center justify-between gap-2 mb-3">
-            <h2 className="text-sm text-[var(--muted)]">Top blocked</h2>
-            <a href="/domains" className="text-xs text-[var(--accent)] underline">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h2 className="section-title mb-0">Top blocked</h2>
+            <a href="/domains" className="text-xs text-[var(--accent)] hover:underline underline-offset-4">
               Domains
             </a>
           </div>
           {(mon.top_blocked || []).length ? (
-            <ul className="space-y-1 text-sm mono max-h-56 overflow-auto">
-              {mon.top_blocked.map((n) => (
-                <li key={n.key} className="flex justify-between gap-3 border-b border-[var(--border)]/50 py-1.5">
+            <ul>
+              {mon.top_blocked.map((n, i) => (
+                <li key={n.key} className="data-row text-sm mono" style={{ '--index': i }}>
                   <span className="truncate">{n.key}</span>
                   <span className="text-[var(--warn)] shrink-0">{n.count}</span>
                 </li>
               ))}
             </ul>
           ) : (
-            <EmptyState title="No blocks yet" hint="Appears when RPZ/plugin blocks a query." />
+            <EmptyState title="No blocks yet" hint="Appears when RPZ or a plugin blocks a query." />
           )}
         </section>
 
         <section className="panel p-4">
-          <div className="flex items-center justify-between gap-2 mb-3">
-            <h2 className="text-sm text-[var(--muted)]">Top clients</h2>
-            <a href="/settings" className="text-xs text-[var(--accent)] underline">
-              ACL settings
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h2 className="section-title mb-0">Top clients</h2>
+            <a href="/settings" className="text-xs text-[var(--accent)] hover:underline underline-offset-4">
+              ACL
             </a>
           </div>
           {(mon.top_clients || []).length ? (
-            <ul className="space-y-1 text-sm mono max-h-56 overflow-auto">
-              {mon.top_clients.map((n) => (
-                <li key={n.key} className="flex justify-between gap-3 border-b border-[var(--border)]/50 py-1.5">
+            <ul>
+              {mon.top_clients.map((n, i) => (
+                <li key={n.key} className="data-row text-sm mono" style={{ '--index': i }}>
                   <a className="truncate text-[var(--accent)]" href={`/logs?client_ip=${encodeURIComponent(n.key)}`}>
                     {n.key}
                   </a>
@@ -542,14 +556,14 @@ function Dashboard() {
               ))}
             </ul>
           ) : (
-            <EmptyState title="No client traffic yet" hint="Appears after allowed queries arrive." />
+            <EmptyState title="No client traffic" hint="Appears after allowed queries arrive." />
           )}
           {(mon.top_subnets || []).length ? (
-            <div className="mt-4">
-              <h3 className="text-xs text-[var(--muted)] mb-2">Top subnets</h3>
-              <ul className="space-y-1 text-sm mono max-h-32 overflow-auto">
-                {mon.top_subnets.map((n) => (
-                  <li key={n.key} className="flex justify-between gap-3 py-1">
+            <div className="mt-4 pt-3 border-t border-[var(--border)]">
+              <h3 className="text-xs text-[var(--muted)] mb-1">Top subnets</h3>
+              <ul>
+                {mon.top_subnets.map((n, i) => (
+                  <li key={n.key} className="data-row text-sm mono" style={{ '--index': i }}>
                     <span className="truncate">{n.key}</span>
                     <span className="shrink-0 text-[var(--accent)]">{n.count}</span>
                   </li>
@@ -558,21 +572,24 @@ function Dashboard() {
             </div>
           ) : null}
         </section>
+      </div>
 
+      <div className="bento bento-split reveal reveal-delay-3">
         <section className="panel p-4">
-          <h2 className="text-sm text-[var(--muted)] mb-3">Recent queries</h2>
+          <h2 className="section-title">Recent queries</h2>
           {(mon.recent || []).length ? (
-            <ul className="space-y-1 text-sm mono max-h-72 overflow-auto">
+            <ul className="max-h-80 overflow-auto">
               {mon.recent.slice(0, 25).map((q, i) => (
                 <li
                   key={`${q.time}-${q.qname}-${i}`}
-                  className="border-b border-[var(--border)]/50 py-1.5 flex flex-col gap-0.5"
+                  className="data-row !items-start flex-col !justify-start gap-0.5"
+                  style={{ '--index': i }}
                 >
-                  <div className="flex justify-between gap-2">
+                  <div className="flex justify-between gap-2 w-full text-sm mono">
                     <span className={`truncate ${q.blocked ? 'text-[var(--warn)]' : ''}`}>{q.qname || '—'}</span>
                     <span className="text-xs text-[var(--muted)] shrink-0">{Number(q.ms || 0).toFixed(0)}ms</span>
                   </div>
-                  <div className="text-xs text-[var(--muted)] flex justify-between gap-2">
+                  <div className="text-xs text-[var(--muted)] flex justify-between gap-2 w-full mono">
                     <span className="truncate">{q.client_ip || '—'}</span>
                     <span>
                       {q.blocked ? 'blocked' : q.path} · {q.rcode}
@@ -585,71 +602,71 @@ function Dashboard() {
             <EmptyState title="No recent queries" hint="Live ring fills as DNS traffic arrives." />
           )}
         </section>
-      </div>
 
-      <div className="grid md:grid-cols-2 gap-4 reveal reveal-delay-3">
-        <section className="panel p-4">
-          <h2 className="text-sm text-[var(--muted)] mb-1">ACL</h2>
-          {mon.acl_open_resolver ? (
-            <p className="text-xs text-[var(--warn)] mb-3 border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-2 py-1.5">
-              Open resolver: allow_query is empty — any client may query. Restrict in Settings.
+        <div className="space-y-4">
+          <section className="panel p-4">
+            <h2 className="section-title mb-1">ACL</h2>
+            {mon.acl_open_resolver ? (
+              <p className="text-xs text-[var(--warn)] mb-3 border border-[var(--warn)]/40 bg-[color-mix(in_srgb,var(--warn)_10%,transparent)] px-2.5 py-2 rounded-[var(--radius)]">
+                Open resolver: allow_query is empty — any client may query. Restrict in Settings.
+              </p>
+            ) : (
+              <p className="text-xs text-[var(--muted)] mb-3">Query ACL is restricted.</p>
+            )}
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <Stat label="Allowed" value={mon.acl_allow ?? 0} />
+              <Stat label="Denied" value={mon.acl_deny ?? 0} />
+            </div>
+            <a href="/settings" className="text-xs text-[var(--accent)] hover:underline underline-offset-4">
+              Edit allow / deny lists
+            </a>
+          </section>
+
+          <section className="panel p-4">
+            <h2 className="section-title mb-1">Rate limit</h2>
+            <p className="text-xs text-[var(--muted)] mb-3">
+              Lifetime limited {mon.rate_limited_total ?? s.rate_limited ?? 0}
+              {s.ratelimit_enabled ? '' : ' · limiter off'}
             </p>
-          ) : (
-            <p className="text-xs text-[var(--muted)] mb-3">Query ACL is restricted.</p>
-          )}
-          <div className="grid grid-cols-2 gap-2 mb-3">
-            <Stat label="Allowed" value={mon.acl_allow ?? 0} />
-            <Stat label="Denied" value={mon.acl_deny ?? 0} />
-          </div>
-          <a href="/settings" className="text-xs text-[var(--accent)] underline">
-            Edit allow / deny lists
-          </a>
-        </section>
-
-        <section className="panel p-4">
-          <h2 className="text-sm text-[var(--muted)] mb-1">Rate limit</h2>
-          <p className="text-xs text-[var(--muted)] mb-3">
-            Lifetime limited {mon.rate_limited_total ?? s.rate_limited ?? 0}
-            {s.ratelimit_enabled ? '' : ' · limiter off'}
-          </p>
-          {(mon.rate_limit_active || []).length ? (
-            <div className="mb-3">
-              <h3 className="text-xs text-[var(--muted)] mb-1">Currently blocked</h3>
-              <ul className="space-y-1 text-sm mono max-h-24 overflow-auto">
-                {mon.rate_limit_active.map((n) => (
-                  <li key={n.key} className="flex justify-between gap-2">
-                    <span className="truncate">{n.key}</span>
-                    <span className="text-[var(--warn)] shrink-0">{n.count}s</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : (
-            <p className="text-xs text-[var(--muted)] mb-3">No active blocks.</p>
-          )}
-          {(mon.rate_limit_top || []).length ? (
-            <div>
-              <h3 className="text-xs text-[var(--muted)] mb-1">Top offenders</h3>
-              <ul className="space-y-1 text-sm mono max-h-28 overflow-auto">
-                {mon.rate_limit_top.map((n) => (
-                  <li key={n.key} className="flex justify-between gap-2">
-                    <span className="truncate">{n.key}</span>
-                    <span className="shrink-0">{n.count}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-        </section>
+            {(mon.rate_limit_active || []).length ? (
+              <div className="mb-3">
+                <h3 className="text-xs text-[var(--muted)] mb-1">Currently blocked</h3>
+                <ul>
+                  {mon.rate_limit_active.map((n, i) => (
+                    <li key={n.key} className="data-row text-sm mono" style={{ '--index': i }}>
+                      <span className="truncate">{n.key}</span>
+                      <span className="text-[var(--warn)] shrink-0">{n.count}s</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <p className="text-xs text-[var(--muted)] mb-3">No active blocks.</p>
+            )}
+            {(mon.rate_limit_top || []).length ? (
+              <div>
+                <h3 className="text-xs text-[var(--muted)] mb-1">Top offenders</h3>
+                <ul>
+                  {mon.rate_limit_top.map((n, i) => (
+                    <li key={n.key} className="data-row text-sm mono" style={{ '--index': i }}>
+                      <span className="truncate">{n.key}</span>
+                      <span className="shrink-0">{n.count}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </section>
+        </div>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-4 reveal reveal-delay-3">
+      <div className="bento bento-split reveal reveal-delay-4">
         <section className="panel p-4">
-          <h2 className="text-sm text-[var(--muted)] mb-3">Top queried names</h2>
+          <h2 className="section-title">Top queried names</h2>
           {names.length ? (
-            <ul className="space-y-1 text-sm mono max-h-56 overflow-auto">
-              {names.map((n) => (
-                <li key={n.name} className="flex justify-between gap-3 border-b border-[var(--border)]/50 py-1.5">
+            <ul className="max-h-56 overflow-auto">
+              {names.map((n, i) => (
+                <li key={n.name} className="data-row text-sm mono" style={{ '--index': i }}>
                   <span className="truncate">{n.name}</span>
                   <span className="text-[var(--accent)] shrink-0">{n.count}</span>
                 </li>
@@ -660,17 +677,16 @@ function Dashboard() {
           )}
         </section>
         <section className="panel p-4">
-          <h2 className="text-sm text-[var(--muted)] mb-1">Anomaly alerts</h2>
+          <h2 className="section-title mb-1">Anomaly alerts</h2>
           <p className="text-xs text-[var(--muted)] mb-3">
-            EWMA spike detector · baseline QPS {anomaly.qps_baseline ?? '—'} · errors{' '}
-            {anomaly.error_baseline ?? '—'}
+            EWMA spike detector · baseline QPS {anomaly.qps_baseline ?? '—'} · errors {anomaly.error_baseline ?? '—'}
           </p>
           {anomalyAlerts.length ? (
             <ul className="space-y-2 text-sm max-h-56 overflow-auto">
               {anomalyAlerts.map((a, i) => (
                 <li
                   key={`${a.time}-${a.kind}-${i}`}
-                  className="border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-2.5 py-1.5"
+                  className="border border-[var(--warn)]/40 bg-[color-mix(in_srgb,var(--warn)_10%,transparent)] px-2.5 py-2 rounded-[var(--radius)]"
                 >
                   <div className="text-xs text-[var(--muted)] mono">{a.kind}</div>
                   <div>{a.message}</div>
@@ -686,51 +702,46 @@ function Dashboard() {
         </section>
       </div>
 
-      <section className="panel p-4 reveal reveal-delay-3">
-        <h2 className="text-sm text-[var(--muted)] mb-3">Traffic snapshot</h2>
-        <div className="h-48">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={trafficChart}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#322f2a" />
-              <XAxis dataKey="name" stroke="#a39e93" fontSize={12} />
-              <YAxis stroke="#a39e93" fontSize={12} />
-              <Tooltip
-                contentStyle={{ background: '#1a1f28', border: '1px solid #2c3340', borderRadius: 2 }}
-              />
-              <Bar dataKey="value" fill="var(--accent)" radius={[2, 2, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
+      <section className="panel chart-panel reveal reveal-delay-4">
+        <h2>Traffic snapshot</h2>
+        <ResponsiveContainer width="100%" height={180}>
+          <BarChart data={trafficChart}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+            <XAxis dataKey="name" stroke="var(--muted)" fontSize={12} />
+            <YAxis stroke="var(--muted)" fontSize={12} />
+            <Tooltip contentStyle={chartTip} />
+            <Bar dataKey="value" fill="var(--accent)" radius={[3, 3, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
       </section>
 
-      <div className="reveal reveal-delay-3">
-        <h2 className="text-sm text-[var(--muted)] mb-2">Zones</h2>
+      <section className="reveal reveal-delay-4">
+        <h2 className="section-title">Zones</h2>
         {data.zones?.length ? (
-          <ul className="space-y-1">
+          <ul className="panel divide-y divide-[var(--border)] overflow-hidden">
             {data.zones.map((z) => (
-              <li
-                key={z.name}
-                className="flex justify-between border border-[var(--border)] px-3 py-2 text-sm panel"
-              >
+              <li key={z.name} className="flex justify-between gap-3 px-4 py-3 text-sm">
                 <span className="mono">{z.name}</span>
                 <span className="text-[var(--muted)]">{z.record_count} records</span>
               </li>
             ))}
           </ul>
         ) : (
-          <EmptyState
-            title="No zones yet"
-            hint="Add an authoritative zone to serve local records."
-            action={
-              <a href="/zones" className="inline-block mt-4 text-sm text-[var(--accent)] underline cursor-pointer">
-                Go to Zones
-              </a>
-            }
-          />
+          <div className="panel px-4">
+            <EmptyState
+              title="No zones yet"
+              hint="Add an authoritative zone to serve local records."
+              action={
+                <a href="/zones" className="btn btn-secondary">
+                  Go to Zones
+                </a>
+              }
+            />
+          </div>
         )}
-      </div>
+      </section>
 
-      <div className="reveal reveal-delay-4">
+      <div className="reveal reveal-delay-5">
         <LiveErrorLog />
       </div>
     </div>
@@ -832,63 +843,46 @@ function LiveErrorLog() {
   }, [])
 
   return (
-    <section className="panel p-4">
-      <div className="flex items-center justify-between gap-3 mb-3">
+    <section className="panel overflow-hidden">
+      <div className="px-4 py-3 border-b border-[var(--border)] flex items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-medium">Live errors</h2>
           <p className="text-xs text-[var(--muted)] mt-0.5">
-            Warnings & errors only — browser push for warn/error when enabled
+            Warnings and errors only — browser push for warn/error when enabled
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
-          <span
-            className={`text-xs px-2 py-1 border ${
-              live
-                ? 'border-[var(--accent-dim)] text-[var(--accent)]'
-                : 'border-[var(--border)] text-[var(--muted)]'
-            }`}
-          >
+          <span className={`status-pill ${live ? 'ok' : ''}`}>
+            <span className={`pulse-dot ${live ? 'on' : ''}`} aria-hidden />
             {live ? 'live' : 'reconnecting'}
           </span>
           <button
             type="button"
-            className={`text-xs px-2 py-1 border ${
-              pushOn && pushPerm === 'granted'
-                ? 'border-[var(--accent-dim)] text-[var(--accent)]'
-                : 'border-[var(--border)] text-[var(--muted)]'
-            } hover:text-[var(--text)]`}
+            className={`btn btn-ghost text-xs ${pushOn && pushPerm === 'granted' ? 'text-[var(--accent)]' : ''}`}
             onClick={togglePush}
             title={pushPerm === 'denied' ? 'Notifications blocked by browser' : 'Desktop notifications'}
           >
             {pushOn && pushPerm === 'granted' ? 'Push on' : 'Push off'}
           </button>
-          <button
-            type="button"
-            className="text-xs px-2 py-1 border border-[var(--border)] text-[var(--muted)] hover:text-[var(--text)]"
-            onClick={() => setPaused((p) => !p)}
-          >
+          <button type="button" className="btn btn-ghost text-xs" onClick={() => setPaused((p) => !p)}>
             {paused ? 'Resume' : 'Pause'}
           </button>
-          <button
-            type="button"
-            className="text-xs px-2 py-1 border border-[var(--border)] text-[var(--muted)] hover:text-[var(--text)]"
-            onClick={() => setEvents([])}
-          >
+          <button type="button" className="btn btn-ghost text-xs" onClick={() => setEvents([])}>
             Clear
           </button>
         </div>
       </div>
-      <div className="max-h-64 overflow-auto space-y-1.5 mono text-xs">
+      <div className="max-h-64 overflow-auto space-y-1.5 mono text-xs px-4 py-3">
         {events.length === 0 ? (
-          <p className="text-[var(--muted)] font-sans">No errors yet. Healthy.</p>
+          <p className="text-[var(--muted)] font-sans py-4">No errors yet. Healthy.</p>
         ) : (
           events.map((e) => (
             <div
               key={e.id}
-              className={`border px-2.5 py-1.5 ${
+              className={`rounded-[var(--radius)] border px-2.5 py-1.5 ${
                 e.level === 'error'
-                  ? 'border-[var(--danger)]/40 bg-[var(--danger)]/10'
-                  : 'border-[var(--warn)]/30 bg-[var(--warn)]/5'
+                  ? 'border-[var(--danger)]/40 bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]'
+                  : 'border-[var(--warn)]/30 bg-[color-mix(in_srgb,var(--warn)_6%,transparent)]'
               }`}
             >
               <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[var(--muted)]">
@@ -1013,97 +1007,92 @@ function Zones() {
   }
 
   return (
-    <div className="space-y-6 max-w-3xl">
-      <header>
-        <h1 className="page-title">Zones</h1>
-        <p className="text-sm text-[var(--muted)] mt-1">Authoritative zones and records</p>
-      </header>
+    <div className="space-y-6 max-w-4xl">
+      <PageHeader
+        eyebrow="Operate"
+        title="Zones"
+        sub="Authoritative zones, records, and secondary AXFR pulls."
+      />
       {err ? <ErrorBox msg={err} /> : null}
       {canWrite ? (
-        <form onSubmit={create} className="flex gap-2">
+        <form onSubmit={create} className="flex flex-col sm:flex-row gap-2 reveal">
           <input
-            className="flex-1 bg-[var(--bg)] border border-[var(--border)] cursor-text px-3 py-2 text-sm mono"
+            className="input flex-1 mono"
             placeholder="example.com"
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
           />
-          <button
-            type="submit"
-            className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm hover:opacity-90"
-          >
+          <button type="submit" className="btn btn-primary shrink-0">
             Add zone
           </button>
         </form>
       ) : (
         <p className="text-xs text-[var(--muted)]">Read-only role — zone create/delete disabled</p>
       )}
-      <ul className="space-y-2">
-        {zones.map((z) => (
-          <li
-            key={z.name}
-            className="flex items-center justify-between panel px-4 py-3"
-          >
-            <button className="text-left" onClick={() => nav(`/zones/${encodeURIComponent(z.name)}`)}>
-              <div className="mono font-medium">{z.name}</div>
-              <div className="text-xs text-[var(--muted)]">{z.record_count} records</div>
-            </button>
-            {canWrite ? (
-              <button
-                type="button"
-                className="text-xs text-[var(--danger)] hover:underline"
-                onClick={() => remove(z.name)}
-              >
-                Delete
-              </button>
-            ) : null}
+      <ul className="panel divide-y divide-[var(--border)] overflow-hidden reveal reveal-delay-1">
+        {zones.length === 0 ? (
+          <li className="px-4">
+            <EmptyState title="No zones yet" hint="Add an authoritative zone to serve local records." />
           </li>
-        ))}
+        ) : (
+          zones.map((z, i) => (
+            <li
+              key={z.name}
+              className="flex items-center justify-between gap-3 px-4 py-3"
+              style={{ '--index': i }}
+            >
+              <button type="button" className="text-left" onClick={() => nav(`/zones/${encodeURIComponent(z.name)}`)}>
+                <div className="mono font-medium">{z.name}</div>
+                <div className="text-xs text-[var(--muted)]">{z.record_count} records</div>
+              </button>
+              {canWrite ? (
+                <button type="button" className="btn btn-ghost text-xs text-[var(--danger)]" onClick={() => remove(z.name)}>
+                  Delete
+                </button>
+              ) : null}
+            </li>
+          ))
+        )}
       </ul>
 
-      <section className="space-y-3 pt-4 border-t border-[var(--border)]">
+      <section className="space-y-3 pt-2 reveal reveal-delay-2">
         <header>
-          <h2 className="text-lg font-medium">Secondary zones</h2>
-          <p className="text-xs text-[var(--muted)] mt-1">
-            AXFR pull from masters. Inbound NOTIFY triggers transfer. IXFR from this server is answered as
-            full AXFR.
+          <p className="eyebrow">Secondary</p>
+          <h2 className="text-xl font-semibold tracking-tight">AXFR pulls</h2>
+          <p className="page-sub">
+            Pull from masters. Inbound NOTIFY triggers transfer. IXFR from this server is answered as full AXFR.
           </p>
         </header>
         {canWrite ? (
-          <form onSubmit={addSecondary} className="space-y-2">
-            <div className="flex flex-wrap gap-2">
-              <input
-                className="flex-1 min-w-[10rem] bg-[var(--bg)] border border-[var(--border)] cursor-text px-3 py-2 text-sm mono"
-                placeholder="slave.example.com"
-                value={secName}
-                onChange={(e) => setSecName(e.target.value)}
-                required
-                disabled={secBusy}
-              />
-              <input
-                className="flex-[2] min-w-[14rem] bg-[var(--bg)] border border-[var(--border)] cursor-text px-3 py-2 text-sm mono"
-                placeholder="master IP:port (comma-separated)"
-                value={secMasters}
-                onChange={(e) => setSecMasters(e.target.value)}
-                required
-                disabled={secBusy}
-              />
-              <button
-                type="submit"
-                disabled={secBusy}
-                className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm hover:opacity-90 disabled:opacity-50"
-              >
-                Add secondary
-              </button>
-            </div>
+          <form onSubmit={addSecondary} className="grid grid-cols-1 md:grid-cols-[1fr_1.4fr_auto] gap-2">
+            <input
+              className="input mono"
+              placeholder="slave.example.com"
+              value={secName}
+              onChange={(e) => setSecName(e.target.value)}
+              required
+              disabled={secBusy}
+            />
+            <input
+              className="input mono"
+              placeholder="master IP:port (comma-separated)"
+              value={secMasters}
+              onChange={(e) => setSecMasters(e.target.value)}
+              required
+              disabled={secBusy}
+            />
+            <button type="submit" disabled={secBusy} className="btn btn-primary disabled:opacity-50">
+              Add secondary
+            </button>
           </form>
         ) : null}
         {secondary.length === 0 ? (
-          <p className="text-xs text-[var(--muted)]">No secondary zones.</p>
+          <p className="text-sm text-[var(--muted)]">No secondary zones.</p>
         ) : (
-          <ul className="space-y-2">
+          <ul className="panel divide-y divide-[var(--border)] overflow-hidden">
             {secondary.map((z) => (
-              <li key={z.name} className="panel px-4 py-3 space-y-2">
+              <li key={z.name} className="px-4 py-3 space-y-2">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
                     <div className="mono font-medium">{z.name}</div>
@@ -1117,18 +1106,18 @@ function Zones() {
                     </div>
                   </div>
                   {canWrite ? (
-                    <div className="flex gap-2">
+                    <div className="flex gap-1">
                       <button
                         type="button"
                         disabled={secBusy}
-                        className="text-xs hover:underline disabled:opacity-50"
+                        className="btn btn-ghost text-xs disabled:opacity-50"
                         onClick={() => transferSecondary(z.name)}
                       >
                         Transfer now
                       </button>
                       <button
                         type="button"
-                        className="text-xs text-[var(--danger)] hover:underline"
+                        className="btn btn-ghost text-xs text-[var(--danger)]"
                         onClick={() => removeSecondary(z.name)}
                       >
                         Remove
@@ -1261,18 +1250,12 @@ function ZoneDetail() {
 
   return (
     <div className="space-y-6 max-w-5xl">
-      <button type="button" className="text-sm text-[var(--muted)] hover:text-[var(--accent)]" onClick={() => nav('/zones')}>
-        ← Zones
+      <button type="button" className="btn btn-ghost text-sm mb-1" onClick={() => nav('/zones')}>
+        Zones
       </button>
-      <header>
-        <h1 className="page-title mono">{zone}</h1>
-      </header>
+      <PageHeader eyebrow="Zone" title={<span className="mono">{zone}</span>} />
       {err ? <ErrorBox msg={err} /> : null}
-      {ok ? (
-        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
-          {ok}
-        </div>
-      ) : null}
+      {ok ? <div className="flash-ok" role="status">{ok}</div> : null}
 
       {meta ? (
         <form onSubmit={saveMeta} className="panel p-4 space-y-3">
@@ -1288,7 +1271,7 @@ function ZoneDetail() {
               <label key={k} className="text-xs text-[var(--muted)] flex flex-col gap-1">
                 {label}
                 <input
-                  className="bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono"
+                  className="input mono text-sm"
                   value={meta[k] ?? ''}
                   onChange={(e) => setMeta({ ...meta, [k]: e.target.value })}
                 />
@@ -1310,7 +1293,7 @@ function ZoneDetail() {
             </div>
           ) : null}
           <div className="flex flex-wrap gap-2">
-            <button type="submit" className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm">
+            <button type="submit" className="btn btn-primary">
               Save zone meta
             </button>
             <button
@@ -1376,7 +1359,7 @@ function ZoneDetail() {
           </label>
         ))}
         <div className="col-span-2 md:col-span-3 flex gap-2">
-          <button type="submit" className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm">
+          <button type="submit" className="btn btn-primary">
             {editing ? 'Save changes' : 'Add record'}
           </button>
           {editing ? (
@@ -1456,18 +1439,15 @@ function Lookup() {
 
   return (
     <div className="space-y-6 max-w-2xl">
-      <header>
-        <h1 className="page-title">Lookup</h1>
-        <p className="text-sm text-[var(--muted)] mt-1">Resolve via this PowerSVX instance</p>
-      </header>
-      <form onSubmit={run} className="flex flex-wrap gap-2">
+      <PageHeader eyebrow="Operate" title="Lookup" sub="Resolve via this PowerSVX instance." />
+      <form onSubmit={run} className="flex flex-wrap gap-2 reveal">
         <input
-          className="flex-1 min-w-[12rem] bg-[var(--bg)] border border-[var(--border)] cursor-text px-3 py-2 text-sm mono"
+          className="input flex-1 min-w-[12rem] mono"
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
         <select
-          className="bg-[var(--bg)] border border-[var(--border)] cursor-text px-3 py-2 text-sm"
+          className="input"
           value={type}
           onChange={(e) => setType(e.target.value)}
         >
@@ -1480,7 +1460,7 @@ function Lookup() {
         <button
           type="submit"
           disabled={busy}
-          className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm disabled:opacity-50"
+          className="btn btn-primary disabled:opacity-50"
         >
           {busy ? '…' : 'Query'}
         </button>
@@ -1510,6 +1490,7 @@ function Settings() {
   const [ok, setOk] = useState('')
   const [busy, setBusy] = useState(false)
   const [section, setSection] = useState('dns')
+  const [tool, setTool] = useState('axfr')
   const [fwdInput, setFwdInput] = useState('')
   const [fwdEditIdx, setFwdEditIdx] = useState(-1)
   const [fzZone, setFzZone] = useState('')
@@ -1838,8 +1819,15 @@ function Settings() {
     { id: 'features', label: 'Features', hint: 'Optional engines', dirty: dirtyFeatures },
     { id: 'access', label: 'Access', hint: 'Who may query', dirty: dirtyAcl },
     { id: 'status', label: 'Status', hint: 'Read-only info', dirty: false },
-    { id: 'kominfo', label: 'Kominfo', hint: 'AXFR sync', dirty: false },
-    { id: 'tools', label: 'Tools', hint: 'Backup, RPZ, users', dirty: false },
+    { id: 'tools', label: 'Tools', hint: 'AXFR, ACME, backup', dirty: false },
+  ]
+
+  const toolTabs = [
+    { id: 'axfr', label: 'AXFR' },
+    { id: 'acme', label: 'ACME' },
+    { id: 'backup', label: 'Backup' },
+    { id: 'users', label: 'Users' },
+    { id: 'rpz', label: 'RPZ' },
   ]
 
   const saveBar = (
@@ -1864,34 +1852,34 @@ function Settings() {
   )
 
   const sectionTitle = categories.find((c) => c.id === section)
+  const toolTitle = toolTabs.find((t) => t.id === tool)
 
   return (
-    <div className="space-y-4 max-w-5xl pb-24">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="page-title">Settings</h1>
-          <p className="text-sm text-[var(--muted)] mt-1">
-            {sectionTitle?.label}
-            <span className="mx-1.5 text-[var(--border-strong)]">·</span>
-            {sectionTitle?.hint}
-          </p>
-        </div>
-        {(section === 'dns' || section === 'features' || section === 'access') && isAdmin ? saveBar : null}
-      </header>
+    <div className="space-y-5 max-w-5xl pb-24">
+      <PageHeader
+        eyebrow="Configure"
+        title="Settings"
+        sub={
+          section === 'tools'
+            ? `Tools · ${toolTitle?.label || 'AXFR'}`
+            : `${sectionTitle?.label} · ${sectionTitle?.hint}`
+        }
+        actions={(section === 'dns' || section === 'features' || section === 'access') && isAdmin ? saveBar : null}
+      />
 
       {!isAdmin ? (
         <p className="text-xs text-[var(--muted)]">View only — your role cannot change settings.</p>
       ) : null}
       {err ? <ErrorBox msg={err} /> : null}
       {ok ? (
-        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2" role="status">
+        <div className="flash-ok" role="status">
           {ok}
         </div>
       ) : null}
 
       <div className="flex flex-col md:flex-row gap-6 items-start">
         <nav
-          className="w-full md:w-52 shrink-0 flex md:flex-col gap-1 overflow-x-auto md:overflow-visible"
+          className="settings-rail w-full md:w-56 shrink-0 flex md:flex-col gap-1 overflow-x-auto md:overflow-visible panel p-1.5"
           aria-label="Settings categories"
         >
           {categories.map((c) => (
@@ -2417,7 +2405,7 @@ function Settings() {
                   ['AXFR requires TSIG', saved.transfer?.require_tsig ? 'yes' : 'no'],
                   ['NOTIFY targets', (saved.transfer?.notify || []).join(', ') || '—'],
                   ['AXFR allow from', (saved.transfer?.allow_from || []).join(', ') || '—'],
-                  ['Kominfo sync', saved.kominfo_sync_enabled ? 'on' : 'off'],
+                  ['AXFR sync', saved.axfr_sync_enabled ?? saved.kominfo_sync_enabled ? 'on' : 'off'],
                 ].map(([k, v]) => (
                   <div key={k} className="flex justify-between gap-4 px-4 py-2.5">
                     <dt className="text-[var(--muted)]">{k}</dt>
@@ -2428,14 +2416,29 @@ function Settings() {
             </section>
           ) : null}
 
-          {section === 'kominfo' ? <KominfoSyncPanel isAdmin={isAdmin} /> : null}
-
           {section === 'tools' ? (
-            <div className="space-y-4" aria-label="Tools">
-              <ACMEPanel />
-              <BackupPanel />
-              <UsersPanel />
-              <RPZPanel initial={rpz} onChange={setRpz} />
+            <div className="space-y-4 w-full" aria-label="Tools">
+              <nav
+                className="tool-tabs"
+                aria-label="Tool menus"
+              >
+                {toolTabs.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setTool(t.id)}
+                    className={`tool-tab ${tool === t.id ? 'is-active' : ''}`}
+                    aria-current={tool === t.id ? 'page' : undefined}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </nav>
+              {tool === 'axfr' ? <AxfrSyncPanel isAdmin={isAdmin} /> : null}
+              {tool === 'acme' ? <ACMEPanel /> : null}
+              {tool === 'backup' ? <BackupPanel /> : null}
+              {tool === 'users' ? <UsersPanel /> : null}
+              {tool === 'rpz' ? <RPZPanel initial={rpz} onChange={setRpz} /> : null}
             </div>
           ) : null}
         </div>
@@ -2451,16 +2454,24 @@ function Settings() {
   )
 }
 
-function KominfoSyncPanel({ isAdmin }) {
+function AxfrSyncPanel({ isAdmin }) {
+  const DEFAULT_SOURCES = ['182.23.79.202:53', '139.255.196.202:53']
   const [data, setData] = useState(null)
+  const [draftTargets, setDraftTargets] = useState([])
+  const [newTarget, setNewTarget] = useState('')
   const [err, setErr] = useState('')
   const [ok, setOk] = useState('')
   const [busy, setBusy] = useState(false)
 
+  const applySnapshot = (d) => {
+    setData(d)
+    setDraftTargets([...(d.targets || [])])
+  }
+
   const load = () =>
     api
-      .kominfoSync()
-      .then((d) => setData(d))
+      .axfrSync()
+      .then(applySnapshot)
       .catch((e) => setErr(e.message))
 
   useEffect(() => {
@@ -2470,10 +2481,14 @@ function KominfoSyncPanel({ isAdmin }) {
   useEffect(() => {
     if (!data?.progress?.running) return undefined
     const t = setInterval(() => {
-      api.kominfoSync().then(setData).catch(() => {})
+      api.axfrSync().then(applySnapshot).catch(() => {})
     }, 1500)
     return () => clearInterval(t)
   }, [data?.progress?.running])
+
+  const targetsDirty =
+    JSON.stringify([...(draftTargets || [])].sort()) !==
+    JSON.stringify([...(data?.targets || [])].sort())
 
   const toggle = async () => {
     if (!data) return
@@ -2481,9 +2496,9 @@ function KominfoSyncPanel({ isAdmin }) {
     setErr('')
     setOk('')
     try {
-      const next = await api.setKominfoSync(!data.enabled)
-      setData(next)
-      setOk(next.enabled ? 'Kominfo sync enabled' : 'Kominfo sync disabled')
+      const next = await api.setAxfrSync({ enabled: !data.enabled })
+      applySnapshot(next)
+      setOk(next.enabled ? 'AXFR sync enabled' : 'AXFR sync disabled')
     } catch (ex) {
       setErr(ex.message)
     } finally {
@@ -2491,13 +2506,51 @@ function KominfoSyncPanel({ isAdmin }) {
     }
   }
 
+  const saveTargets = async () => {
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const next = await api.setAxfrSync({ targets: draftTargets })
+      applySnapshot(next)
+      setOk('Sources saved')
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const resetDefaults = () => {
+    setDraftTargets([...DEFAULT_SOURCES])
+    setOk('')
+    setErr('')
+  }
+
+  const addTarget = () => {
+    const raw = newTarget.trim()
+    if (!raw) return
+    const normalized = raw.includes(':') ? raw : `${raw}:53`
+    if (draftTargets.includes(normalized) || draftTargets.includes(raw)) {
+      setErr('Source already listed')
+      return
+    }
+    setDraftTargets([...draftTargets, normalized])
+    setNewTarget('')
+    setErr('')
+  }
+
+  const removeTarget = (addr) => {
+    setDraftTargets(draftTargets.filter((t) => t !== addr))
+  }
+
   const syncNow = async () => {
     setBusy(true)
     setErr('')
     setOk('')
     try {
-      const next = await api.runKominfoSync()
-      setData(next)
+      const next = await api.runAxfrSync()
+      applySnapshot(next)
       setOk('Sync started')
     } catch (ex) {
       setErr(ex.message)
@@ -2513,34 +2566,54 @@ function KominfoSyncPanel({ isAdmin }) {
   }
 
   if (!data) {
-    return err ? <ErrorBox msg={err} /> : <LoadingBlock label="Loading Kominfo sync" />
+    if (err) return <ErrorBox msg={err} />
+    return (
+      <div className="space-y-4" role="status" aria-busy="true" aria-label="Loading AXFR sync">
+        <div className="h-24 rounded-[var(--radius-lg)] bg-[var(--bg-panel)] animate-pulse" />
+        <div className="grid grid-cols-1 lg:grid-cols-[1.35fr_1fr] gap-4">
+          <div className="h-48 rounded-[var(--radius-lg)] bg-[var(--bg-panel)] animate-pulse" />
+          <div className="h-48 rounded-[var(--radius-lg)] bg-[var(--bg-panel)] animate-pulse reveal-delay-1" />
+        </div>
+        <div className="h-40 rounded-[var(--radius-lg)] bg-[var(--bg-panel)] animate-pulse reveal-delay-2" />
+      </div>
+    )
   }
 
   const p = data.progress || {}
   const pct = p.total > 0 ? Math.min(100, Math.round((100 * (p.done || 0)) / p.total)) : 0
+  const zoneCount = (data.zones || []).length
 
   return (
-    <section className="panel space-y-0" aria-labelledby="settings-kominfo-heading">
-      <div className="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-start justify-between gap-3">
+    <div className="space-y-5 max-w-[var(--content-max)]" aria-labelledby="tools-axfr-heading">
+      <header className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-6 items-end reveal">
         <div>
-          <h2 id="settings-kominfo-heading" className="text-sm font-medium">
-            Kominfo AXFR sync
+          <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted)] mb-2">Zone transfer</p>
+          <h2 id="tools-axfr-heading" className="text-2xl md:text-3xl font-semibold tracking-tight leading-none">
+            AXFR
           </h2>
-          <p className="text-xs text-[var(--muted)] mt-1 max-w-xl leading-relaxed">
-            Default off. When enabled, PowerSVX NOTIFYs Kominfo secondaries and allows them to AXFR
-            without global transfer ACL/TSIG. Sync now walks all zones and checks remote SOA.
+          <p className="text-sm text-[var(--muted)] mt-3 max-w-[52ch] leading-relaxed">
+            Push NOTIFY to secondary sources and allow them to pull full zone transfers. Default sources
+            point at Kominfo and can be edited.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap lg:justify-end items-center gap-2 reveal reveal-delay-1">
+          <span
+            className={`inline-flex items-center gap-2 text-xs mono px-2.5 py-1.5 rounded-[var(--radius)] border ${
+              data.enabled
+                ? 'border-[var(--ok)]/40 text-[var(--ok)] bg-[color-mix(in_srgb,var(--ok)_12%,transparent)]'
+                : 'border-[var(--border)] text-[var(--muted)]'
+            }`}
+          >
+            <span className={`axfr-pulse-dot ${data.enabled ? 'is-on' : ''}`} aria-hidden />
+            {data.enabled ? 'Enabled' : 'Disabled'}
+          </span>
           <button
             type="button"
             disabled={busy || !isAdmin}
             onClick={toggle}
-            className={`btn min-h-[44px] disabled:opacity-50 ${
-              data.enabled ? 'btn-primary' : 'btn-secondary'
-            }`}
+            className={`btn min-h-[44px] disabled:opacity-50 ${data.enabled ? 'btn-secondary' : 'btn-primary'}`}
           >
-            {data.enabled ? 'Enabled' : 'Disabled'}
+            {data.enabled ? 'Disable' : 'Enable'}
           </button>
           <button
             type="button"
@@ -2551,80 +2624,199 @@ function KominfoSyncPanel({ isAdmin }) {
             {p.running ? 'Syncing…' : 'Sync now'}
           </button>
         </div>
-      </div>
+      </header>
 
-      <div className="px-4 py-3 space-y-3 border-b border-[var(--border)]">
-        <div className="text-xs text-[var(--muted)]">
-          Targets:{' '}
-          <span className="mono text-[var(--text)]">{(data.targets || []).join(', ')}</span>
+      {err ? <ErrorBox msg={err} /> : null}
+      {ok ? (
+        <div
+          className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2 reveal"
+          role="status"
+        >
+          {ok}
         </div>
-        {p.running || p.total > 0 ? (
-          <div className="space-y-2">
-            <div className="flex justify-between text-xs text-[var(--muted)]">
-              <span>
-                Progress {p.done || 0}/{p.total || 0}
-                {p.current_zone ? ` · ${p.current_zone}` : ''}
-                {p.phase ? ` · ${p.phase}` : ''}
+      ) : null}
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1.25fr_1fr] gap-4 items-start">
+        <section className="panel overflow-hidden reveal reveal-delay-1" aria-labelledby="axfr-sources-heading">
+          <div className="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 id="axfr-sources-heading" className="text-sm font-medium">
+                Sources
+              </h3>
+              <p className="text-xs text-[var(--muted)] mt-1 leading-relaxed max-w-[42ch]">
+                Host or host:port. These IPs may AXFR without global transfer ACL when sync is on.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={!isAdmin || busy}
+              onClick={resetDefaults}
+              className="btn btn-secondary text-xs min-h-[36px] px-2.5 disabled:opacity-50"
+            >
+              Kominfo defaults
+            </button>
+          </div>
+          <ul className="divide-y divide-[var(--border)]">
+            {draftTargets.length === 0 ? (
+              <li className="px-4 py-8 text-sm text-[var(--muted)]">
+                No sources. Add one below, or restore Kominfo defaults.
+              </li>
+            ) : (
+              draftTargets.map((addr, i) => (
+                <li
+                  key={addr}
+                  className="flex items-center gap-3 px-4 py-2.5 axfr-row"
+                  style={{ '--index': i }}
+                >
+                  <span className="mono text-sm flex-1 break-all">{addr}</span>
+                  <button
+                    type="button"
+                    disabled={!isAdmin || busy}
+                    onClick={() => removeTarget(addr)}
+                    className="text-xs text-[var(--muted)] hover:text-[var(--danger)] transition-colors duration-200 disabled:opacity-40 active:scale-[0.98]"
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+          <div className="px-4 py-3 border-t border-[var(--border)] flex flex-col sm:flex-row gap-2">
+            <label className="flex-1 space-y-1.5">
+              <span className="sr-only">Add source</span>
+              <input
+                value={newTarget}
+                onChange={(e) => setNewTarget(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    addTarget()
+                  }
+                }}
+                disabled={!isAdmin || busy}
+                placeholder="182.23.79.202 or host:53"
+                className="w-full mono text-sm"
+              />
+            </label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={!isAdmin || busy || !newTarget.trim()}
+                onClick={addTarget}
+                className="btn btn-secondary min-h-[44px] disabled:opacity-50"
+              >
+                Add
+              </button>
+              <button
+                type="button"
+                disabled={!isAdmin || busy || !targetsDirty}
+                onClick={saveTargets}
+                className="btn btn-primary min-h-[44px] disabled:opacity-50"
+              >
+                Save sources
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section className="panel overflow-hidden reveal reveal-delay-2" aria-labelledby="axfr-progress-heading">
+          <div className="px-4 py-3 border-b border-[var(--border)]">
+            <h3 id="axfr-progress-heading" className="text-sm font-medium">
+              Sync progress
+            </h3>
+            <p className="text-xs text-[var(--muted)] mt-1">NOTIFY then remote SOA check per zone.</p>
+          </div>
+          <div className="px-4 py-5 space-y-4">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-3xl font-semibold tracking-tight mono tabular-nums">{pct}%</span>
+              <span className="text-xs text-[var(--muted)] text-right">
+                {p.done || 0}/{p.total || 0} zones
+                {zoneCount ? ` · ${zoneCount} tracked` : ''}
               </span>
-              <span className="mono">{pct}%</span>
             </div>
             <div className="h-2 bg-[var(--bg)] border border-[var(--border)] rounded-[var(--radius-sm)] overflow-hidden">
               <div
-                className="h-full bg-[var(--accent)] transition-[width] duration-300"
-                style={{ width: `${pct}%` }}
+                className={`h-full bg-[var(--accent)] transition-[width] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                  p.running ? 'axfr-bar-shimmer' : ''
+                }`}
+                style={{ width: `${p.running || p.total ? pct : 0}%` }}
               />
             </div>
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+              <div>
+                <dt className="text-[var(--muted)]">Phase</dt>
+                <dd className="mono mt-0.5">{p.phase || (p.running ? '…' : 'idle')}</dd>
+              </div>
+              <div>
+                <dt className="text-[var(--muted)]">Current</dt>
+                <dd className="mono mt-0.5 truncate">{p.current_zone || '—'}</dd>
+              </div>
+              <div className="col-span-2">
+                <dt className="text-[var(--muted)]">Last finished</dt>
+                <dd className="mono mt-0.5">{p.finished_at || '—'}</dd>
+              </div>
+            </dl>
             {p.last_error ? <p className="text-xs text-[var(--danger)]">{p.last_error}</p> : null}
-            {p.finished_at && !p.running ? (
-              <p className="text-xs text-[var(--muted)]">Last finished {p.finished_at}</p>
-            ) : null}
           </div>
-        ) : null}
-        {err ? <ErrorBox msg={err} /> : null}
-        {ok ? (
-          <div className="text-sm text-[var(--accent)]" role="status">
-            {ok}
-          </div>
-        ) : null}
+        </section>
       </div>
 
-      <div className="overflow-x-auto">
+      <section className="panel overflow-hidden reveal reveal-delay-3" aria-labelledby="axfr-zones-heading">
+        <div className="px-4 py-3 border-b border-[var(--border)] flex items-baseline justify-between gap-3">
+          <div>
+            <h3 id="axfr-zones-heading" className="text-sm font-medium">
+              Zone status
+            </h3>
+            <p className="text-xs text-[var(--muted)] mt-1">Per-source notify / SOA / pull state.</p>
+          </div>
+        </div>
         {(data.zones || []).length === 0 ? (
-          <p className="px-4 py-6 text-sm text-[var(--muted)]">No authoritative zones yet.</p>
+          <div className="px-4 py-10 text-left">
+            <p className="text-base font-semibold tracking-tight">No authoritative zones</p>
+            <p className="text-sm text-[var(--muted)] mt-2 max-w-md leading-relaxed">
+              Create a zone first, then enable AXFR sync and run Sync now.
+            </p>
+          </div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-[var(--muted)] border-b border-[var(--border)]">
-                <th className="px-4 py-2 font-medium">Zone</th>
-                <th className="px-4 py-2 font-medium">Serial</th>
-                <th className="px-4 py-2 font-medium">Target</th>
-                <th className="px-4 py-2 font-medium">Status</th>
-                <th className="px-4 py-2 font-medium">Detail</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(data.zones || []).flatMap((z) =>
-                (z.targets || []).map((t, i) => (
-                  <tr key={`${z.zone}-${t.addr}`} className="border-b border-[var(--border)]/70">
-                    <td className="px-4 py-2 mono">{i === 0 ? z.zone : ''}</td>
-                    <td className="px-4 py-2 mono">{i === 0 ? z.serial : ''}</td>
-                    <td className="px-4 py-2 mono text-xs">{t.addr}</td>
-                    <td className={`px-4 py-2 mono text-xs ${statusTone(t.status)}`}>{t.status}</td>
-                    <td className="px-4 py-2 text-xs text-[var(--muted)]">
-                      {t.error ||
-                        (t.remote_serial ? `remote ${t.remote_serial}` : '') ||
-                        (t.axfr_pull_at ? `pull ${t.axfr_pull_at}` : '') ||
-                        (t.notify_at ? `notify ${t.notify_at}` : '—')}
-                    </td>
-                  </tr>
-                )),
-              )}
-            </tbody>
-          </table>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-[var(--muted)] border-b border-[var(--border)]">
+                  <th className="px-4 py-2 font-medium">Zone</th>
+                  <th className="px-4 py-2 font-medium">Serial</th>
+                  <th className="px-4 py-2 font-medium">Source</th>
+                  <th className="px-4 py-2 font-medium">Status</th>
+                  <th className="px-4 py-2 font-medium">Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(data.zones || []).flatMap((z) =>
+                  (z.targets || []).map((t, i) => (
+                    <tr key={`${z.zone}-${t.addr}`} className="border-b border-[var(--border)]/70 axfr-row">
+                      <td className="px-4 py-2 mono">{i === 0 ? z.zone : ''}</td>
+                      <td className="px-4 py-2 mono">{i === 0 ? z.serial : ''}</td>
+                      <td className="px-4 py-2 mono text-xs">{t.addr}</td>
+                      <td className={`px-4 py-2 mono text-xs ${statusTone(t.status)}`}>{t.status}</td>
+                      <td className="px-4 py-2 text-xs text-[var(--muted)]">
+                        {t.error ||
+                          (t.remote_serial ? `remote ${t.remote_serial}` : '') ||
+                          (t.axfr_pull_at ? `pull ${t.axfr_pull_at}` : '') ||
+                          (t.notify_at ? `notify ${t.notify_at}` : '—')}
+                      </td>
+                    </tr>
+                  )),
+                )}
+              </tbody>
+            </table>
+          </div>
         )}
-      </div>
-      {data.note ? <p className="px-4 py-3 text-[11px] text-[var(--muted)] border-t border-[var(--border)]">{data.note}</p> : null}
-    </section>
+        {data.note ? (
+          <p className="px-4 py-3 text-[11px] text-[var(--muted)] border-t border-[var(--border)] leading-relaxed">
+            {data.note}
+          </p>
+        ) : null}
+      </section>
+    </div>
   )
 }
 
@@ -2769,7 +2961,7 @@ function RPZPanel({ initial, onChange }) {
             type="button"
             disabled={busy || loading}
             onClick={resync}
-            className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm text-[var(--muted)] disabled:opacity-40 hover:text-[var(--text)]"
+            className="btn btn-secondary"
           >
             Re-sync
           </button>
@@ -2777,7 +2969,7 @@ function RPZPanel({ initial, onChange }) {
             type="button"
             disabled={busy || loading}
             onClick={saveSync}
-            className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-3 py-2 text-sm disabled:opacity-40"
+            className="btn btn-primary"
           >
             {busy ? 'Saving…' : 'Save & sync'}
           </button>
@@ -2888,7 +3080,7 @@ function RPZPanel({ initial, onChange }) {
         type="button"
         disabled={busy || loading}
         onClick={add}
-        className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm disabled:opacity-40 hover:border-[var(--accent)]"
+        className="btn btn-secondary"
       >
         Add feed to list
       </button>
@@ -3042,7 +3234,7 @@ function UsersPanel() {
           <button
             type="submit"
             disabled={busy}
-            className="bg-[var(--accent)] text-[#0e1014] font-medium px-4 py-2 text-sm disabled:opacity-40"
+            className="btn btn-primary"
           >
             {busy ? 'Saving…' : editing ? 'Update user' : 'Add user'}
           </button>
@@ -3121,7 +3313,7 @@ function BackupPanel() {
           type="button"
           disabled={busy}
           onClick={download}
-          className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm disabled:opacity-40"
+          className="btn btn-primary"
         >
           Download backup
         </button>
@@ -3129,7 +3321,7 @@ function BackupPanel() {
           type="button"
           disabled={busy || !isAdmin}
           onClick={() => fileRef.current?.click()}
-          className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm disabled:opacity-40"
+          className="btn btn-secondary"
         >
           Restore from file
         </button>
@@ -3188,7 +3380,7 @@ function ACMEPanel() {
         type="button"
         disabled={busy || !st.enabled}
         onClick={obtain}
-        className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm disabled:opacity-40"
+        className="btn btn-primary"
       >
         {busy ? 'Obtaining…' : 'Obtain certificate'}
       </button>
@@ -3259,32 +3451,26 @@ function AuditLog() {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="page-title">Audit</h1>
-          <p className="text-sm text-[var(--muted)] mt-1">
-            Control-plane API mutations and auth failures (in-memory ring).
-          </p>
-        </div>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={load}
-          className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm text-[var(--muted)] disabled:opacity-40"
-        >
-          {busy ? '…' : 'Refresh'}
-        </button>
-      </header>
+      <PageHeader
+        eyebrow="Observe"
+        title="Audit"
+        sub="Control-plane API mutations and auth failures (in-memory ring)."
+        actions={
+          <button type="button" disabled={busy} onClick={load} className="btn btn-secondary">
+            {busy ? '…' : 'Refresh'}
+          </button>
+        }
+      />
       {err ? <ErrorBox msg={err} /> : null}
-      <div className="panel overflow-x-auto">
-        <table className="w-full text-sm text-left">
-          <thead className="text-xs text-[var(--muted)] border-b border-[var(--border)]">
+      <div className="panel overflow-x-auto reveal">
+        <table className="data-table">
+          <thead>
             <tr>
-              <th className="px-3 py-2 font-medium">Time</th>
-              <th className="px-3 py-2 font-medium">Actor</th>
-              <th className="px-3 py-2 font-medium">Role</th>
-              <th className="px-3 py-2 font-medium">Action</th>
-              <th className="px-3 py-2 font-medium">Path</th>
+              <th>Time</th>
+              <th>Actor</th>
+              <th>Role</th>
+              <th>Action</th>
+              <th>Path</th>
             </tr>
           </thead>
           <tbody>
@@ -3357,45 +3543,43 @@ function Analytics() {
   }
 
   return (
-    <div className="space-y-4 max-w-[1400px]">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="page-title">Analytics</h1>
-          <p className="text-sm text-[var(--muted)] mt-1">
+    <div className="space-y-5 max-w-[1400px]">
+      <PageHeader
+        eyebrow="Observe"
+        title="Analytics"
+        sub={
+          <>
             Grafana trends (Prometheus). Live ops stay on{' '}
-            <a href="/" className="text-[var(--accent)] underline">
+            <a href="/" className="text-[var(--accent)] hover:underline underline-offset-4">
               Dashboard
             </a>
             .
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <a
-            href={openURL}
-            target="_blank"
-            rel="noreferrer"
-            className="btn btn-primary text-sm min-h-[40px] inline-flex items-center"
-          >
+          </>
+        }
+        actions={
+          <a href={openURL} target="_blank" rel="noreferrer" className="btn btn-primary">
             Open in Grafana
           </a>
-        </div>
-      </header>
+        }
+      />
 
-      <form onSubmit={saveBase} className="panel px-3 py-2 flex flex-wrap gap-2 items-center">
-        <label className="text-xs text-[var(--muted)] shrink-0">Grafana URL</label>
-        <input
-          className="flex-1 min-w-[14rem] bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="http://103.172.70.252:3000"
-        />
-        <button type="submit" className="btn btn-secondary text-sm min-h-[36px]">
+      <form onSubmit={saveBase} className="panel px-4 py-3 flex flex-wrap gap-2 items-end reveal">
+        <label className="field flex-1 min-w-[14rem]">
+          <span className="label-quiet">Grafana URL</span>
+          <input
+            className="input mono"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="http://103.172.70.252:3000"
+          />
+        </label>
+        <button type="submit" className="btn btn-secondary">
           Save
         </button>
-        <span className="text-xs text-[var(--muted)] mono truncate max-w-full">using {base}</span>
+        <span className="text-xs text-[var(--muted)] mono truncate max-w-full self-center">using {base}</span>
       </form>
 
-      <section className="panel overflow-hidden" style={{ minHeight: '70vh' }}>
+      <section className="panel overflow-hidden reveal reveal-delay-1" style={{ minHeight: '70vh' }}>
         <iframe
           title="PowerSVX Grafana"
           src={src}
@@ -3493,26 +3677,21 @@ function DomainsPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-3xl">
-      <header>
-        <h1 className="page-title">Domains</h1>
-        <p className="text-sm text-[var(--muted)] mt-1">
-          Search the RPZ blacklist and manage the whitelist (bypasses blocklists).
-        </p>
-      </header>
+    <div className="space-y-6 max-w-4xl">
+      <PageHeader
+        eyebrow="Operate"
+        title="Domains"
+        sub="Search the RPZ blacklist and manage the whitelist (bypasses blocklists)."
+      />
 
       {err ? <ErrorBox msg={err} /> : null}
-      {ok ? (
-        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
-          {ok}
-        </div>
-      ) : null}
+      {ok ? <div className="flash-ok" role="status">{ok}</div> : null}
 
       <section className="panel p-4 space-y-3">
         <h2 className="text-sm font-medium">Blacklist lookup</h2>
         <form onSubmit={search} className="flex flex-wrap gap-2">
           <input
-            className="flex-1 min-w-[12rem] bg-[var(--bg)] border border-[var(--border)] px-3 py-2 text-sm mono"
+            className="input flex-1 min-w-[12rem] mono"
             placeholder="ads.example.com"
             value={q}
             onChange={(e) => setQ(e.target.value)}
@@ -3520,7 +3699,7 @@ function DomainsPage() {
           <button
             type="submit"
             disabled={busy}
-            className="bg-[var(--accent)] text-[#0e1014] font-medium px-3 py-2 text-sm cursor-pointer disabled:opacity-40"
+            className="btn btn-primary"
           >
             Search
           </button>
@@ -3529,7 +3708,7 @@ function DomainsPage() {
               type="button"
               disabled={busy || !q.trim()}
               onClick={add}
-              className="border border-[var(--border)] px-3 py-2 text-sm cursor-pointer disabled:opacity-40"
+              className="btn btn-secondary"
             >
               Add to whitelist
             </button>
@@ -3565,7 +3744,7 @@ function DomainsPage() {
         {canWrite ? (
           <form onSubmit={add} className="flex flex-wrap gap-2">
             <input
-              className="flex-1 min-w-[12rem] bg-[var(--bg)] border border-[var(--border)] px-3 py-2 text-sm mono"
+              className="input flex-1 min-w-[12rem] mono"
               placeholder="example.com or *.cdn.example"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -3573,7 +3752,7 @@ function DomainsPage() {
             <button
               type="submit"
               disabled={busy}
-              className="bg-[var(--accent)] text-[#0e1014] font-medium px-3 py-2 text-sm cursor-pointer disabled:opacity-40"
+              className="btn btn-primary"
             >
               Add
             </button>
@@ -3672,35 +3851,34 @@ function QueryLogs() {
 
   return (
     <div className="space-y-6">
-      <header>
-        <h1 className="page-title">Query logs</h1>
-        <p className="text-sm text-[var(--muted)] mt-1">
-          Per-query traffic from PostgreSQL. Filter by client IP to inspect a single user.
-        </p>
-      </header>
+      <PageHeader
+        eyebrow="Observe"
+        title="Query logs"
+        sub="Per-query traffic from PostgreSQL. Filter by client IP to inspect a single user."
+      />
 
       {!enabled ? (
-        <div className="border border-[var(--warn)]/40 bg-[var(--warn)]/10 text-[var(--warn)] text-sm px-3 py-2">
+        <div className="border border-[var(--warn)]/40 bg-[color-mix(in_srgb,var(--warn)_10%,transparent)] text-[var(--warn)] text-sm px-3 py-2 rounded-[var(--radius)]">
           Query logging is off — enable it in Settings to record new queries.
         </div>
       ) : null}
       {note ? <p className="text-xs text-[var(--muted)]">{note}</p> : null}
       {err ? <ErrorBox msg={err} /> : null}
 
-      <form onSubmit={applyFilter} className="panel px-4 py-3 flex flex-wrap gap-2 items-end">
-        <label className="flex-1 min-w-[12rem]">
-          <span className="text-xs text-[var(--muted)]">Client IP</span>
+      <form onSubmit={applyFilter} className="panel px-4 py-3 flex flex-wrap gap-2 items-end reveal">
+        <label className="field flex-1 min-w-[12rem]">
+          <span className="label-quiet">Client IP</span>
           <input
             value={draftIP}
             onChange={(e) => setDraftIP(e.target.value)}
             placeholder="e.g. 192.168.1.10"
-            className="mt-1 w-full bg-[var(--bg)] border border-[var(--border)] px-3 py-2 text-sm mono"
+            className="input mono"
           />
         </label>
         <button
           type="submit"
           disabled={busy}
-          className="bg-[var(--accent)] text-[#0e1014] cursor-pointer font-medium px-4 py-2 text-sm disabled:opacity-40"
+          className="btn btn-primary"
         >
           {busy ? '…' : 'Filter'}
         </button>
@@ -3708,7 +3886,7 @@ function QueryLogs() {
           type="button"
           disabled={busy || (!clientIP && !draftIP)}
           onClick={clearFilter}
-          className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm text-[var(--muted)] disabled:opacity-40"
+          className="btn btn-secondary"
         >
           Clear
         </button>
@@ -3716,30 +3894,30 @@ function QueryLogs() {
           type="button"
           disabled={busy}
           onClick={() => load(clientIP, offset)}
-          className="border border-[var(--border)] cursor-pointer px-3 py-2 text-sm text-[var(--muted)] disabled:opacity-40"
+          className="btn btn-secondary"
         >
           Refresh
         </button>
       </form>
 
-      <div className="panel overflow-x-auto">
-        <table className="w-full text-sm text-left">
-          <thead className="text-xs text-[var(--muted)] border-b border-[var(--border)]">
+      <div className="panel overflow-x-auto reveal">
+        <table className="data-table">
+          <thead>
             <tr>
-              <th className="px-3 py-2 font-medium">Time</th>
-              <th className="px-3 py-2 font-medium">Client</th>
-              <th className="px-3 py-2 font-medium">Name</th>
-              <th className="px-3 py-2 font-medium">Type</th>
-              <th className="px-3 py-2 font-medium">Rcode</th>
-              <th className="px-3 py-2 font-medium">ms</th>
-              <th className="px-3 py-2 font-medium">Proto</th>
-              <th className="px-3 py-2 font-medium">Cache</th>
+              <th>Time</th>
+              <th>Client</th>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Rcode</th>
+              <th>ms</th>
+              <th>Proto</th>
+              <th>Cache</th>
             </tr>
           </thead>
           <tbody className="mono text-xs">
             {logs.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-3 py-8 text-center text-[var(--muted)] font-sans">
+                <td colSpan={8} className="text-[var(--muted)] font-sans">
                   {busy ? 'Loading…' : 'No query logs yet'}
                 </td>
               </tr>
@@ -3774,7 +3952,7 @@ function QueryLogs() {
               setOffset(next)
               load(clientIP, next)
             }}
-            className="border border-[var(--border)] cursor-pointer px-3 py-1.5 text-xs disabled:opacity-40"
+            className="btn btn-ghost text-xs"
           >
             Prev
           </button>
@@ -3786,7 +3964,7 @@ function QueryLogs() {
               setOffset(next)
               load(clientIP, next)
             }}
-            className="border border-[var(--border)] cursor-pointer px-3 py-1.5 text-xs disabled:opacity-40"
+            className="btn btn-ghost text-xs"
           >
             Next
           </button>

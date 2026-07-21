@@ -10,10 +10,10 @@ import (
 	"github.com/powersvx/powersvx/internal/server"
 )
 
-func (a *API) handleKominfoSync(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleAxfrSync(w http.ResponseWriter, r *http.Request) {
 	mgr := a.srv.Kominfo()
 	if mgr == nil {
-		http.Error(w, "kominfo sync unavailable", http.StatusServiceUnavailable)
+		http.Error(w, "axfr sync unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	switch r.Method {
@@ -21,17 +21,32 @@ func (a *API) handleKominfoSync(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, mgr.Snapshot())
 	case http.MethodPut, http.MethodPatch:
 		var body struct {
-			Enabled *bool `json:"enabled"`
+			Enabled *bool     `json:"enabled"`
+			Targets *[]string `json:"targets"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
+		cur := a.srv.RuntimeFlags()
+		changed := false
+		if body.Targets != nil {
+			if err := mgr.SetTargets(*body.Targets); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if a.cfg != nil {
+				a.cfg.KominfoSync.Targets = mgr.Targets()
+			}
+			changed = true
+		}
 		if body.Enabled != nil {
-			cur := a.srv.RuntimeFlags()
 			cur.KominfoSync = *body.Enabled
 			a.srv.ApplyRuntimeFlags(cur)
-			a.saveRuntimeFromServer(cur)
+			changed = true
+		}
+		if changed {
+			a.saveRuntimeFromServer(a.srv.RuntimeFlags())
 		}
 		writeJSON(w, http.StatusOK, mgr.Snapshot())
 	case http.MethodPost:
@@ -59,6 +74,10 @@ func (a *API) saveRuntimeFromServer(cur server.RuntimeFlags) {
 	}
 	rlLive := a.srv.RateLimitConfig()
 	en := cur.KominfoSync
+	targets := []string(nil)
+	if a.srv.Kominfo() != nil {
+		targets = a.srv.Kominfo().Targets()
+	}
 	_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), config.RuntimeSettings{
 		GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 		RateLimitQPS: &rlLive.QPS, RateLimitBurst: &rlLive.Burst, RateLimitBlockDur: &rlLive.BlockDuration,
@@ -66,6 +85,8 @@ func (a *API) saveRuntimeFromServer(cur server.RuntimeFlags) {
 		ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
 		ResolverMode: &mode, ForwardOnFail: &cur.ForwardOnFail, QueryLog: &cur.QueryLog,
 		Forwarders: fwd, ForwardZones: fz, AllowQuery: allow, DenyQuery: deny,
-		KominfoSyncEnabled: &en,
+		AxfrSyncEnabled: &en,
+		AxfrSyncTargets: targets,
+		KominfoSyncEnabled: &en, // legacy alias
 	})
 }

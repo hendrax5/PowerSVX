@@ -105,6 +105,7 @@ require_tsig = true
 # key = "dhcp.example.com."
 # zones = ["example.com"]
 
+# AXFR sync (Tools → AXFR). Defaults to Kominfo secondaries; editable in UI.
 [kominfo_sync]
 enabled = false
 # targets = ["182.23.79.202:53", "139.255.196.202:53"]

@@ -28,3 +28,19 @@ func TestDefaultDisabled(t *testing.T) {
 		t.Fatal("not a target")
 	}
 }
+
+func TestSetTargets(t *testing.T) {
+	m := New(nil, nil, nil)
+	if err := m.SetTargets([]string{"10.0.0.9"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Targets(); len(got) != 1 || got[0] != "10.0.0.9:53" {
+		t.Fatalf("%v", got)
+	}
+	if err := m.SetTargets(nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Targets()) != 2 {
+		t.Fatalf("empty should restore defaults: %v", m.Targets())
+	}
+}

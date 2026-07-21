@@ -24,7 +24,9 @@ type RuntimeSettings struct {
 	ForwardZones         []ForwardZoneConfig `json:"forward_zones"`
 	AllowQuery           []string `json:"allow_query"`
 	DenyQuery            []string `json:"deny_query"`
-	KominfoSyncEnabled   *bool    `json:"kominfo_sync_enabled,omitempty"`
+	KominfoSyncEnabled   *bool    `json:"kominfo_sync_enabled,omitempty"` // legacy
+	AxfrSyncEnabled      *bool    `json:"axfr_sync_enabled,omitempty"`
+	AxfrSyncTargets      []string `json:"axfr_sync_targets,omitempty"`
 }
 
 func RuntimeSettingsPath(dir string) string {
@@ -108,5 +110,11 @@ func (c *Config) ApplyRuntimeSettings(s RuntimeSettings) {
 	}
 	if s.KominfoSyncEnabled != nil {
 		c.KominfoSync.Enabled = *s.KominfoSyncEnabled
+	}
+	if s.AxfrSyncEnabled != nil {
+		c.KominfoSync.Enabled = *s.AxfrSyncEnabled
+	}
+	if s.AxfrSyncTargets != nil {
+		c.KominfoSync.Targets = append([]string(nil), s.AxfrSyncTargets...)
 	}
 }

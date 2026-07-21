@@ -97,7 +97,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/settings", a.withAuth(a.handleSettings))
 	mux.HandleFunc("/api/v1/secondary", a.withAuth(a.handleSecondary))
 	mux.HandleFunc("/api/v1/secondary/", a.withAuth(a.handleSecondarySub))
-	mux.HandleFunc("/api/v1/kominfo-sync", a.withAuth(a.handleKominfoSync))
+	mux.HandleFunc("/api/v1/kominfo-sync", a.withAuth(a.handleAxfrSync)) // legacy alias
+	mux.HandleFunc("/api/v1/axfr-sync", a.withAuth(a.handleAxfrSync))
 	mux.HandleFunc("/api/v1/rpz", a.withAuth(a.handleRPZ))
 	mux.HandleFunc("/api/v1/domains/", a.withAuth(a.handleDomains))
 	mux.HandleFunc("/api/v1/tools/lookup", a.withAuth(a.handleLookup))
@@ -791,6 +792,10 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		rlLive := a.srv.RateLimitConfig()
 		kominfoOn := cur.KominfoSync
+		axfrTargets := []string(nil)
+		if a.srv.Kominfo() != nil {
+			axfrTargets = a.srv.Kominfo().Targets()
+		}
 		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), config.RuntimeSettings{
 			GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 			RateLimitQPS: &rlLive.QPS, RateLimitBurst: &rlLive.Burst, RateLimitBlockDur: &rlLive.BlockDuration,
@@ -798,6 +803,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
 			ResolverMode: &mode, ForwardOnFail: &cur.ForwardOnFail, QueryLog: &cur.QueryLog,
 			Forwarders: fwd, ForwardZones: fz, AllowQuery: allow, DenyQuery: deny,
+			AxfrSyncEnabled: &kominfoOn, AxfrSyncTargets: axfrTargets,
 			KominfoSyncEnabled: &kominfoOn,
 		})
 		writeJSON(w, http.StatusOK, a.settingsPayload())
@@ -862,6 +868,7 @@ func (a *API) settingsPayload() map[string]any {
 			"allow_from":   a.cfg.Transfer.AllowFrom,
 		},
 		"kominfo_sync_enabled": a.srv.RuntimeFlags().KominfoSync,
+		"axfr_sync_enabled":    a.srv.RuntimeFlags().KominfoSync,
 		"udp_addr":        a.srv.UDPAddr(),
 		"geodns_db":       a.cfg.GeoDNS.DatabasePath,
 		"auth_type":       a.cfg.API.AuthType,

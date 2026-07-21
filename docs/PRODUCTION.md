@@ -58,12 +58,12 @@
 - Publish the returned **DS** at the parent / registrar.
 - Full NSEC3 / key rollover / HSM still deferred.
 
-## Kominfo AXFR sync
-- Settings → Kominfo. Default **disabled**.
-- Targets: `182.23.79.202` and `139.255.196.202` (override via `[kominfo_sync] targets`).
+## AXFR sync (Tools)
+- Settings → Tools → **AXFR**. Default **disabled**.
+- Default sources: Kominfo secondaries `182.23.79.202` and `139.255.196.202` (editable in UI; also `[kominfo_sync] targets` / `axfr_sync_targets`).
 - When enabled: those IPs may AXFR/IXFR without global `allow_axfr` / TSIG; zone changes send NOTIFY.
-- **Sync now** walks all zones (NOTIFY → SOA check) with live progress; `axfr_ok` appears after a successful pull from Kominfo.
-- Toggle persisted in `runtime-settings.json` as `kominfo_sync_enabled`.
+- **Sync now** walks all zones (NOTIFY → SOA check) with live progress; `axfr_ok` appears after a successful pull.
+- Persisted in `runtime-settings.json` as `axfr_sync_enabled` + `axfr_sync_targets` (legacy `kominfo_sync_enabled` still accepted).
 
 ## GeoDNS
 - Uses MaxMind-compatible MMDB (`[geodns] database_path`).

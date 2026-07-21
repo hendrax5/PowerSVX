@@ -121,6 +121,21 @@ func (m *Manager) SetEnabled(on bool) {
 	m.mu.Unlock()
 }
 
+// SetTargets replaces secondary endpoints (host or host:port). Empty resets to defaults.
+func (m *Manager) SetTargets(in []string) error {
+	if m == nil {
+		return fmt.Errorf("axfr sync unavailable")
+	}
+	t := normalizeTargets(in)
+	if len(t) == 0 {
+		t = append([]string(nil), DefaultTargets...)
+	}
+	m.mu.Lock()
+	m.targets = t
+	m.mu.Unlock()
+	return nil
+}
+
 func (m *Manager) Enabled() bool {
 	if m == nil {
 		return false
@@ -404,6 +419,6 @@ func (m *Manager) Snapshot() Status {
 		Targets:  append([]string(nil), m.targets...),
 		Progress: m.progress,
 		Zones:    zones,
-		Note:     "When enabled, Kominfo secondaries may AXFR without global allow_axfr/TSIG. Sync sends NOTIFY then checks remote SOA. Status axfr_ok appears after they pull.",
+		Note:     "Default sources are Kominfo secondaries and can be edited. When enabled, listed hosts may AXFR without global allow_axfr/TSIG. Sync sends NOTIFY then checks remote SOA.",
 	}
 }

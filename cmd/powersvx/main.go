@@ -296,7 +296,7 @@ func main() {
 	kominfoMgr := kominfo.New(auth, log, cfg.KominfoSync.Targets)
 	kominfoMgr.SetEnabled(cfg.KominfoSync.Enabled)
 	dnsSrv.SetKominfo(kominfoMgr)
-	log.Info("kominfo sync ready", "enabled", kominfoMgr.Enabled(), "targets", kominfoMgr.Targets())
+	log.Info("axfr sync ready", "enabled", kominfoMgr.Enabled(), "targets", kominfoMgr.Targets())
 
 	rest := api.New(cfg, dnsSrv, db, tier, auth, log)
 	rest.SetDataDir(*dataDir)
@@ -395,6 +395,9 @@ func main() {
 					ForwardZones: cfg.Resolver.ForwardZones,
 					KominfoSync:  cfg.KominfoSync.Enabled,
 				})
+				if k := dnsSrv.Kominfo(); k != nil {
+					_ = k.SetTargets(cfg.KominfoSync.Targets)
+				}
 				if err := dnsSrv.SetQueryACL(cfg.ACL.AllowQuery, cfg.ACL.DenyQuery); err != nil {
 					log.Warn("acl reload failed", "err", err)
 				}

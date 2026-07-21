@@ -92,7 +92,8 @@ require_tsig = true
 enabled = false
 require_tsig = true
 
-# Kominfo secondary AXFR sync (NOTIFY + allow pull). Default off; enable in UI.
+# AXFR sync to secondary sources (NOTIFY + allow pull). Default off; enable in Tools → AXFR.
+# Default targets are Kominfo secondaries and are editable in the UI.
 [kominfo_sync]
 enabled = false
 # targets = ["182.23.79.202:53", "139.255.196.202:53"]
