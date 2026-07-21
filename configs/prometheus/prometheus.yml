@@ -5,6 +5,11 @@ rule_files:
   - /etc/prometheus/alerts.yml
 
 scrape_configs:
+  # Bridge networking (powersvx service DNS name)
   - job_name: powersvx
     static_configs:
       - targets: ["powersvx:9100"]
+  # Host networking (network_mode: host) — metrics on the Docker host
+  - job_name: powersvx-host
+    static_configs:
+      - targets: ["host.docker.internal:9100"]

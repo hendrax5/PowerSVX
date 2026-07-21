@@ -46,6 +46,8 @@ services:
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: powersvx-prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./configs/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
@@ -62,6 +64,10 @@ services:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
       - GF_USERS_ALLOW_SIGN_UP=false
+      # Embed in PowerSVX UI (/analytics); anonymous viewer for iframe without login wall
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_AUTH_ANONYMOUS_ENABLED=${GF_AUTH_ANONYMOUS_ENABLED:-true}
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     volumes:
       - ./configs/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana-data:/var/lib/grafana

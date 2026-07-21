@@ -61,6 +61,7 @@ function Shell({ children }) {
     {
       label: 'Observe',
       links: [
+        ['/analytics', 'Analytics'],
         ['/logs', 'Query logs'],
         ['/audit', 'Audit'],
       ],
@@ -339,11 +340,21 @@ function Dashboard() {
   return (
     <div className="space-y-6 max-w-6xl">
       <header className="reveal">
-        <h1 className="text-2xl font-semibold">Dashboard</h1>
-        <p className="text-[var(--muted)] text-sm mt-1">
-          v{s.version} · uptime {formatUptime(s.uptime_seconds)} · mode {s.mode} · QPS{' '}
-          {Number(mon.qps_now || 0).toFixed(0)}
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold">Dashboard</h1>
+            <p className="text-[var(--muted)] text-sm mt-1">
+              v{s.version} · uptime {formatUptime(s.uptime_seconds)} · mode {s.mode} · QPS{' '}
+              {Number(mon.qps_now || 0).toFixed(0)}
+            </p>
+          </div>
+          <a
+            href="/analytics"
+            className="text-sm text-[var(--accent)] underline shrink-0 mt-1"
+          >
+            Longer trends in Analytics →
+          </a>
+        </div>
         <div className="flex flex-wrap gap-2 mt-3">
           <Badge on={s.dot_enabled} label="DoT" />
           <Badge on={s.doh_enabled} label="DoH" />
@@ -2793,6 +2804,105 @@ function AuditLog() {
   )
 }
 
+function grafanaBaseURL() {
+  try {
+    const stored = localStorage.getItem('powersvx_grafana_url')
+    if (stored) return stored.replace(/\/$/, '')
+  } catch {
+    /* ignore */
+  }
+  const { protocol, hostname } = window.location
+  return `${protocol}//${hostname}:3000`
+}
+
+function buildGrafanaURL(base, { kiosk = true } = {}) {
+  const root = (base || grafanaBaseURL()).replace(/\/$/, '')
+  const path = '/d/powersvx-dns/powersvx-dns'
+  const q = new URLSearchParams({
+    orgId: '1',
+    from: 'now-6h',
+    to: 'now',
+    theme: 'dark',
+  })
+  if (kiosk) q.set('kiosk', 'tv')
+  return `${root}${path}?${q}`
+}
+
+function Analytics() {
+  const [base, setBase] = useState(() => grafanaBaseURL())
+  const [draft, setDraft] = useState(() => grafanaBaseURL())
+  const src = buildGrafanaURL(base, { kiosk: true })
+  const openURL = buildGrafanaURL(base, { kiosk: false })
+
+  const saveBase = (e) => {
+    e?.preventDefault?.()
+    const v = draft.trim().replace(/\/$/, '')
+    if (!v) return
+    try {
+      localStorage.setItem('powersvx_grafana_url', v)
+    } catch {
+      /* ignore */
+    }
+    setBase(v)
+  }
+
+  return (
+    <div className="space-y-4 max-w-[1400px]">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Analytics</h1>
+          <p className="text-sm text-[var(--muted)] mt-1">
+            Grafana trends (Prometheus). Live ops stay on{' '}
+            <a href="/" className="text-[var(--accent)] underline">
+              Dashboard
+            </a>
+            .
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <a
+            href={openURL}
+            target="_blank"
+            rel="noreferrer"
+            className="btn btn-primary text-sm min-h-[40px] inline-flex items-center"
+          >
+            Open in Grafana
+          </a>
+        </div>
+      </header>
+
+      <form onSubmit={saveBase} className="panel px-3 py-2 flex flex-wrap gap-2 items-center">
+        <label className="text-xs text-[var(--muted)] shrink-0">Grafana URL</label>
+        <input
+          className="flex-1 min-w-[14rem] bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="http://103.172.70.252:3000"
+        />
+        <button type="submit" className="btn btn-secondary text-sm min-h-[36px]">
+          Save
+        </button>
+        <span className="text-xs text-[var(--muted)] mono truncate max-w-full">using {base}</span>
+      </form>
+
+      <section className="panel overflow-hidden" style={{ minHeight: '70vh' }}>
+        <iframe
+          title="PowerSVX Grafana"
+          src={src}
+          className="w-full border-0 bg-[var(--bg)]"
+          style={{ height: '70vh', minHeight: 520 }}
+          referrerPolicy="no-referrer"
+        />
+      </section>
+
+      <p className="text-xs text-[var(--muted)]">
+        If the frame shows a login wall, sign in once in Grafana (Open in Grafana) or set anonymous viewer.
+        Embedding needs <span className="mono">GF_SECURITY_ALLOW_EMBEDDING=true</span>.
+      </p>
+    </div>
+  )
+}
+
 function DomainsPage() {
   const { canWrite } = useAuth()
   const [q, setQ] = useState('')
@@ -3229,7 +3339,7 @@ export default function App() {
                   <Route path="/logs" element={<QueryLogs />} />
                   <Route path="/audit" element={<AuditLog />} />
                   <Route path="/settings" element={<Settings />} />
-                  <Route path="/analytics" element={<Dashboard />} />
+                  <Route path="/analytics" element={<Analytics />} />
                 </Routes>
               </Shell>
             </RequireAuth>
