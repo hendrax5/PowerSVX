@@ -2,9 +2,11 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -12,6 +14,9 @@ import (
 	"github.com/powersvx/powersvx/internal/dnssec"
 	"github.com/powersvx/powersvx/internal/ecs"
 )
+
+// ErrAdmitRejected is returned when max_inflight is full (fail-fast, no queue wait).
+var ErrAdmitRejected = errors.New("resolve admission rejected")
 
 // Resolver resolves DNS queries via forward or recursive mode.
 type Resolver struct {
@@ -30,6 +35,9 @@ type Resolver struct {
 	client          *dns.Client
 	extraRoots      []string
 	sem             chan struct{}
+	semCap          int
+	inflight        atomic.Int64
+	nsCache         *nsAddrCache
 	// OnForwarder is called after each forwarder attempt (addr, ok, latencyMS, errMsg).
 	OnForwarder func(addr string, ok bool, latencyMS int64, errMsg string)
 }
@@ -91,7 +99,7 @@ func New(cfg config.ResolverConfig) *Resolver {
 	fwd, _ := config.NormalizeForwarders(cfg.Forwarders)
 	inflight := cfg.MaxInflight
 	if inflight <= 0 {
-		inflight = 4096
+		inflight = 256
 	}
 	fb := time.Duration(cfg.FallbackTimeoutMS) * time.Millisecond
 	r := &Resolver{
@@ -112,7 +120,9 @@ func New(cfg config.ResolverConfig) *Resolver {
 			Timeout: timeout,
 			UDPSize: buf,
 		},
-		sem: make(chan struct{}, inflight),
+		sem:     make(chan struct{}, inflight),
+		semCap:  inflight,
+		nsCache: newNSAddrCache(4096),
 	}
 	if cfg.RootHintsFile != "" {
 		if addrs, err := loadRootHintsFile(cfg.RootHintsFile); err == nil {
@@ -150,12 +160,24 @@ func (r *Resolver) ResolveWithECS(ctx context.Context, req *dns.Msg, sub *ecs.Su
 
 	switch r.Mode {
 	case "recursive":
-		// Prefer root iteration. Reserve only a short slice for forward_on_fail
-		// so fallback is a safety net, not the common path under load.
 		fbBudget := r.fallbackBudget()
 		recBudget := r.Timeout
 		if r.ForwardOnFail && len(r.Forwarders) > 0 && fbBudget > 0 && r.Timeout > fbBudget {
 			recBudget = r.Timeout - fbBudget
+		}
+		// Load shed: when >75% of admit slots busy, shorten recursive or skip to fallback.
+		if r.loadShed() {
+			if r.ForwardOnFail && len(r.Forwarders) > 0 {
+				recBudget = fbBudget
+				if recBudget > 200*time.Millisecond {
+					recBudget = 200 * time.Millisecond
+				}
+			} else {
+				recBudget = recBudget / 2
+				if recBudget < 200*time.Millisecond {
+					recBudget = 200 * time.Millisecond
+				}
+			}
 		}
 		rctx, cancel := context.WithTimeout(ctx, recBudget)
 		msg, err := r.resolveRecursive(rctx, q.Name, q.Qtype)
@@ -171,6 +193,27 @@ func (r *Resolver) ResolveWithECS(ctx context.Context, req *dns.Msg, sub *ecs.Su
 		msg, err := r.forward(ctx, req, sub)
 		return msg, "forward", err
 	}
+}
+
+func (r *Resolver) loadShed() bool {
+	if r == nil || r.semCap <= 0 {
+		return false
+	}
+	return int(r.inflight.Load())*4 >= r.semCap*3 // >= 75%
+}
+
+func (r *Resolver) Inflight() int {
+	if r == nil {
+		return 0
+	}
+	return int(r.inflight.Load())
+}
+
+func (r *Resolver) InflightCap() int {
+	if r == nil {
+		return 0
+	}
+	return r.semCap
 }
 
 func (r *Resolver) fallbackBudget() time.Duration {
@@ -203,11 +246,17 @@ func (r *Resolver) acquire(ctx context.Context) (func(), error) {
 	if r == nil || r.sem == nil {
 		return func() {}, nil
 	}
+	// Fail-fast: never wait on the semaphore (Unbound-like jostle / no queue pile-up).
 	select {
 	case r.sem <- struct{}{}:
-		return func() { <-r.sem }, nil
-	case <-ctx.Done():
-		return func() {}, ctx.Err()
+		r.inflight.Add(1)
+		return func() {
+			<-r.sem
+			r.inflight.Add(-1)
+		}, nil
+	default:
+		_ = ctx // reserved for future soft-wait; deliberately unused
+		return func() {}, ErrAdmitRejected
 	}
 }
 

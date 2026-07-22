@@ -83,6 +83,13 @@ func main() {
 	if cfg.Cache.MinTTL > 0 {
 		tier.MinTTL = time.Duration(cfg.Cache.MinTTL) * time.Second
 	}
+	tier.ServeStale = cfg.Cache.ServeStale
+	if cfg.Cache.StaleTTL > 0 {
+		tier.StaleTTL = time.Duration(cfg.Cache.StaleTTL) * time.Second
+	} else if tier.ServeStale {
+		tier.StaleTTL = time.Minute
+	}
+	tier.PrefetchPct = cfg.Cache.PrefetchPct
 	defer func() { _ = tier.Close() }()
 
 	auth := authoritative.NewStore()

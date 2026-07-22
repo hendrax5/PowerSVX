@@ -31,9 +31,24 @@ var (
 		Help: "In-flight recursive/forward resolves",
 	})
 
+	AdmitRejected = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "powersvx_admit_rejected_total",
+		Help: "Resolves rejected because max_inflight was full (fail-fast)",
+	})
+
 	CacheHits = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "powersvx_cache_hits_total",
 		Help: "Cache hits",
+	})
+
+	CacheStaleHits = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "powersvx_cache_stale_hits_total",
+		Help: "Serve-stale cache hits (expired but within stale window)",
+	})
+
+	CachePrefetch = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "powersvx_cache_prefetch_total",
+		Help: "Background cache prefetch/refresh starts",
 	})
 
 	CacheMisses = promauto.NewCounter(prometheus.CounterOpts{

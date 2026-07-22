@@ -43,7 +43,7 @@ func getRootAddrs() []string {
 		for _, h := range rootHints {
 			for _, ip := range h.ips {
 				if strings.Contains(ip, ":") {
-					continue // prefer IPv4 for Phase 1 simplicity
+					continue
 				}
 				rootAddrs = append(rootAddrs, net.JoinHostPort(ip, "53"))
 			}
@@ -63,7 +63,6 @@ func (r *Resolver) roots() []string {
 	return out
 }
 
-// loadRootHintsFile reads lines of "ip" or "host:port" (comments with #).
 func loadRootHintsFile(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -90,10 +89,9 @@ func loadRootHintsFile(path string) ([]string, error) {
 
 const (
 	maxRecursionDepth = 16
-	// hopTimeout caps each upstream UDP exchange so one dead NS cannot
-	// consume the whole recursive budget (needed for glue-less referrals).
 	defaultHopTimeout = 300 * time.Millisecond
 	maxNSLookups      = 6
+	raceParallel      = 3
 )
 
 func (r *Resolver) resolveRecursive(ctx context.Context, qname string, qtype uint16) (*dns.Msg, error) {
@@ -114,35 +112,39 @@ func (r *Resolver) iterate(ctx context.Context, qname string, qtype uint16, serv
 	setEDNS0(req, r.BufSize, r.WantDO)
 
 	var lastErr error
-	for _, srv := range servers {
+	// Race servers in batches of raceParallel (first success with usable reply wins).
+	for i := 0; i < len(servers); {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
-		resp, err := r.exchange(ctx, req, srv)
+		end := i + raceParallel
+		if end > len(servers) {
+			end = len(servers)
+		}
+		batch := servers[i:end]
+		i = end
+
+		resp, err := r.exchangeRace(ctx, req, batch)
 		if err != nil {
 			lastErr = err
 			continue
 		}
 		if resp == nil {
-			lastErr = fmt.Errorf("empty response from %s", srv)
+			lastErr = fmt.Errorf("empty response")
 			continue
 		}
 		if resp.Rcode == dns.RcodeNameError {
 			return resp, nil
 		}
 		if resp.Rcode != dns.RcodeSuccess && resp.Rcode != dns.RcodeNameError {
-			lastErr = fmt.Errorf("rcode %d from %s", resp.Rcode, srv)
+			lastErr = fmt.Errorf("rcode %d", resp.Rcode)
 			continue
 		}
-
-		// Final answer?
 		if hasAnswer(resp, qname, qtype) {
 			return resp, nil
 		}
-
-		// CNAME chase
 		if cname := extractCNAME(resp, qname); cname != "" {
 			cnameMsg, err := r.iterate(ctx, cname, qtype, r.roots(), depth+1)
 			if err != nil {
@@ -154,8 +156,6 @@ func (r *Resolver) iterate(ctx context.Context, qname string, qtype uint16, serv
 			out.RecursionAvailable = true
 			return out, nil
 		}
-
-		// Referral: collect NS + glue; resolve missing glue in parallel.
 		next := collectReferral(resp)
 		if len(next) == 0 {
 			next = r.resolveNSAddrs(ctx, collectNSNames(resp), depth)
@@ -172,8 +172,6 @@ func (r *Resolver) iterate(ctx context.Context, qname string, qtype uint16, serv
 	return nil, lastErr
 }
 
-// resolveNSAddrs looks up A records for NS hostnames in parallel when a
-// referral lacked glue (common for large CDNs like Akamai).
 func (r *Resolver) resolveNSAddrs(ctx context.Context, nsNames []string, depth int) []string {
 	if len(nsNames) == 0 {
 		return nil
@@ -182,20 +180,41 @@ func (r *Resolver) resolveNSAddrs(ctx context.Context, nsNames []string, depth i
 		nsNames = nsNames[:maxNSLookups]
 	}
 
-	type result struct{ addrs []string }
-	ch := make(chan result, len(nsNames))
+	seen := map[string]bool{}
+	var next []string
+	var needLookup []string
 	for _, ns := range nsNames {
+		if addrs := r.nsCache.get(ns); len(addrs) > 0 {
+			for _, a := range addrs {
+				if !seen[a] {
+					seen[a] = true
+					next = append(next, a)
+				}
+			}
+			continue
+		}
+		needLookup = append(needLookup, ns)
+	}
+	if len(needLookup) == 0 {
+		return next
+	}
+
+	type result struct {
+		name  string
+		addrs []string
+	}
+	ch := make(chan result, len(needLookup))
+	for _, ns := range needLookup {
 		ns := ns
 		go func() {
-			// Never let a lookup panic kill the DNS process.
 			defer func() {
 				if recover() != nil {
-					ch <- result{}
+					ch <- result{name: ns}
 				}
 			}()
 			nsMsg, err := r.iterate(ctx, ns, dns.TypeA, r.roots(), depth+1)
 			if err != nil || nsMsg == nil {
-				ch <- result{}
+				ch <- result{name: ns}
 				return
 			}
 			var addrs []string
@@ -204,13 +223,13 @@ func (r *Resolver) resolveNSAddrs(ctx context.Context, nsNames []string, depth i
 					addrs = append(addrs, net.JoinHostPort(a.A.String(), "53"))
 				}
 			}
-			ch <- result{addrs}
+			if len(addrs) > 0 {
+				r.nsCache.put(ns, addrs, 5*time.Minute)
+			}
+			ch <- result{name: ns, addrs: addrs}
 		}()
 	}
-
-	seen := map[string]bool{}
-	var next []string
-	for range nsNames {
+	for range needLookup {
 		select {
 		case <-ctx.Done():
 			return next
@@ -243,6 +262,49 @@ func (r *Resolver) hopTimeout(ctx context.Context) time.Duration {
 	return timeout
 }
 
+func (r *Resolver) exchangeRace(ctx context.Context, req *dns.Msg, servers []string) (*dns.Msg, error) {
+	if len(servers) == 1 {
+		return r.exchange(ctx, req, servers[0])
+	}
+	type result struct {
+		resp *dns.Msg
+		err  error
+	}
+	ch := make(chan result, len(servers))
+	ctxRace, cancel := context.WithCancel(ctx)
+	defer cancel()
+	for _, srv := range servers {
+		srv := srv
+		go func() {
+			resp, err := r.exchange(ctxRace, req, srv)
+			ch <- result{resp, err}
+		}()
+	}
+	var lastErr error
+	for range servers {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case res := <-ch:
+			if res.err != nil || res.resp == nil {
+				if res.err != nil {
+					lastErr = res.err
+				}
+				continue
+			}
+			if res.resp.Rcode == dns.RcodeSuccess || res.resp.Rcode == dns.RcodeNameError {
+				cancel()
+				return res.resp, nil
+			}
+			lastErr = fmt.Errorf("rcode %d", res.resp.Rcode)
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("all servers failed")
+	}
+	return nil, lastErr
+}
+
 func (r *Resolver) exchange(ctx context.Context, req *dns.Msg, addr string) (*dns.Msg, error) {
 	hop := r.hopTimeout(ctx)
 	if hop <= 0 {
@@ -257,16 +319,17 @@ func (r *Resolver) exchange(ctx context.Context, req *dns.Msg, addr string) (*dn
 	}
 	ch := make(chan result, 1)
 	go func() {
-		c := r.client
-		if c == nil {
-			c = &dns.Client{Net: "udp", Timeout: hop, UDPSize: r.BufSize}
-		}
-		// Per-hop client so Exchange respects short timeout, not resolver-wide Timeout.
-		cli := &dns.Client{Net: c.Net, Timeout: hop, UDPSize: c.UDPSize}
-		if cli.Net == "" {
-			cli.Net = "udp"
-		}
+		cli := &dns.Client{Net: "udp", Timeout: hop, UDPSize: r.BufSize}
 		resp, _, err := cli.Exchange(req.Copy(), addr)
+		if err == nil && resp != nil && resp.Truncated {
+			// TCP fallback on TC bit.
+			tcli := &dns.Client{Net: "tcp", Timeout: hop, UDPSize: r.BufSize}
+			resp2, _, err2 := tcli.Exchange(req.Copy(), addr)
+			if err2 == nil && resp2 != nil {
+				ch <- result{resp2, nil}
+				return
+			}
+		}
 		ch <- result{resp, err}
 	}()
 	select {
@@ -284,7 +347,6 @@ func hasAnswer(msg *dns.Msg, qname string, qtype uint16) bool {
 		if dns.CanonicalName(h.Name) != qname {
 			continue
 		}
-		// CNAME alone is not a final answer for A/AAAA/etc.; iterate() chases it.
 		if h.Rrtype == qtype {
 			return true
 		}

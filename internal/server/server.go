@@ -71,6 +71,8 @@ type Server struct {
 	log          *slog.Logger
 	queryACLMu sync.RWMutex
 	queryACL   *acl.List
+	// refreshInflight dedupes background cache refresh/prefetch by cache key.
+	refreshInflight sync.Map // uint64 -> struct{}
 	udp     *dns.Server
 	tcp     *dns.Server
 	dot     *dns.Server
@@ -205,6 +207,13 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	logQuery := func(qname, qtype string, rcode int, cached bool) {
 		if s.qlog == nil || s.cfg == nil || !s.cfg.Logging.QueryLogEnabled || qname == "" || clientIP == "" {
 			return
+		}
+		rate := s.cfg.Logging.QueryLogSampleRate
+		if rate > 0 && rate < 1 {
+			// Sample: keep roughly rate fraction using cheap counter.
+			if (s.queries.Load() % 1000) >= uint64(rate*1000) {
+				return
+			}
 		}
 		ip := clientIP
 		if s.cfg.Logging.QueryLogMaskIP {
@@ -416,8 +425,18 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 
-	if entry, ok := s.cache.GetScoped(qname, qtype, ecsKey, viewName, geoTag); ok {
-		metrics.CacheHits.Inc()
+	if entry, st := s.cache.GetScopedEx(qname, qtype, ecsKey, viewName, geoTag); st != cache.Miss {
+		pathLabel := "cache"
+		if st == cache.HitStale {
+			metrics.CacheStaleHits.Inc()
+			pathLabel = "cache_stale"
+			s.scheduleRefresh(qname, qtype, ecsKey, viewName, geoTag, sub, req)
+		} else {
+			metrics.CacheHits.Inc()
+			if entry.NeedsPrefetch(s.cache.PrefetchPct) {
+				s.scheduleRefresh(qname, qtype, ecsKey, viewName, geoTag, sub, req)
+			}
+		}
 		cached := new(dns.Msg)
 		if err := cached.Unpack(entry.Wire); err != nil {
 			wire := resolver.RewriteID(entry.Wire, req.Id)
@@ -427,13 +446,13 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			resolver.PrepareClientResponse(req, cached)
 			_ = w.WriteMsg(cached)
 		}
-		metrics.QueriesTotal.WithLabelValues(proto, "cache").Inc()
+		metrics.QueriesTotal.WithLabelValues(proto, pathLabel).Inc()
 		sec := time.Since(start).Seconds()
 		metrics.QueryDuration.WithLabelValues(proto).Observe(sec)
-		metrics.QueryDurationByPath.WithLabelValues("cache").Observe(sec)
+		metrics.QueryDurationByPath.WithLabelValues(pathLabel).Observe(sec)
 		observe(dns.RcodeToString[entry.Rcode])
 		logQuery(qname, qtypeStr, entry.Rcode, true)
-		note("cache", dns.RcodeToString[entry.Rcode], false, false, false)
+		note(pathLabel, dns.RcodeToString[entry.Rcode], false, false, false)
 		return
 	}
 	metrics.CacheMisses.Inc()
@@ -473,10 +492,23 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.res.Timeout)
 	defer cancel()
 
-	metrics.ResolveInflight.Inc()
+	metrics.ResolveInflight.Set(float64(s.res.Inflight()))
 	resp, via, err := s.res.ResolveWithECS(ctx, req, sub)
-	metrics.ResolveInflight.Dec()
+	metrics.ResolveInflight.Set(float64(s.res.Inflight()))
 	if err != nil {
+		if errors.Is(err, resolver.ErrAdmitRejected) {
+			metrics.AdmitRejected.Inc()
+			m := new(dns.Msg)
+			m.SetReply(req)
+			m.RecursionAvailable = true
+			m.Rcode = dns.RcodeServerFailure
+			_ = w.WriteMsg(m)
+			metrics.QueriesTotal.WithLabelValues(proto, "admit_rejected").Inc()
+			observe("SERVFAIL")
+			logQuery(qname, qtypeStr, dns.RcodeServerFailure, false)
+			note("admit_rejected", "SERVFAIL", false, false, false)
+			return
+		}
 		s.log.Warn("resolve failed", "kind", "resolve", "name", qname, "err", err)
 		m := new(dns.Msg)
 		m.SetReply(req)
@@ -542,6 +574,34 @@ func protocolFromWriter(w dns.ResponseWriter) string {
 
 func (s *Server) storeAndWrite(w dns.ResponseWriter, req, resp *dns.Msg) {
 	s.storeAndWriteScoped(w, req, resp, "", "", "")
+}
+
+// scheduleRefresh runs at most one background resolve per cache key to refresh stale/prefetch entries.
+func (s *Server) scheduleRefresh(qname string, qtype uint16, ecsKey, viewName, geoTag string, sub *ecs.Subnet, orig *dns.Msg) {
+	if s == nil || s.res == nil || s.cache == nil || orig == nil || len(orig.Question) == 0 {
+		return
+	}
+	key := cache.KeyScoped(qname, qtype, ecsKey, viewName, geoTag)
+	if _, loaded := s.refreshInflight.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	metrics.CachePrefetch.Inc()
+	req := orig.Copy()
+	go func() {
+		defer s.refreshInflight.Delete(key)
+		ctx, cancel := context.WithTimeout(context.Background(), s.res.Timeout)
+		defer cancel()
+		resp, _, err := s.res.ResolveWithECS(ctx, req, sub)
+		if err != nil || resp == nil {
+			return
+		}
+		wire, err := resolver.PackResponse(resp)
+		if err != nil {
+			return
+		}
+		ttl := resolver.MinTTL(resp)
+		s.cache.SetScoped(qname, qtype, ecsKey, viewName, geoTag, wire, resp.Rcode, ttl)
+	}()
 }
 
 func (s *Server) storeAndWriteScoped(w dns.ResponseWriter, req, resp *dns.Msg, ecsSubnet, viewName, geoTag string) {

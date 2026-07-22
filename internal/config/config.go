@@ -79,6 +79,12 @@ type CacheConfig struct {
 	// MinTTL floors positive-answer cache lifetime (0 = honor upstream TTL only).
 	MinTTL      int    `toml:"min_ttl"`
 	NegativeTTL int    `toml:"negative_ttl"`
+	// ServeStale answers briefly past Expiry while a background refresh runs.
+	ServeStale bool `toml:"serve_stale"`
+	// StaleTTL seconds past Expiry that stale answers may still be served (0 = 60 when ServeStale).
+	StaleTTL int `toml:"stale_ttl"`
+	// PrefetchPct triggers async refresh when remaining fresh TTL is below this % (0 = off).
+	PrefetchPct int `toml:"prefetch_pct"`
 }
 
 type ResolverConfig struct {
@@ -95,7 +101,7 @@ type ResolverConfig struct {
 	QNameMinimization bool     `toml:"qname_minimization"`
 	EDNSBufferSize    uint16   `toml:"edns_buffer_size"`
 	TimeoutMS         int      `toml:"timeout_ms"`
-	// MaxInflight caps concurrent recursive/forward resolves (0 = default 4096).
+	// MaxInflight caps concurrent recursive/forward resolves (0 = default 256).
 	MaxInflight int `toml:"max_inflight"`
 	// FallbackTimeoutMS is the short budget for forward_on_fail after recursive fails (0 = auto ~20% of TimeoutMS, capped 500ms).
 	FallbackTimeoutMS int `toml:"fallback_timeout_ms"`
@@ -187,6 +193,8 @@ type LoggingConfig struct {
 	QueryLogMaxSizeMB int `toml:"query_log_max_size_mb"`
 	// QueryLogMaskIP truncates client IPs before storage (/24 IPv4, /48 IPv6).
 	QueryLogMaskIP bool `toml:"query_log_mask_ip"`
+	// QueryLogSampleRate keeps this fraction of query logs (1.0 = all, 0.05 = 5%). 0 = all when logging enabled.
+	QueryLogSampleRate float64 `toml:"query_log_sample_rate"`
 }
 
 type RateLimitConfig struct {
@@ -294,7 +302,8 @@ func Default() *Config {
 		},
 		Cache: CacheConfig{
 			Type: "badger", Path: "./data/cache", MaxSizeMB: 512,
-			TTLSeconds: 300, MinTTL: 60, NegativeTTL: 60,
+			TTLSeconds: 300, MinTTL: 120, NegativeTTL: 60,
+			ServeStale: true, StaleTTL: 60, PrefetchPct: 10,
 		},
 		Resolver: ResolverConfig{
 			Mode: "recursive",
@@ -302,19 +311,20 @@ func Default() *Config {
 			ForwardOnFail: true,
 			DNSSECMode: "off", QNameMinimization: true,
 			EDNSBufferSize: 1232, TimeoutMS: 3000,
+			MaxInflight: 256, FallbackTimeoutMS: 400,
 			ECSEnabled: true, ECSPrefixV4: 24, ECSPrefixV6: 56,
 		},
 		API: APIConfig{RESTEnabled: true, RESTBind: "0.0.0.0:5380", GRPCEnabled: false, GRPCBind: "0.0.0.0:5381", AuthType: "none"},
 		Logging: LoggingConfig{
 			Level: "info", Format: "json", QueryLogEnabled: false,
 			QueryLogDestination: "postgresql", QueryLogRetentionDays: 30,
-			QueryLogMaxSizeMB: 5120, QueryLogMaskIP: true,
+			QueryLogMaxSizeMB: 5120, QueryLogMaskIP: true, QueryLogSampleRate: 0.05,
 		},
 		RateLimit: RateLimitConfig{
 			Enabled: false, DefaultQPS: 100, DefaultBurst: 200, BlockDuration: 300,
 			Whitelist: []string{"127.0.0.1/32", "::1/128"},
-		},
-		RPZ: RPZConfig{Enabled: false, UpdateInterval: 3600},
+			GlobalQPS: 7500, GlobalBurst: 2000,
+		},		RPZ: RPZConfig{Enabled: false, UpdateInterval: 3600},
 		Metrics: MetricsConfig{
 			PrometheusEnabled: true,
 			PrometheusBind:    "0.0.0.0:9100",

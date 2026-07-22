@@ -10,7 +10,8 @@ import (
 )
 
 const (
-	metaLen = 12 // expiry unix nano (8) + rcode (4)
+	metaLenV1 = 12 // expiry(8) + rcode(4)
+	metaLenV2 = 20 // expiry(8) + rcode(4) + staleUntil(8)
 )
 
 // L2 is a persistent BadgerDB cache of pre-encoded responses.
@@ -32,26 +33,39 @@ func NewL2(path string) (*L2, error) {
 	return &L2{db: db}, nil
 }
 
-func encodeValue(wire []byte, expiry time.Time, rcode int) []byte {
-	buf := make([]byte, metaLen+len(wire))
+func encodeValue(wire []byte, expiry, staleUntil time.Time, rcode int) []byte {
+	buf := make([]byte, metaLenV2+len(wire))
 	binary.BigEndian.PutUint64(buf[0:8], uint64(expiry.UnixNano()))
 	binary.BigEndian.PutUint32(buf[8:12], uint32(rcode))
-	copy(buf[metaLen:], wire)
+	binary.BigEndian.PutUint64(buf[12:20], uint64(staleUntil.UnixNano()))
+	copy(buf[metaLenV2:], wire)
 	return buf
 }
 
-func decodeValue(raw []byte) (*Entry, bool) {
-	if len(raw) < metaLen {
-		return nil, false
+func decodeValue(raw []byte, allowStale bool) (*Entry, HitState) {
+	if len(raw) < metaLenV1 {
+		return nil, Miss
 	}
 	exp := time.Unix(0, int64(binary.BigEndian.Uint64(raw[0:8])))
-	if time.Now().After(exp) {
-		return nil, false
-	}
 	rcode := int(binary.BigEndian.Uint32(raw[8:12]))
-	wire := make([]byte, len(raw)-metaLen)
-	copy(wire, raw[metaLen:])
-	return &Entry{Wire: wire, Expiry: exp, Rcode: rcode}, true
+	staleUntil := exp
+	wireOff := metaLenV1
+	if len(raw) >= metaLenV2 {
+		staleUntil = time.Unix(0, int64(binary.BigEndian.Uint64(raw[12:20])))
+		wireOff = metaLenV2
+	}
+	now := time.Now()
+	wire := make([]byte, len(raw)-wireOff)
+	copy(wire, raw[wireOff:])
+	e := &Entry{Wire: wire, Expiry: exp, StaleUntil: staleUntil, Rcode: rcode}
+	if now.Before(exp) {
+		e.StoredTTL = time.Until(exp) // approximate; prefetch still works directionally
+		return e, HitFresh
+	}
+	if allowStale && now.Before(staleUntil) {
+		return e, HitStale
+	}
+	return nil, Miss
 }
 
 func keyBytes(key uint64) []byte {
@@ -61,34 +75,51 @@ func keyBytes(key uint64) []byte {
 }
 
 func (c *L2) Get(key uint64) (*Entry, bool) {
+	e, st := c.GetEx(key, false)
+	return e, st == HitFresh
+}
+
+func (c *L2) GetEx(key uint64, allowStale bool) (*Entry, HitState) {
 	var entry *Entry
+	var state HitState = Miss
 	err := c.db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get(keyBytes(key))
 		if err != nil {
 			return err
 		}
 		return item.Value(func(val []byte) error {
-			e, ok := decodeValue(val)
-			if ok {
+			e, st := decodeValue(val, allowStale)
+			if st != Miss {
 				entry = e
+				state = st
 			}
 			return nil
 		})
 	})
 	if err != nil || entry == nil {
-		return nil, false
+		return nil, Miss
 	}
-	return entry, true
+	return entry, state
 }
 
 func (c *L2) Set(key uint64, wire []byte, ttl time.Duration, rcode int) error {
+	return c.SetStale(key, wire, ttl, 0, rcode)
+}
+
+func (c *L2) SetStale(key uint64, wire []byte, ttl, staleTTL time.Duration, rcode int) error {
 	if ttl <= 0 {
 		ttl = time.Second
 	}
 	expiry := time.Now().Add(ttl)
-	val := encodeValue(wire, expiry, rcode)
+	staleUntil := expiry
+	keep := ttl
+	if staleTTL > 0 {
+		staleUntil = expiry.Add(staleTTL)
+		keep = ttl + staleTTL
+	}
+	val := encodeValue(wire, expiry, staleUntil, rcode)
 	return c.db.Update(func(txn *badger.Txn) error {
-		e := badger.NewEntry(keyBytes(key), val).WithTTL(ttl)
+		e := badger.NewEntry(keyBytes(key), val).WithTTL(keep)
 		return txn.SetEntry(e)
 	})
 }
@@ -111,6 +142,9 @@ type Tier struct {
 	DefaultTTL  time.Duration // max positive cache TTL
 	MinTTL      time.Duration // floor for positive answers (0 = off)
 	NegativeTTL time.Duration
+	ServeStale  bool
+	StaleTTL    time.Duration
+	PrefetchPct int
 }
 
 func NewTier(l1 *L1, l2 *L2, defaultTTL, negativeTTL time.Duration) *Tier {
@@ -128,20 +162,44 @@ func (t *Tier) Get(name string, qtype uint16) (*Entry, bool) {
 }
 
 func (t *Tier) GetScoped(name string, qtype uint16, ecsSubnet, viewName, geoTag string) (*Entry, bool) {
+	e, st := t.GetScopedEx(name, qtype, ecsSubnet, viewName, geoTag)
+	return e, st == HitFresh
+}
+
+func (t *Tier) GetScopedEx(name string, qtype uint16, ecsSubnet, viewName, geoTag string) (*Entry, HitState) {
 	k := KeyScoped(name, qtype, ecsSubnet, viewName, geoTag)
-	if e, ok := t.L1.Get(k); ok {
-		return e, true
+	allowStale := t != nil && t.ServeStale
+	if e, st := t.L1.GetEx(k, allowStale); st != Miss {
+		return e, st
 	}
 	if t.L2 == nil {
-		return nil, false
+		return nil, Miss
 	}
-	e, ok := t.L2.Get(k)
-	if !ok {
-		return nil, false
+	e, st := t.L2.GetEx(k, allowStale)
+	if st == Miss {
+		return nil, Miss
 	}
-	ttl := time.Until(e.Expiry)
-	t.L1.Set(k, e.Wire, ttl, e.Rcode)
-	return e, true
+	// Promote into L1 with remaining windows.
+	now := time.Now()
+	freshLeft := e.Expiry.Sub(now)
+	staleExtra := e.StaleUntil.Sub(e.Expiry)
+	if freshLeft < 0 {
+		freshLeft = time.Second // keep in L1 briefly as stale carrier
+		if staleExtra < time.Second {
+			staleExtra = time.Until(e.StaleUntil)
+		}
+	}
+	if staleExtra < 0 {
+		staleExtra = 0
+	}
+	t.L1.SetStale(k, e.Wire, freshLeft, staleExtra, e.Rcode)
+	if pe, _ := t.L1.GetEx(k, allowStale); pe != nil {
+		pe.StoredTTL = e.StoredTTL
+		if pe.StoredTTL <= 0 && !e.Expiry.IsZero() {
+			pe.StoredTTL = t.DefaultTTL
+		}
+	}
+	return e, st
 }
 
 func (t *Tier) Set(name string, qtype uint16, wire []byte, rcode int, msgTTL uint32) {
@@ -159,16 +217,22 @@ func (t *Tier) SetScoped(name string, qtype uint16, ecsSubnet, viewName, geoTag 
 			ttl = d
 		}
 	}
-	// Floor short CDN TTLs so repeated queries within min_ttl hit cache.
 	if rcode == 0 && t.MinTTL > 0 && ttl < t.MinTTL {
 		ttl = t.MinTTL
 	}
 	if t.DefaultTTL > 0 && ttl > t.DefaultTTL {
 		ttl = t.DefaultTTL
 	}
-	t.L1.Set(k, wire, ttl, rcode)
+	staleTTL := time.Duration(0)
+	if rcode == 0 && t.ServeStale {
+		staleTTL = t.StaleTTL
+		if staleTTL <= 0 {
+			staleTTL = time.Minute
+		}
+	}
+	t.L1.SetStale(k, wire, ttl, staleTTL, rcode)
 	if t.L2 != nil {
-		_ = t.L2.Set(k, wire, ttl, rcode)
+		_ = t.L2.SetStale(k, wire, ttl, staleTTL, rcode)
 	}
 }
 

@@ -34,8 +34,13 @@ path = "/data/cache"
 # Larger L1 (entries ≈ max_size_mb * 1024) raises hit ratio under multi‑10k QPS.
 max_size_mb = 256
 ttl_seconds = 300
-min_ttl = 60
+min_ttl = 120
 negative_ttl = 60
+# Serve expired answers briefly (Unbound-like) while refreshing in background.
+serve_stale = true
+stale_ttl = 60
+# Prefetch when remaining TTL below this percent of stored lifetime (0 = off).
+prefetch_pct = 10
 
 [resolver]
 # Recursive to root first; short forward_on_fail only when root iteration fails.
@@ -46,7 +51,8 @@ dnssec_mode = "off"
 edns_buffer_size = 1232
 timeout_ms = 2000
 fallback_timeout_ms = 400
-max_inflight = 4096
+# Hard admit cap (~Unbound reqlist). Full = fail-fast SERVFAIL, no queue pile-up.
+max_inflight = 256
 ecs_enabled = false
 ecs_prefix_v4 = 24
 ecs_prefix_v6 = 56
@@ -58,9 +64,9 @@ default_qps = 2000
 default_burst = 400
 block_duration = 60
 whitelist = ["127.0.0.1/32", "::1/128"]
-# Soft cap across ALL clients (protects p99 under flood). Tune to capacity.
-global_qps = 18000
-global_burst = 4000
+# Soft cap near real customer QPS (~4.5–6k); prevents retry-storm inflation.
+global_qps = 7500
+global_burst = 2000
 
 [rpz]
 enabled = true
@@ -90,6 +96,7 @@ enabled = false
 [acl]
 # Empty allow_query = any client may query. Non-empty = only listed CIDRs/IPs.
 # deny_query always wins over allow.
+# Mirror Unbound: list only customer/resolver nets to cut non-customer flood.
 # allow_query = ["10.0.0.0/8", "192.168.0.0/16", "127.0.0.1", "::1"]
 # deny_query = []
 
@@ -122,3 +129,5 @@ query_log_retention_days = 3
 # Hard cap table+indexes (5 GB default). Editable in Settings → Features.
 query_log_max_size_mb = 5120
 query_log_mask_ip = true
+# Under load, sample query logs (1.0 = all, 0.05 = 5%). Caps Postgres CPU.
+query_log_sample_rate = 0.05

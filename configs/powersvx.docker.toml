@@ -34,8 +34,11 @@ path = "/data/cache"
 # Lean: smaller L1 (entries ≈ max_size_mb * 1024). Raise only if hit ratio stays low.
 max_size_mb = 256
 ttl_seconds = 300
-min_ttl = 60
+min_ttl = 120
 negative_ttl = 60
+serve_stale = true
+stale_ttl = 60
+prefetch_pct = 10
 
 [resolver]
 # Recursive to root first; short forward_on_fail only when root iteration fails.
@@ -46,7 +49,7 @@ dnssec_mode = "off"
 edns_buffer_size = 1232
 timeout_ms = 2000
 fallback_timeout_ms = 400
-max_inflight = 4096
+max_inflight = 256
 ecs_enabled = false
 ecs_prefix_v4 = 24
 ecs_prefix_v6 = 56
@@ -57,8 +60,8 @@ default_qps = 2000
 default_burst = 400
 block_duration = 60
 whitelist = ["127.0.0.1/32", "::1/128"]
-global_qps = 18000
-global_burst = 4000
+global_qps = 7500
+global_burst = 2000
 
 [rpz]
 enabled = true
@@ -141,3 +144,4 @@ query_log_max_size_mb = 5120
 # (e.g. 172.18.0.1), not the LAN client. Masking /24 then shows 172.18.0.0.
 # Keep false here; set true only when using network_mode: host (real client IPs).
 query_log_mask_ip = false
+query_log_sample_rate = 0.05
