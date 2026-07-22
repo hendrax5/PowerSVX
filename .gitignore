@@ -17,3 +17,7 @@ skills-lock.json
 *.exe~
 powersvx.exe~
 powersvx-start.err
+
+powersvx-disk-guard.bundle
+powersvx-disk-guard-files.tgz
+
