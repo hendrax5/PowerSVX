@@ -1348,7 +1348,7 @@ func (a *API) handleQueryLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	rows, total, err := a.db.ListQueryLogs(ctx, database.QueryLogFilter{
 		ClientIP: clientIP, Limit: limit, Offset: offset,
@@ -1360,7 +1360,7 @@ func (a *API) handleQueryLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.log.Warn("query logs list failed", "err", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "query logs temporarily unavailable (database busy or table too large)", http.StatusServiceUnavailable)
 		return
 	}
 	if rows == nil {

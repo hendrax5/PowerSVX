@@ -269,6 +269,7 @@ type QueryLogFilter struct {
 }
 
 // ListQueryLogs returns newest-first rows, optional exact client IP filter.
+// Avoids SELECT COUNT(*) on the full table — that timed out on multi‑10M row logs.
 func (db *DB) ListQueryLogs(ctx context.Context, f QueryLogFilter) ([]QueryLogRow, int, error) {
 	if db == nil || db.sql == nil {
 		return nil, 0, fmt.Errorf("database unavailable")
@@ -292,13 +293,14 @@ func (db *DB) ListQueryLogs(ctx context.Context, f QueryLogFilter) ([]QueryLogRo
 		args = append(args, ip)
 	}
 
-	countQ := "SELECT COUNT(*) FROM query_logs " + where
-	var total int
-	if err := db.sql.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
+	total, err := db.estimateQueryLogTotal(ctx, where, args)
+	if err != nil {
 		return nil, 0, err
 	}
 
-	listArgs := append(append([]any{}, args...), limit, offset)
+	// Fetch one extra row to know if another page exists without a full count.
+	fetch := limit + 1
+	listArgs := append(append([]any{}, args...), fetch, offset)
 	limIdx, offIdx := len(args)+1, len(args)+2
 	listQ := fmt.Sprintf(`
 		SELECT id, timestamp, host(client_ip), query_name, query_type,
@@ -325,7 +327,44 @@ func (db *DB) ListQueryLogs(ctx context.Context, f QueryLogFilter) ([]QueryLogRo
 		}
 		out = append(out, r)
 	}
-	return out, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if len(out) > limit {
+		out = out[:limit]
+		// Ensure paginator can advance when planner estimate is stale/low.
+		if total < offset+limit+1 {
+			total = offset + limit + 1
+		}
+	} else if total < offset+len(out) {
+		total = offset + len(out)
+	}
+	return out, total, nil
+}
+
+// estimateQueryLogTotal prefers pg_class.reltuples (instant). Filtered lists use a capped COUNT.
+func (db *DB) estimateQueryLogTotal(ctx context.Context, where string, args []any) (int, error) {
+	if where == "" {
+		var n float64
+		err := db.sql.QueryRowContext(ctx, `
+			SELECT COALESCE(reltuples, 0) FROM pg_class WHERE oid = 'query_logs'::regclass`).Scan(&n)
+		if err != nil {
+			return 0, err
+		}
+		if n < 0 {
+			n = 0
+		}
+		return int(n), nil
+	}
+	// Cap so a hot client_ip cannot scan tens of millions inside the API timeout.
+	q := fmt.Sprintf(`SELECT COUNT(*) FROM (
+		SELECT 1 FROM query_logs %s LIMIT 10001
+	) s`, where)
+	var n int
+	if err := db.sql.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 const schemaSQL = `

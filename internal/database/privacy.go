@@ -39,23 +39,41 @@ func (db *DB) StartRetentionLoop(ctx context.Context, retentionDays int, interva
 		interval = time.Hour
 	}
 	run := func() {
-		c, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
+		// Batched deletes: a single DELETE on tens of millions of rows never finishes
+		// inside a short timeout and blocks the UI/API.
 		cutoff := time.Now().UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)
-		res, err := db.sql.ExecContext(c, `DELETE FROM query_logs WHERE timestamp < $1`, cutoff)
-		if err != nil {
-			if db.log != nil {
-				db.log.Warn("query log retention failed", "err", err)
+		var purged int64
+		for i := 0; i < 200; i++ {
+			c, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			res, err := db.sql.ExecContext(c, `
+				DELETE FROM query_logs
+				WHERE ctid IN (
+					SELECT ctid FROM query_logs
+					WHERE timestamp < $1
+					LIMIT 50000
+				)`, cutoff)
+			cancel()
+			if err != nil {
+				if db.log != nil {
+					db.log.Warn("query log retention failed", "err", err)
+				}
+				return
 			}
-			return
+			n, _ := res.RowsAffected()
+			purged += n
+			if n == 0 {
+				break
+			}
 		}
-		n, _ := res.RowsAffected()
-		if n > 0 {
-			if _, err := db.sql.ExecContext(c, `VACUUM (ANALYZE) query_logs`); err != nil && db.log != nil {
+		if purged > 0 {
+			c, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			_, err := db.sql.ExecContext(c, `VACUUM (ANALYZE) query_logs`)
+			cancel()
+			if err != nil && db.log != nil {
 				db.log.Warn("query log vacuum failed", "err", err)
 			}
 			if db.log != nil {
-				db.log.Info("query log retention purged", "rows", n, "older_than_days", retentionDays)
+				db.log.Info("query log retention purged", "rows", purged, "older_than_days", retentionDays)
 			}
 		}
 	}
