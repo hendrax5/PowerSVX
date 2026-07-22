@@ -34,6 +34,7 @@ path = "/data/cache"
 # Larger L1 (entries ≈ max_size_mb * 1024) raises hit ratio under multi‑10k QPS.
 max_size_mb = 256
 ttl_seconds = 300
+min_ttl = 60
 negative_ttl = 60
 
 [resolver]

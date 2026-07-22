@@ -80,6 +80,9 @@ func main() {
 		time.Duration(cfg.Cache.TTLSeconds)*time.Second,
 		time.Duration(cfg.Cache.NegativeTTL)*time.Second,
 	)
+	if cfg.Cache.MinTTL > 0 {
+		tier.MinTTL = time.Duration(cfg.Cache.MinTTL) * time.Second
+	}
 	defer func() { _ = tier.Close() }()
 
 	auth := authoritative.NewStore()

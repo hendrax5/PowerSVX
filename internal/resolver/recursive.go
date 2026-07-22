@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/miekg/dns"
 )
@@ -87,7 +88,13 @@ func loadRootHintsFile(path string) ([]string, error) {
 	return out, sc.Err()
 }
 
-const maxRecursionDepth = 16
+const (
+	maxRecursionDepth = 16
+	// hopTimeout caps each upstream UDP exchange so one dead NS cannot
+	// consume the whole recursive budget (needed for glue-less referrals).
+	defaultHopTimeout = 300 * time.Millisecond
+	maxNSLookups      = 6
+)
 
 func (r *Resolver) resolveRecursive(ctx context.Context, qname string, qtype uint16) (*dns.Msg, error) {
 	return r.iterate(ctx, qname, qtype, r.roots(), 0)
@@ -144,22 +151,10 @@ func (r *Resolver) iterate(ctx context.Context, qname string, qtype uint16, serv
 			return out, nil
 		}
 
-		// Referral: collect NS + glue
+		// Referral: collect NS + glue; resolve missing glue in parallel.
 		next := collectReferral(resp)
 		if len(next) == 0 {
-			// Try to resolve NS names if no glue
-			nsNames := collectNSNames(resp)
-			for _, ns := range nsNames {
-				nsMsg, err := r.iterate(ctx, ns, dns.TypeA, r.roots(), depth+1)
-				if err != nil {
-					continue
-				}
-				for _, rr := range nsMsg.Answer {
-					if a, ok := rr.(*dns.A); ok {
-						next = append(next, net.JoinHostPort(a.A.String(), "53"))
-					}
-				}
-			}
+			next = r.resolveNSAddrs(ctx, collectNSNames(resp), depth)
 		}
 		if len(next) == 0 {
 			lastErr = fmt.Errorf("no referral for %s", qname)
@@ -173,19 +168,100 @@ func (r *Resolver) iterate(ctx context.Context, qname string, qtype uint16, serv
 	return nil, lastErr
 }
 
+// resolveNSAddrs looks up A records for NS hostnames in parallel when a
+// referral lacked glue (common for large CDNs like Akamai).
+func (r *Resolver) resolveNSAddrs(ctx context.Context, nsNames []string, depth int) []string {
+	if len(nsNames) == 0 {
+		return nil
+	}
+	if len(nsNames) > maxNSLookups {
+		nsNames = nsNames[:maxNSLookups]
+	}
+
+	type result struct{ addrs []string }
+	ch := make(chan result, len(nsNames))
+	for _, ns := range nsNames {
+		ns := ns
+		go func() {
+			nsMsg, err := r.iterate(ctx, ns, dns.TypeA, r.roots(), depth+1)
+			if err != nil || nsMsg == nil {
+				ch <- result{}
+				return
+			}
+			var addrs []string
+			for _, rr := range nsMsg.Answer {
+				if a, ok := rr.(*dns.A); ok {
+					addrs = append(addrs, net.JoinHostPort(a.A.String(), "53"))
+				}
+			}
+			ch <- result{addrs}
+		}()
+	}
+
+	seen := map[string]bool{}
+	var next []string
+	for range nsNames {
+		select {
+		case <-ctx.Done():
+			return next
+		case res := <-ch:
+			for _, a := range res.addrs {
+				if !seen[a] {
+					seen[a] = true
+					next = append(next, a)
+				}
+			}
+		}
+	}
+	return next
+}
+
+func (r *Resolver) hopTimeout(ctx context.Context) time.Duration {
+	timeout := defaultHopTimeout
+	if r != nil && r.Timeout > 0 && r.Timeout < timeout {
+		timeout = r.Timeout
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		remain := time.Until(dl)
+		if remain <= 0 {
+			return 0
+		}
+		if remain < timeout {
+			return remain
+		}
+	}
+	return timeout
+}
+
 func (r *Resolver) exchange(ctx context.Context, req *dns.Msg, addr string) (*dns.Msg, error) {
+	hop := r.hopTimeout(ctx)
+	if hop <= 0 {
+		return nil, ctx.Err()
+	}
+	ectx, cancel := context.WithTimeout(ctx, hop)
+	defer cancel()
+
 	type result struct {
 		resp *dns.Msg
 		err  error
 	}
 	ch := make(chan result, 1)
 	go func() {
-		resp, _, err := r.client.Exchange(req.Copy(), addr)
+		c := r.client
+		if c == nil {
+			c = &dns.Client{Net: "udp", Timeout: hop, UDPSize: r.BufSize}
+		}
+		// Per-hop client so Exchange respects short timeout, not resolver-wide Timeout.
+		cli := &dns.Client{Net: c.Net, Timeout: hop, UDPSize: c.UDPSize}
+		if cli.Net == "" {
+			cli.Net = "udp"
+		}
+		resp, _, err := cli.Exchange(req.Copy(), addr)
 		ch <- result{resp, err}
 	}()
 	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	case <-ectx.Done():
+		return nil, ectx.Err()
 	case res := <-ch:
 		return res.resp, res.err
 	}

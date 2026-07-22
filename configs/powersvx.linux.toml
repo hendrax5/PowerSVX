@@ -41,6 +41,7 @@ type = "badger"
 path = "/var/lib/powersvx/cache"
 max_size_mb = 1024
 ttl_seconds = 300
+min_ttl = 60
 negative_ttl = 60
 
 [resolver]

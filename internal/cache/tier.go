@@ -106,10 +106,11 @@ func (c *L2) Ping() error {
 
 // Tier combines L1 + L2 with promote-on-hit.
 type Tier struct {
-	L1           *L1
-	L2           *L2
-	DefaultTTL   time.Duration
-	NegativeTTL  time.Duration
+	L1          *L1
+	L2          *L2
+	DefaultTTL  time.Duration // max positive cache TTL
+	MinTTL      time.Duration // floor for positive answers (0 = off)
+	NegativeTTL time.Duration
 }
 
 func NewTier(l1 *L1, l2 *L2, defaultTTL, negativeTTL time.Duration) *Tier {
@@ -157,6 +158,13 @@ func (t *Tier) SetScoped(name string, qtype uint16, ecsSubnet, viewName, geoTag 
 		if d < ttl {
 			ttl = d
 		}
+	}
+	// Floor short CDN TTLs so repeated queries within min_ttl hit cache.
+	if rcode == 0 && t.MinTTL > 0 && ttl < t.MinTTL {
+		ttl = t.MinTTL
+	}
+	if t.DefaultTTL > 0 && ttl > t.DefaultTTL {
+		ttl = t.DefaultTTL
 	}
 	t.L1.Set(k, wire, ttl, rcode)
 	if t.L2 != nil {

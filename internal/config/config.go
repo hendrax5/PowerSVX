@@ -76,6 +76,8 @@ type CacheConfig struct {
 	Path        string `toml:"path"`
 	MaxSizeMB   int    `toml:"max_size_mb"`
 	TTLSeconds  int    `toml:"ttl_seconds"`
+	// MinTTL floors positive-answer cache lifetime (0 = honor upstream TTL only).
+	MinTTL      int    `toml:"min_ttl"`
 	NegativeTTL int    `toml:"negative_ttl"`
 }
 
@@ -292,7 +294,7 @@ func Default() *Config {
 		},
 		Cache: CacheConfig{
 			Type: "badger", Path: "./data/cache", MaxSizeMB: 512,
-			TTLSeconds: 300, NegativeTTL: 60,
+			TTLSeconds: 300, MinTTL: 60, NegativeTTL: 60,
 		},
 		Resolver: ResolverConfig{
 			Mode: "recursive",

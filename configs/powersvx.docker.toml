@@ -34,6 +34,7 @@ path = "/data/cache"
 # Lean: smaller L1 (entries ≈ max_size_mb * 1024). Raise only if hit ratio stays low.
 max_size_mb = 256
 ttl_seconds = 300
+min_ttl = 60
 negative_ttl = 60
 
 [resolver]
