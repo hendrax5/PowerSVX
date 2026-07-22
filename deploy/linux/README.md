@@ -145,6 +145,27 @@ This override mounts `configs/powersvx.docker.host.toml`, which points PowerSVX 
 
 Do **not** overwrite a host-network deploy with the default bridge `docker-compose.yml` alone — that drops `network_mode: host`.
 
+### Bridge networking without the UDP RAM bomb
+
+Default Docker **published UDP ports** use `docker-proxy` (userland). Under high DNS QPS that process can eat **multiple GB RAM and tens of % CPU** (seen ~4 GB on :53 alone). Options if you must stay on bridge:
+
+1. **Disable userland proxy (recommended for bridge)** — iptables/nft DNAT only, no `docker-proxy` process:
+
+```bash
+# /etc/docker/daemon.json
+{
+  "userland-proxy": false
+}
+sudo systemctl restart docker
+# then recreate the stack
+```
+
+2. **Host networking** (above) — best for DNS VPS: real client IPs, no proxy, lowest overhead.
+
+3. **macvlan / ipvlan** — container gets its own L2/L3 address; more ops complexity.
+
+4. Avoid publishing UDP 53 through bridge at all if another host DNS forwards to the container’s **private IP** on the compose network (no host port map).
+
 Analytics UI (`/analytics`) embeds Grafana (`:3000`, board `powersvx-dns`). Prometheus scrapes via job `powersvx-host` → `host.docker.internal:9100`.
 
 ### Disk guard (keep usage under ~80%)

@@ -374,6 +374,8 @@ function Dashboard() {
     ['Database', checks.database],
     ['Cache', checks.cache],
     ['Forwarders', checks.forwarders],
+    ['Resolver', checks.resolver],
+    ['Resources', checks.resources],
   ]
 
   return (
@@ -408,7 +410,7 @@ function Dashboard() {
             {health.status || '—'}
           </span>
         </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 divide-x divide-y lg:divide-y-0 divide-[var(--border)]">
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 divide-x divide-y lg:divide-y-0 divide-[var(--border)]">
           {healthItems.map(([label, c]) => {
             const st = c?.status || '—'
             const ok = st === 'pass' || st === 'idle' || st === 'disabled'
@@ -420,6 +422,25 @@ function Dashboard() {
                   <div className="text-xs text-[var(--muted)] mt-1">{c.latency_ms} ms</div>
                 ) : null}
                 {c?.addr ? <div className="text-xs text-[var(--muted)] truncate mono mt-0.5">{c.addr}</div> : null}
+                {c?.reason ? <div className="text-xs text-[var(--warn)] mt-1">{c.reason}</div> : null}
+                {label === 'Forwarders' && Array.isArray(c?.forwarders) && c.forwarders.length ? (
+                  <ul className="mt-1 space-y-0.5 text-[10px] text-[var(--muted)] mono">
+                    {c.forwarders.slice(0, 3).map((f) => {
+                      const total = Number(f.ok || 0) + Number(f.fail || 0)
+                      const pct = total ? Math.round((100 * Number(f.fail || 0)) / total) : 0
+                      return (
+                        <li key={f.addr} className="truncate" title={`${f.addr} ok=${f.ok} fail=${f.fail}`}>
+                          {f.addr}: {pct}% fail
+                        </li>
+                      )
+                    })}
+                  </ul>
+                ) : null}
+                {label === 'Resources' && c?.goroutines != null ? (
+                  <div className="text-xs text-[var(--muted)] mt-1 mono">
+                    {c.goroutines} g · {Number(c.rss_mb || 0).toFixed(0)} MB
+                  </div>
+                ) : null}
               </div>
             )
           })}

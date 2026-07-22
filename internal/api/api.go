@@ -265,27 +265,86 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 	checks["cache"] = map[string]any{"status": "pass", "hit_ratio": ratio, "l1_size": size}
 	checks["rpz"] = map[string]any{"status": "pass", "entries": a.srv.RPZCount()}
 
-	// Forwarder health from monitor
+	// Forwarder / resource health from monitor.
+	// Important: a few early OKs must NOT hide a high fail ratio (that caused a silent outage).
 	fwdStatus := "unknown"
 	fwdDetail := map[string]any{"status": "unknown"}
 	if mon := a.srv.Monitor(); mon != nil {
 		allow, _ := a.srv.QueryACL()
 		snap := mon.Snapshot(allow, nil)
+		res := snap.Resources
+		resStatus := "pass"
+		resDetail := map[string]any{
+			"status":     resStatus,
+			"goroutines": res.Goroutines,
+			"rss_mb":     res.RSSMB,
+			"cpu_percent": res.CPUPercent,
+		}
+		if res.Goroutines >= 10000 {
+			resStatus = "fail"
+			status = "degraded"
+			resDetail["status"] = resStatus
+			resDetail["reason"] = "goroutine storm (>=10000)"
+		} else if res.Goroutines >= 2000 || res.RSSMB >= 4096 {
+			resStatus = "degraded"
+			if status == "healthy" {
+				status = "degraded"
+			}
+			resDetail["status"] = resStatus
+			if res.Goroutines >= 2000 {
+				resDetail["reason"] = "elevated goroutines"
+			} else {
+				resDetail["reason"] = "high RSS"
+			}
+		}
+		checks["resources"] = resDetail
+
+		var errTotal uint64
+		for _, e := range snap.Errors {
+			if e.Key == "SERVFAIL" || e.Key == "REFUSED" || e.Key == "FORMERR" {
+				errTotal += e.Count
+			}
+		}
+		if snap.QueriesTotal >= 200 && float64(errTotal)/float64(snap.QueriesTotal) >= 0.5 {
+			checks["resolver"] = map[string]any{
+				"status": "fail", "error_ratio": float64(errTotal) / float64(snap.QueriesTotal),
+				"errors": errTotal, "queries": snap.QueriesTotal,
+				"reason": "error RCODE ratio >= 50%",
+			}
+			status = "degraded"
+		} else {
+			checks["resolver"] = map[string]any{"status": "pass"}
+		}
+
 		if len(snap.Forwarders) == 0 {
 			fwdDetail = map[string]any{"status": "idle", "note": "no forwarder attempts yet"}
 			fwdStatus = "idle"
 		} else {
 			failing := 0
+			degraded := 0
 			for _, f := range snap.Forwarders {
-				if f.LastStatus != "ok" && f.Fail > 0 && f.OK == 0 {
+				total := f.OK + f.Fail
+				ratio := 0.0
+				if total > 0 {
+					ratio = float64(f.Fail) / float64(total)
+				}
+				switch {
+				case total >= 50 && ratio >= 0.5:
+					failing++
+				case total >= 20 && ratio >= 0.2:
+					degraded++
+				case f.LastStatus != "ok" && f.Fail > 0 && f.OK == 0:
 					failing++
 				}
 			}
 			if failing == len(snap.Forwarders) {
 				fwdStatus = "fail"
 				status = "degraded"
-			} else if failing > 0 {
+			} else if failing > 0 || degraded > 0 {
 				fwdStatus = "degraded"
+				if status == "healthy" {
+					status = "degraded"
+				}
 			} else {
 				fwdStatus = "pass"
 			}

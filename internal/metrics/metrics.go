@@ -39,6 +39,21 @@ var (
 		Name: "powersvx_rate_limited_total",
 		Help: "Queries dropped by rate limiter",
 	})
+
+	ForwarderAttempts = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "powersvx_forwarder_attempts_total",
+		Help: "Outbound forwarder attempts",
+	}, []string{"addr", "result"})
+
+	Goroutines = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_goroutines",
+		Help: "Process goroutine count",
+	})
+
+	RSSBytes = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_process_rss_bytes",
+		Help: "Process resident set size in bytes",
+	})
 )
 
 func Handler() http.Handler {

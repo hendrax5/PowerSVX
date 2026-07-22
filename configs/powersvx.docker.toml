@@ -31,31 +31,33 @@ max_connections = 20
 [cache]
 type = "badger"
 path = "/data/cache"
-max_size_mb = 256
+# Lean: smaller L1 (entries ≈ max_size_mb * 1024). Raise only if hit ratio stays low.
+max_size_mb = 64
 ttl_seconds = 300
-negative_ttl = 60
+negative_ttl = 30
 
 [resolver]
-mode = "recursive"
-forwarders = ["103.88.88.99:53", "203.119.13.77:53"]
+# forward = low CPU/RAM. recursive + dead forwarders caused 50k+ goroutines / SERVFAIL storms.
+mode = "forward"
+forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
 # Optional encrypted outbound forwarders:
 # forwarders = ["tls://one.one.one.one:853", "https://cloudflare-dns.com/dns-query"]
 # Optional conditional/stub forwarders (longest-suffix match, checked before recursion):
 # [[resolver.forward_zones]]
 # zone = "corp.local"
 # forwarders = ["10.0.0.1:53", "10.0.0.2:53"]
-forward_on_fail = true
-dnssec_mode = "opportunistic"
+forward_on_fail = false
+dnssec_mode = "off"
 edns_buffer_size = 1232
-timeout_ms = 3000
-ecs_enabled = true
+timeout_ms = 1500
+ecs_enabled = false
 ecs_prefix_v4 = 24
 ecs_prefix_v6 = 56
 
 [rate_limit]
 enabled = true
-default_qps = 2000
-default_burst = 400
+default_qps = 500
+default_burst = 200
 block_duration = 300
 whitelist = ["127.0.0.1/32", "::1/128", "172.16.0.0/12"]
 
@@ -67,12 +69,13 @@ policies = [
 ]
 
 [geodns]
-enabled = true
+# Off unless you use GeoDNS views — MMDB + per-query tags fragment cache keys.
+enabled = false
 database_path = "/data/dbip-country-lite.mmdb"
 default_tag = "default"
 
 [split_horizon]
-enabled = true
+enabled = false
 views = [
   { name = "internal", networks = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] }
 ]
@@ -127,11 +130,12 @@ api_token = "${API_TOKEN}"
 # role = "operator"
 
 [logging]
-level = "info"
+level = "warn"
 format = "json"
-query_log_enabled = true
+# Query log to Postgres is expensive under high QPS; enable only when debugging.
+query_log_enabled = false
 query_log_destination = "postgresql"
-query_log_retention_days = 7
+query_log_retention_days = 3
 # With Docker bridge port-publish, RemoteAddr is usually the bridge gateway
 # (e.g. 172.18.0.1), not the LAN client. Masking /24 then shows 172.18.0.0.
 # Keep false here; set true only when using network_mode: host (real client IPs).

@@ -4,6 +4,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/powersvx/powersvx/internal/metrics"
 )
 
 // processSampler tracks CPU% between snapshots using process CPU time.
@@ -67,6 +69,8 @@ func resourceSnapshot() Resources {
 		// Fallback when OS RSS unavailable (e.g. some Windows builds).
 		r.RSSMB = r.HeapMB
 	}
+	metrics.Goroutines.Set(float64(r.Goroutines))
+	metrics.RSSBytes.Set(r.RSSMB * 1024 * 1024)
 	return r
 }
 

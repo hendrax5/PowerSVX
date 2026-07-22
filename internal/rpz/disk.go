@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/dgraph-io/badger/v4"
+	"github.com/powersvx/powersvx/internal/bloom"
+	"github.com/powersvx/powersvx/internal/config"
 )
 
 const (
@@ -72,8 +75,8 @@ func (s *Store) Fingerprint() (string, error) {
 	return fp, err
 }
 
-// LoadTrie rebuilds an in-memory radix from Badger.
-// Value format: [actionCode][optional UTF-8 target].
+// LoadTrie rebuilds an in-memory radix from Badger (tests / migration only).
+// Prefer BuildColdIndex for production — keeps exact domains on disk.
 func (s *Store) LoadTrie() (*trie, int, error) {
 	t := newTrie()
 	if s == nil || s.db == nil {
@@ -105,6 +108,108 @@ func (s *Store) LoadTrie() (*trie, int, error) {
 		return nil
 	})
 	return t, t.count, err
+}
+
+// Get returns an exact-name hit from Badger.
+func (s *Store) Get(name string) (Hit, bool, error) {
+	if s == nil || s.db == nil {
+		return Hit{}, false, fmt.Errorf("store closed")
+	}
+	name = config.NormalizeName(name)
+	key := append([]byte(domPrefix), []byte(name)...)
+	var hit Hit
+	found := false
+	err := s.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(key)
+		if err == badger.ErrKeyNotFound {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		found = true
+		return item.Value(func(v []byte) error {
+			if len(v) == 0 {
+				hit = Hit{Action: ActionNXDOMAIN}
+				return nil
+			}
+			hit = Hit{Action: codeAction(v[0])}
+			if len(v) > 1 {
+				hit.Target = string(v[1:])
+			}
+			return nil
+		})
+	})
+	return hit, found, err
+}
+
+// Put upserts one exact or wild domain into Badger.
+func (s *Store) Put(name string, hit Hit) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store closed")
+	}
+	name = config.NormalizeName(name)
+	key := append([]byte(domPrefix), []byte(name)...)
+	val := append([]byte{actionCode(hit.Action)}, []byte(strings.TrimSpace(hit.Target))...)
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(key, val)
+	})
+}
+
+// BuildColdIndex walks Badger once: exact names → Bloom, *.rules → wild trie.
+// Exact domains stay on disk (no full RAM trie).
+func (s *Store) BuildColdIndex() (bf *bloom.Filter, wild *trie, count int, err error) {
+	if s == nil || s.db == nil {
+		return nil, nil, 0, fmt.Errorf("store closed")
+	}
+	expected := 1024
+	_ = s.db.View(func(txn *badger.Txn) error {
+		item, e := txn.Get([]byte(metaCountKey))
+		if e != nil {
+			return nil
+		}
+		return item.Value(func(v []byte) error {
+			var n int
+			_, _ = fmt.Sscanf(string(v), "%d", &n)
+			if n > 0 {
+				expected = n
+			}
+			return nil
+		})
+	})
+	bf = bloom.New(expected*2, 0.01)
+	wild = newTrie()
+	err = s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte(domPrefix)
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			name := string(item.Key()[len(domPrefix):])
+			var hit Hit
+			_ = item.Value(func(v []byte) error {
+				if len(v) == 0 {
+					hit = Hit{Action: ActionNXDOMAIN}
+					return nil
+				}
+				hit = Hit{Action: codeAction(v[0])}
+				if len(v) > 1 {
+					hit.Target = string(v[1:])
+				}
+				return nil
+			})
+			count++
+			if strings.HasPrefix(name, "*.") {
+				wild.insertHit(name, hit)
+				bf.Add(config.NormalizeName(name))
+				continue
+			}
+			bf.Add(config.NormalizeName(name))
+		}
+		return nil
+	})
+	return bf, wild, count, err
 }
 
 // ReplaceAll drops previous domains and writes the trie snapshot.

@@ -10,6 +10,39 @@ groups:
           summary: High SERVFAIL rate on PowerSVX
           description: SERVFAIL query rate is elevated for more than 5 minutes.
 
+      - alert: PowerSVXSERVFAILRatio
+        expr: |
+          sum(rate(powersvx_queries_total{status="servfail"}[5m]))
+          /
+          clamp_min(sum(rate(powersvx_queries_total[5m])), 0.001) > 0.4
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: SERVFAIL dominates query traffic
+          description: Over 40% of queries are SERVFAIL for 3 minutes — usually dead forwarders or recursive storms.
+
+      - alert: PowerSVXForwarderFailing
+        expr: |
+          sum by (addr) (rate(powersvx_forwarder_attempts_total{result="fail"}[5m]))
+          /
+          clamp_min(sum by (addr) (rate(powersvx_forwarder_attempts_total[5m])), 0.001) > 0.5
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: Forwarder {{ $labels.addr }} mostly failing
+          description: More than half of outbound attempts to this forwarder are failing.
+
+      - alert: PowerSVXGoroutineStorm
+        expr: powersvx_goroutines > 5000
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Goroutine storm on PowerSVX
+          description: Process has more than 5000 goroutines — typically stuck recursive/timeout work.
+
       - alert: PowerSVXRateLimitedSpike
         expr: rate(powersvx_rate_limited_total[5m]) > 20
         for: 2m
@@ -29,7 +62,7 @@ groups:
           description: More than 10k RPZ blocks in 10 minutes.
 
       - alert: PowerSVXDown
-        expr: up{job="powersvx"} == 0
+        expr: up{job="powersvx"} == 0 or up{job="powersvx-host"} == 0
         for: 1m
         labels:
           severity: critical

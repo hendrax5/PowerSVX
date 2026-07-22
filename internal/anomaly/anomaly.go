@@ -101,6 +101,16 @@ func (d *Detector) rollLocked(now time.Time) {
 				Baseline: d.eRateEWMA,
 			})
 		}
+		// Absolute ratio: catches sustained outages where EWMA baseline also rises.
+		if qRate >= 5 && eRate >= qRate*0.5 {
+			d.pushLocked(Alert{
+				Time: now, Kind: "error_ratio_high",
+				Message:  "More than half of queries returning error RCODEs",
+				Score:    eRate / math.Max(qRate, 0.01),
+				Current:  eRate,
+				Baseline: qRate,
+			})
+		}
 	}
 
 	d.bucket = b

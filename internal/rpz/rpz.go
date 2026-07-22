@@ -26,11 +26,17 @@ const (
 	ActionCNAME    Action = "cname"    // CNAME to Target (hostname)
 )
 
-// Engine is RPZ / blocklist with label-reversed radix + optional Badger snapshot.
+// Engine is RPZ / blocklist with optional cold tier (Bloom + Badger + hot cache).
+// When a disk store is attached, exact domains stay on disk; only Bloom, wildcards,
+// and a hot LRU stay in RAM (~tens–hundreds of MB for multi‑million feeds).
 type Engine struct {
 	mu         sync.RWMutex
-	tree       *trie
+	tree       *trie // full in-RAM trie when store is nil (tests / tiny lists)
+	wild       *trie // wildcard-only trie in cold mode
 	bloom      *bloom.Filter
+	hot        *hotCache
+	hotMax     int
+	cold       bool // exact names served from Badger
 	store      *Store
 	enabled    bool
 	count      atomic.Int64
@@ -51,12 +57,26 @@ type LoadStatus struct {
 
 func New(enabled bool) *Engine {
 	e := &Engine{
-		tree:    newTrie(),
+		tree:   newTrie(),
 		enabled: enabled,
+		hotMax: 500_000,
 	}
 	e.lastErr.Store("")
 	e.lastLoaded.Store(time.Time{})
 	return e
+}
+
+// SetHotCacheSize sets max exact hits retained in RAM (cold mode). 0 = default 500k.
+func (e *Engine) SetHotCacheSize(n int) {
+	if e == nil {
+		return
+	}
+	if n <= 0 {
+		n = 500_000
+	}
+	e.mu.Lock()
+	e.hotMax = n
+	e.mu.Unlock()
 }
 
 // OpenDisk attaches Badger at path for restart-safe snapshots.
@@ -164,13 +184,46 @@ func (e *Engine) Lookup(name string) (Hit, bool) {
 		return Hit{Action: ActionPass}, false
 	}
 	e.mu.RLock()
+	cold := e.cold
 	tree := e.tree
+	wild := e.wild
 	bf := e.bloom
+	store := e.store
+	hot := e.hot
 	e.mu.RUnlock()
+
+	norm := config.NormalizeName(name)
+
+	if cold {
+		if hot != nil {
+			if h, ok := hot.Get(norm); ok {
+				e.hits.Add(1)
+				return h, true
+			}
+		}
+		if bf == nil || bf.MightContain(norm) {
+			if store != nil {
+				if h, ok, err := store.Get(norm); err == nil && ok {
+					if hot != nil {
+						hot.Set(norm, h)
+					}
+					e.hits.Add(1)
+					return h, true
+				}
+			}
+		}
+		if wild != nil {
+			if h, ok := wild.lookup(name); ok {
+				e.hits.Add(1)
+				return h, true
+			}
+		}
+		return Hit{Action: ActionPass}, false
+	}
+
 	if tree == nil {
 		return Hit{Action: ActionPass}, false
 	}
-	norm := config.NormalizeName(name)
 	if bf != nil && !bloomMaybe(bf, norm) {
 		return Hit{Action: ActionPass}, false
 	}
@@ -194,22 +247,65 @@ func bloomMaybe(bf *bloom.Filter, name string) bool {
 	return false
 }
 
+func splitCold(t *trie) (bf *bloom.Filter, wild *trie) {
+	n := t.count
+	if n < 1 {
+		n = 1
+	}
+	bf = bloom.New(n*2, 0.01)
+	wild = newTrie()
+	t.walk(func(name string, hit Hit) {
+		norm := config.NormalizeName(name)
+		bf.Add(norm)
+		if strings.HasPrefix(norm, "*.") {
+			wild.insertHit(norm, hit)
+		}
+	})
+	return bf, wild
+}
+
 func (e *Engine) replaceTree(t *trie, fromDisk bool) {
+	e.mu.RLock()
+	store := e.store
+	e.mu.RUnlock()
+	if store != nil && t != nil && t.count > 0 {
+		e.replaceTreeCold(t, fromDisk)
+		return
+	}
+	e.replaceTreeRAM(t, fromDisk)
+}
+
+func (e *Engine) replaceTreeCold(t *trie, fromDisk bool) {
+	hotMax := e.hotMax
+	if hotMax <= 0 {
+		hotMax = 500_000
+	}
+	bf, wild := splitCold(t)
+	e.mu.Lock()
+	e.tree = nil
+	e.wild = wild
+	e.bloom = bf
+	e.cold = true
+	e.hot = newHot(hotMax)
+	e.mu.Unlock()
+	e.count.Store(int64(t.count))
+	e.fromDisk.Store(fromDisk)
+}
+
+func (e *Engine) replaceTreeRAM(t *trie, fromDisk bool) {
 	var bf *bloom.Filter
 	if t != nil && t.count > 0 {
 		bf = bloom.New(t.count*2, 0.01)
 		t.walk(func(name string, _ Hit) {
-			n := config.NormalizeName(name)
-			bf.Add(n)
-			labels := strings.Split(strings.TrimSuffix(n, "."), ".")
-			for i := 1; i < len(labels); i++ {
-				bf.Add("*." + strings.Join(labels[i:], ".") + ".")
-			}
+			bf.Add(config.NormalizeName(name))
 		})
 	}
 	e.mu.Lock()
 	e.tree = t
+	e.wild = nil
 	e.bloom = bf
+	e.cold = false
+	e.hot = nil
 	e.mu.Unlock()
 	if t == nil {
 		e.count.Store(0)
@@ -232,7 +328,41 @@ func (e *Engine) Add(name string, action Action) {
 	if action == "" {
 		action = ActionNXDOMAIN
 	}
+	hit := Hit{Action: action}
+	norm := config.NormalizeName(name)
+
 	e.mu.Lock()
+	store := e.store
+	cold := e.cold
+	if cold && store != nil {
+		bf := e.bloom
+		wild := e.wild
+		hot := e.hot
+		e.mu.Unlock()
+		_ = store.Put(norm, hit)
+		e.mu.Lock()
+		if bf != nil {
+			bf.Add(norm)
+		}
+		if strings.HasPrefix(norm, "*.") {
+			if wild == nil {
+				wild = newTrie()
+				e.wild = wild
+			}
+			before := wild.count
+			wild.insertHit(norm, hit)
+			if wild.count > before {
+				e.count.Add(1)
+			}
+		} else {
+			e.count.Add(1)
+			if hot != nil {
+				hot.Set(norm, hit)
+			}
+		}
+		e.mu.Unlock()
+		return
+	}
 	if e.tree == nil {
 		e.tree = newTrie()
 	}
@@ -246,12 +376,14 @@ func (e *Engine) Add(name string, action Action) {
 }
 
 // TryLoadDisk loads Badger snapshot when fingerprint matches current policies.
+// Uses cold index (Bloom + wild trie) — does not rehydrate millions of exact domains into RAM.
 func (e *Engine) TryLoadDisk(policies []PolicyConfig) (bool, int, error) {
 	if e == nil {
 		return false, 0, nil
 	}
 	e.mu.RLock()
 	store := e.store
+	hotMax := e.hotMax
 	e.mu.RUnlock()
 	if store == nil {
 		return false, 0, nil
@@ -261,11 +393,22 @@ func (e *Engine) TryLoadDisk(policies []PolicyConfig) (bool, int, error) {
 	if err != nil || got != fp {
 		return false, 0, nil
 	}
-	t, n, err := store.LoadTrie()
+	bf, wild, n, err := store.BuildColdIndex()
 	if err != nil {
 		return false, 0, err
 	}
-	e.replaceTree(t, true)
+	if hotMax <= 0 {
+		hotMax = 500_000
+	}
+	e.mu.Lock()
+	e.tree = nil
+	e.wild = wild
+	e.bloom = bf
+	e.cold = true
+	e.hot = newHot(hotMax)
+	e.mu.Unlock()
+	e.count.Store(int64(n))
+	e.fromDisk.Store(true)
 	e.lastLoaded.Store(time.Now().UTC())
 	e.lastErr.Store("")
 	return true, n, nil
@@ -395,8 +538,19 @@ func (e *Engine) LoadPolicies(policies []PolicyConfig, timeout time.Duration) (i
 			return 0, fmt.Errorf("policy %s: %w", p.Name, err)
 		}
 	}
-	e.replaceTree(merged, false)
-	_ = e.persist(merged, policies)
+	e.mu.RLock()
+	store := e.store
+	e.mu.RUnlock()
+	if store != nil {
+		// Persist first so cold lookups can confirm on disk; then drop exact trie from RAM.
+		if err := e.persist(merged, policies); err != nil {
+			e.replaceTreeRAM(merged, false)
+			return merged.count, fmt.Errorf("rpz persist: %w", err)
+		}
+		e.replaceTreeCold(merged, false)
+		return merged.count, nil
+	}
+	e.replaceTreeRAM(merged, false)
 	return merged.count, nil
 }
 

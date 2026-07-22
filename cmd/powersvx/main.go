@@ -264,6 +264,11 @@ func main() {
 	mon := monitor.New()
 	res.OnForwarder = func(addr string, ok bool, latencyMS int64, errMsg string) {
 		mon.RecordForwarder(addr, ok, latencyMS, errMsg)
+		if ok {
+			metrics.ForwarderAttempts.WithLabelValues(addr, "ok").Inc()
+		} else {
+			metrics.ForwarderAttempts.WithLabelValues(addr, "fail").Inc()
+		}
 	}
 	qlog := database.NewQueryLogger(db, cfg.Logging.QueryLogEnabled, log)
 	defer qlog.Close()
