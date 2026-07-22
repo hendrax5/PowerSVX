@@ -99,7 +99,7 @@ func New(cfg config.ResolverConfig) *Resolver {
 	fwd, _ := config.NormalizeForwarders(cfg.Forwarders)
 	inflight := cfg.MaxInflight
 	if inflight <= 0 {
-		inflight = 256
+		inflight = 1024
 	}
 	fb := time.Duration(cfg.FallbackTimeoutMS) * time.Millisecond
 	r := &Resolver{
@@ -287,54 +287,109 @@ func (r *Resolver) forwardTo(ctx context.Context, req *dns.Msg, sub *ecs.Subnet,
 	if len(forwarders) == 0 {
 		return nil, fmt.Errorf("no forwarders configured")
 	}
-	var lastErr error
-	for _, fwd := range forwarders {
-		target, err := config.ParseForwardTarget(fwd)
-		if err != nil {
-			// Legacy host without port / normalize failure: treat as UDP :53
-			addr := fwd
-			if _, _, e := net.SplitHostPort(addr); e != nil {
-				addr = net.JoinHostPort(fwd, "53")
-			}
-			target = config.ForwardTarget{Network: "udp", Addr: addr, Display: addr}
-		}
-		msg := req.Copy()
-		msg.RecursionDesired = true
-		setEDNS0(msg, r.BufSize, r.WantDO)
-		if r.ECSEnabled && sub != nil {
-			ecs.Apply(msg, sub, r.BufSize)
-		}
-
+	// Single forwarder: keep simple path.
+	if len(forwarders) == 1 {
+		fwd := forwarders[0]
 		started := time.Now()
-		resp, err := r.exchangeUpstream(ctx, msg, target)
+		resp, err := r.forwardOne(ctx, req, sub, fwd)
 		ms := time.Since(started).Milliseconds()
-		label := target.Display
-		if label == "" {
-			label = target.Addr
+		label := fwd
+		if t, e := config.ParseForwardTarget(fwd); e == nil && t.Display != "" {
+			label = t.Display
 		}
 		if err != nil {
-			lastErr = err
 			if r.OnForwarder != nil {
 				r.OnForwarder(label, false, ms, err.Error())
 			}
-			continue
+			return nil, err
 		}
 		if resp == nil {
-			lastErr = fmt.Errorf("nil response from %s", label)
+			err = fmt.Errorf("nil response from %s", label)
 			if r.OnForwarder != nil {
-				r.OnForwarder(label, false, ms, lastErr.Error())
+				r.OnForwarder(label, false, ms, err.Error())
 			}
-			continue
+			return nil, err
 		}
 		if r.OnForwarder != nil {
 			r.OnForwarder(label, true, ms, "")
 		}
 		return resp, nil
 	}
+
+	// Race all forwarders; first usable answer wins so a slow/dead #2
+	// does not wait behind a timed-out #1 (fixes 8.8.8.8 "100% fail" UI).
+	type result struct {
+		resp  *dns.Msg
+		err   error
+		label string
+		ms    int64
+	}
+	ch := make(chan result, len(forwarders))
+	raceCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for _, fwd := range forwarders {
+		fwd := fwd
+		go func() {
+			started := time.Now()
+			resp, err := r.forwardOne(raceCtx, req, sub, fwd)
+			label := fwd
+			if t, e := config.ParseForwardTarget(fwd); e == nil && t.Display != "" {
+				label = t.Display
+			}
+			ch <- result{resp: resp, err: err, label: label, ms: time.Since(started).Milliseconds()}
+		}()
+	}
+
+	var lastErr error
+	for range forwarders {
+		select {
+		case <-ctx.Done():
+			if lastErr == nil {
+				lastErr = ctx.Err()
+			}
+			return nil, lastErr
+		case res := <-ch:
+			if res.err != nil || res.resp == nil {
+				if res.err != nil {
+					lastErr = res.err
+				} else {
+					lastErr = fmt.Errorf("nil response from %s", res.label)
+				}
+				if r.OnForwarder != nil {
+					r.OnForwarder(res.label, false, res.ms, lastErr.Error())
+				}
+				continue
+			}
+			cancel()
+			if r.OnForwarder != nil {
+				r.OnForwarder(res.label, true, res.ms, "")
+			}
+			return res.resp, nil
+		}
+	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("all forwarders failed")
 	}
 	return nil, lastErr
+}
+
+func (r *Resolver) forwardOne(ctx context.Context, req *dns.Msg, sub *ecs.Subnet, fwd string) (*dns.Msg, error) {
+	target, err := config.ParseForwardTarget(fwd)
+	if err != nil {
+		addr := fwd
+		if _, _, e := net.SplitHostPort(addr); e != nil {
+			addr = net.JoinHostPort(fwd, "53")
+		}
+		target = config.ForwardTarget{Network: "udp", Addr: addr, Display: addr}
+	}
+	msg := req.Copy()
+	msg.RecursionDesired = true
+	setEDNS0(msg, r.BufSize, r.WantDO)
+	if r.ECSEnabled && sub != nil {
+		ecs.Apply(msg, sub, r.BufSize)
+	}
+	return r.exchangeUpstream(ctx, msg, target)
 }
 
 func setEDNS0(msg *dns.Msg, size uint16, do bool) {

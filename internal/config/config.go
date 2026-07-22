@@ -101,7 +101,7 @@ type ResolverConfig struct {
 	QNameMinimization bool     `toml:"qname_minimization"`
 	EDNSBufferSize    uint16   `toml:"edns_buffer_size"`
 	TimeoutMS         int      `toml:"timeout_ms"`
-	// MaxInflight caps concurrent recursive/forward resolves (0 = default 256).
+	// MaxInflight caps concurrent recursive/forward resolves (0 = default 1024).
 	MaxInflight int `toml:"max_inflight"`
 	// FallbackTimeoutMS is the short budget for forward_on_fail after recursive fails (0 = auto ~20% of TimeoutMS, capped 500ms).
 	FallbackTimeoutMS int `toml:"fallback_timeout_ms"`
@@ -311,7 +311,7 @@ func Default() *Config {
 			ForwardOnFail: true,
 			DNSSECMode: "off", QNameMinimization: true,
 			EDNSBufferSize: 1232, TimeoutMS: 3000,
-			MaxInflight: 256, FallbackTimeoutMS: 400,
+			MaxInflight: 1024, FallbackTimeoutMS: 400,
 			ECSEnabled: true, ECSPrefixV4: 24, ECSPrefixV6: 56,
 		},
 		API: APIConfig{RESTEnabled: true, RESTBind: "0.0.0.0:5380", GRPCEnabled: false, GRPCBind: "0.0.0.0:5381", AuthType: "none"},

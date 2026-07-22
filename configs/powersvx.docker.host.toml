@@ -52,7 +52,7 @@ edns_buffer_size = 1232
 timeout_ms = 2000
 fallback_timeout_ms = 400
 # Hard admit cap (~Unbound reqlist). Full = fail-fast SERVFAIL, no queue pile-up.
-max_inflight = 256
+max_inflight = 1024
 ecs_enabled = false
 ecs_prefix_v4 = 24
 ecs_prefix_v6 = 56
@@ -64,9 +64,9 @@ default_qps = 2000
 default_burst = 400
 block_duration = 60
 whitelist = ["127.0.0.1/32", "::1/128"]
-# Soft cap near real customer QPS (~4.5–6k); prevents retry-storm inflation.
-global_qps = 7500
-global_burst = 2000
+# 0 = disable global cap (whitelist /23 still bypasses per-IP only).
+global_qps = 0
+global_burst = 0
 
 [rpz]
 enabled = true
@@ -128,6 +128,6 @@ query_log_destination = "postgresql"
 query_log_retention_days = 3
 # Hard cap table+indexes (5 GB default). Editable in Settings → Features.
 query_log_max_size_mb = 5120
-query_log_mask_ip = true
+query_log_mask_ip = false
 # Under load, sample query logs (1.0 = all, 0.05 = 5%). Caps Postgres CPU.
 query_log_sample_rate = 0.05
