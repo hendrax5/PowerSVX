@@ -125,6 +125,10 @@ func (r *Resolver) iterate(ctx context.Context, qname string, qtype uint16, serv
 			lastErr = err
 			continue
 		}
+		if resp == nil {
+			lastErr = fmt.Errorf("empty response from %s", srv)
+			continue
+		}
 		if resp.Rcode == dns.RcodeNameError {
 			return resp, nil
 		}
@@ -183,6 +187,12 @@ func (r *Resolver) resolveNSAddrs(ctx context.Context, nsNames []string, depth i
 	for _, ns := range nsNames {
 		ns := ns
 		go func() {
+			// Never let a lookup panic kill the DNS process.
+			defer func() {
+				if recover() != nil {
+					ch <- result{}
+				}
+			}()
 			nsMsg, err := r.iterate(ctx, ns, dns.TypeA, r.roots(), depth+1)
 			if err != nil || nsMsg == nil {
 				ch <- result{}
