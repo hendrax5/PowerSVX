@@ -29,25 +29,47 @@ func Connect(cfg config.DatabaseConfig, log *slog.Logger) (*DB, error) {
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
 		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Database,
 	)
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return nil, err
-	}
-	max := cfg.MaxConnections
-	if max <= 0 {
-		max = 20
-	}
-	db.SetMaxOpenConns(max)
-	db.SetMaxIdleConns(max / 2)
-	db.SetConnMaxLifetime(time.Hour)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
+	var lastErr error
+	for attempt := 1; attempt <= 30; attempt++ {
+		db, err := sql.Open("pgx", dsn)
+		if err != nil {
+			return nil, err
+		}
+		max := cfg.MaxConnections
+		if max <= 0 {
+			max = 20
+		}
+		db.SetMaxOpenConns(max)
+		db.SetMaxIdleConns(max / 2)
+		db.SetConnMaxLifetime(time.Hour)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		err = db.PingContext(ctx)
+		cancel()
+		if err == nil {
+			if attempt > 1 && log != nil {
+				log.Info("postgres ready", "attempt", attempt, "host", cfg.Host, "port", cfg.Port)
+			}
+			return &DB{sql: db, log: log}, nil
+		}
+		lastErr = err
 		_ = db.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
+		msg := err.Error()
+		// 57P03 = starting up / not accepting connections; also retry refused during boot.
+		transient := strings.Contains(msg, "57P03") ||
+			strings.Contains(msg, "not yet accepting") ||
+			strings.Contains(msg, "connection refused") ||
+			strings.Contains(msg, "connect: no route to host")
+		if !transient || attempt == 30 {
+			break
+		}
+		if log != nil && (attempt == 1 || attempt%5 == 0) {
+			log.Warn("postgres not ready, retrying", "attempt", attempt, "err", err)
+		}
+		time.Sleep(2 * time.Second)
 	}
-	return &DB{sql: db, log: log}, nil
+	return nil, fmt.Errorf("ping postgres: %w", lastErr)
 }
 
 func (d *DB) Close() error {

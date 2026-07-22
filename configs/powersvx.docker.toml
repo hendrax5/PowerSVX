@@ -19,8 +19,8 @@ key_file = "/etc/PowerSVX/certs/privkey.pem"
 [database]
 enabled = true
 type = "postgres"
-# Bridge Compose: host = "postgres", port = 5432
-# Host network (network_mode: host): use host = "127.0.0.1", port = 5433
+# Bridge Compose (default): host = "postgres", port = 5432
+# Host network / PowerSVX on host + Postgres published: host = "127.0.0.1", port = 5433
 host = "postgres"
 port = 5432
 database = "PowerSVX"
