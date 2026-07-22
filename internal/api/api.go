@@ -918,6 +918,7 @@ func (a *API) settingsPayload() map[string]any {
 		"query_log_enabled":        f.QueryLog,
 		"query_log_mask_ip":        a.cfg.Logging.QueryLogMaskIP,
 		"query_log_retention_days": a.cfg.Logging.QueryLogRetentionDays,
+		"query_log_max_size_mb":    a.cfg.Logging.QueryLogMaxSizeMB,
 		"allow_query":              allow,
 		"deny_query":               deny,
 		"transfer": map[string]any{

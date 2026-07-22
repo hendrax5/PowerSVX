@@ -111,4 +111,6 @@ format = "json"
 query_log_enabled = false
 query_log_destination = "postgresql"
 query_log_retention_days = 3
+# Hard cap table+indexes. Oldest rows deleted first. Ideal 1–2G; raise to 5120 only if needed.
+query_log_max_size_mb = 2048
 query_log_mask_ip = true

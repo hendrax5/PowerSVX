@@ -176,6 +176,9 @@ type LoggingConfig struct {
 	QueryLogEnabled       bool   `toml:"query_log_enabled"`
 	QueryLogDestination   string `toml:"query_log_destination"`
 	QueryLogRetentionDays int    `toml:"query_log_retention_days"`
+	// QueryLogMaxSizeMB hard-caps query_logs on-disk size (table+indexes). 0 = no size cap.
+	// Oldest rows are deleted first when over the limit. Recommended 1024–5120 on small VPS.
+	QueryLogMaxSizeMB int `toml:"query_log_max_size_mb"`
 	// QueryLogMaskIP truncates client IPs before storage (/24 IPv4, /48 IPv6).
 	QueryLogMaskIP bool `toml:"query_log_mask_ip"`
 }
@@ -294,7 +297,8 @@ func Default() *Config {
 		API: APIConfig{RESTEnabled: true, RESTBind: "0.0.0.0:5380", GRPCEnabled: false, GRPCBind: "0.0.0.0:5381", AuthType: "none"},
 		Logging: LoggingConfig{
 			Level: "info", Format: "json", QueryLogEnabled: false,
-			QueryLogDestination: "postgresql", QueryLogRetentionDays: 30, QueryLogMaskIP: true,
+			QueryLogDestination: "postgresql", QueryLogRetentionDays: 30,
+			QueryLogMaxSizeMB: 2048, QueryLogMaskIP: true,
 		},
 		RateLimit: RateLimitConfig{
 			Enabled: false, DefaultQPS: 100, DefaultBurst: 200, BlockDuration: 300,

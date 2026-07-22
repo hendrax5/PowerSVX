@@ -318,11 +318,15 @@ func main() {
 		rest.SetSessionStore(sessStore)
 	}
 	rest.StartRPZAutoUpdate()
-	if db != nil && cfg.Logging.QueryLogRetentionDays > 0 {
+	if db != nil && (cfg.Logging.QueryLogRetentionDays > 0 || cfg.Logging.QueryLogMaxSizeMB > 0) {
 		retCtx, retCancel := context.WithCancel(context.Background())
 		defer retCancel()
-		db.StartRetentionLoop(retCtx, cfg.Logging.QueryLogRetentionDays, time.Hour)
-		log.Info("query log retention enabled", "days", cfg.Logging.QueryLogRetentionDays, "mask_ip", cfg.Logging.QueryLogMaskIP)
+		db.StartRetentionLoop(retCtx, cfg.Logging.QueryLogRetentionDays, cfg.Logging.QueryLogMaxSizeMB, time.Hour)
+		log.Info("query log retention enabled",
+			"days", cfg.Logging.QueryLogRetentionDays,
+			"max_size_mb", cfg.Logging.QueryLogMaxSizeMB,
+			"mask_ip", cfg.Logging.QueryLogMaskIP,
+		)
 	}
 	webDirs := []string{"./web/dist", "/usr/share/PowerSVX/web"}
 	for _, dir := range webDirs {

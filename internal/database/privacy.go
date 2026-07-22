@@ -30,40 +30,25 @@ func MaskClientIP(ipStr string) string {
 	return out.String()
 }
 
-// StartRetentionLoop deletes query_logs older than retentionDays. Stop via cancel.
-func (db *DB) StartRetentionLoop(ctx context.Context, retentionDays int, interval time.Duration) {
-	if db == nil || db.sql == nil || retentionDays <= 0 {
+// StartRetentionLoop enforces time and/or size caps on query_logs. Stop via cancel.
+// retentionDays <= 0 skips age purge; maxSizeMB <= 0 skips size purge.
+func (db *DB) StartRetentionLoop(ctx context.Context, retentionDays, maxSizeMB int, interval time.Duration) {
+	if db == nil || db.sql == nil {
+		return
+	}
+	if retentionDays <= 0 && maxSizeMB <= 0 {
 		return
 	}
 	if interval <= 0 {
 		interval = time.Hour
 	}
 	run := func() {
-		// Batched deletes: a single DELETE on tens of millions of rows never finishes
-		// inside a short timeout and blocks the UI/API.
-		cutoff := time.Now().UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)
 		var purged int64
-		for i := 0; i < 200; i++ {
-			c, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			res, err := db.sql.ExecContext(c, `
-				DELETE FROM query_logs
-				WHERE ctid IN (
-					SELECT ctid FROM query_logs
-					WHERE timestamp < $1
-					LIMIT 50000
-				)`, cutoff)
-			cancel()
-			if err != nil {
-				if db.log != nil {
-					db.log.Warn("query log retention failed", "err", err)
-				}
-				return
-			}
-			n, _ := res.RowsAffected()
-			purged += n
-			if n == 0 {
-				break
-			}
+		if retentionDays > 0 {
+			purged += db.purgeQueryLogsByAge(retentionDays)
+		}
+		if maxSizeMB > 0 {
+			purged += db.purgeQueryLogsBySize(maxSizeMB)
 		}
 		if purged > 0 {
 			c, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -73,7 +58,11 @@ func (db *DB) StartRetentionLoop(ctx context.Context, retentionDays int, interva
 				db.log.Warn("query log vacuum failed", "err", err)
 			}
 			if db.log != nil {
-				db.log.Info("query log retention purged", "rows", purged, "older_than_days", retentionDays)
+				db.log.Info("query log retention purged",
+					"rows", purged,
+					"older_than_days", retentionDays,
+					"max_size_mb", maxSizeMB,
+				)
 			}
 		}
 	}
@@ -90,4 +79,87 @@ func (db *DB) StartRetentionLoop(ctx context.Context, retentionDays int, interva
 			}
 		}
 	}()
+}
+
+func (db *DB) purgeQueryLogsByAge(retentionDays int) int64 {
+	cutoff := time.Now().UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	var purged int64
+	for i := 0; i < 200; i++ {
+		c, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		res, err := db.sql.ExecContext(c, `
+			DELETE FROM query_logs
+			WHERE ctid IN (
+				SELECT ctid FROM query_logs
+				WHERE timestamp < $1
+				LIMIT 50000
+			)`, cutoff)
+		cancel()
+		if err != nil {
+			if db.log != nil {
+				db.log.Warn("query log age purge failed", "err", err)
+			}
+			return purged
+		}
+		n, _ := res.RowsAffected()
+		purged += n
+		if n == 0 {
+			break
+		}
+	}
+	return purged
+}
+
+func (db *DB) queryLogsSizeBytes(ctx context.Context) (int64, error) {
+	var n int64
+	err := db.sql.QueryRowContext(ctx, `SELECT pg_total_relation_size('query_logs')`).Scan(&n)
+	return n, err
+}
+
+// purgeQueryLogsBySize deletes oldest rows until table+indexes are under ~90% of maxSizeMB.
+func (db *DB) purgeQueryLogsBySize(maxSizeMB int) int64 {
+	maxBytes := int64(maxSizeMB) * 1024 * 1024
+	target := maxBytes * 90 / 100 // hysteresis so we don't thrash at the limit
+	if target < 1 {
+		target = maxBytes
+	}
+	var purged int64
+	for i := 0; i < 400; i++ {
+		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		size, err := db.queryLogsSizeBytes(c)
+		cancel()
+		if err != nil {
+			if db.log != nil {
+				db.log.Warn("query log size check failed", "err", err)
+			}
+			return purged
+		}
+		stopAt := maxBytes
+		if purged > 0 {
+			stopAt = target
+		}
+		if size <= stopAt {
+			return purged
+		}
+		c2, cancel2 := context.WithTimeout(context.Background(), 60*time.Second)
+		res, err := db.sql.ExecContext(c2, `
+			DELETE FROM query_logs
+			WHERE ctid IN (
+				SELECT ctid FROM query_logs
+				ORDER BY timestamp ASC, id ASC
+				LIMIT 50000
+			)`)
+		cancel2()
+		if err != nil {
+			if db.log != nil {
+				db.log.Warn("query log size purge failed", "err", err)
+			}
+			return purged
+		}
+		n, _ := res.RowsAffected()
+		purged += n
+		if n == 0 {
+			break
+		}
+	}
+	return purged
 }
