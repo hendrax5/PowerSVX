@@ -15,6 +15,11 @@ services:
       - API_TOKEN=${API_TOKEN:-dev-token}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
       - TZ=Asia/Jakarta
+    logging: &powersvx-log
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     volumes:
       # Named volume avoids Windows bind-mount permission denied for USER powersvx
       - powersvx-cache:/data/cache
@@ -46,6 +51,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: powersvx-prometheus
+    logging: *powersvx-log
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -60,6 +66,7 @@ services:
   grafana:
     image: grafana/grafana:11.2.0
     container_name: powersvx-grafana
+    logging: *powersvx-log
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
@@ -80,6 +87,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: powersvx-postgres
+    logging: *powersvx-log
     environment:
       - POSTGRES_DB=PowerSVX
       - POSTGRES_USER=PowerSVX

@@ -31,7 +31,7 @@ max_connections = 20
 [cache]
 type = "badger"
 path = "/data/cache"
-max_size_mb = 512
+max_size_mb = 256
 ttl_seconds = 300
 negative_ttl = 60
 
@@ -109,5 +109,5 @@ level = "info"
 format = "json"
 query_log_enabled = true
 query_log_destination = "postgresql"
-query_log_retention_days = 30
+query_log_retention_days = 7
 query_log_mask_ip = true

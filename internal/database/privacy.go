@@ -50,8 +50,13 @@ func (db *DB) StartRetentionLoop(ctx context.Context, retentionDays int, interva
 			return
 		}
 		n, _ := res.RowsAffected()
-		if n > 0 && db.log != nil {
-			db.log.Info("query log retention purged", "rows", n, "older_than_days", retentionDays)
+		if n > 0 {
+			if _, err := db.sql.ExecContext(c, `VACUUM (ANALYZE) query_logs`); err != nil && db.log != nil {
+				db.log.Warn("query log vacuum failed", "err", err)
+			}
+			if db.log != nil {
+				db.log.Info("query log retention purged", "rows", n, "older_than_days", retentionDays)
+			}
 		}
 	}
 	go func() {

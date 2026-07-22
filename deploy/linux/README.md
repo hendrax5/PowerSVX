@@ -147,6 +147,22 @@ Do **not** overwrite a host-network deploy with the default bridge `docker-compo
 
 Analytics UI (`/analytics`) embeds Grafana (`:3000`, board `powersvx-dns`). Prometheus scrapes via job `powersvx-host` → `host.docker.internal:9100`.
 
+### Disk guard (keep usage under ~80%)
+
+Query logs + Docker logs fill disks quickly and can crash Postgres. Install the hourly guard:
+
+```bash
+cd /home/hendra/powersvx   # your clone path
+sudo install -m 755 deploy/linux/disk-guard.sh /usr/local/sbin/powersvx-disk-guard
+echo "POWERSVX_DIR=$(pwd)" | sudo tee /etc/default/powersvx-disk-guard
+echo '15 * * * * root . /etc/default/powersvx-disk-guard; /usr/local/sbin/powersvx-disk-guard' | sudo tee /etc/cron.d/powersvx-disk-guard
+# dry-run now:
+sudo POWERSVX_DIR=$(pwd) /usr/local/sbin/powersvx-disk-guard || true
+df -h /
+```
+
+Also: Docker compose caps container logs at 50MB×3, and `query_log_retention_days = 7` in `powersvx.docker.toml`.
+
 Conflict with `systemd-resolved` on port 53:
 
 ```bash
