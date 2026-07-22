@@ -15,19 +15,21 @@ import (
 
 // Resolver resolves DNS queries via forward or recursive mode.
 type Resolver struct {
-	Mode          string
-	Forwarders    []string
-	ForwardZones  []config.ForwardZoneConfig
-	ForwardOnFail bool
-	RootHintsFile string
-	Timeout       time.Duration
-	BufSize       uint16
-	WantDO        bool
-	ECSEnabled    bool
-	ECSPrefixV4   uint8
-	ECSPrefixV6   uint8
-	client        *dns.Client
-	extraRoots    []string
+	Mode            string
+	Forwarders      []string
+	ForwardZones    []config.ForwardZoneConfig
+	ForwardOnFail   bool
+	RootHintsFile   string
+	Timeout         time.Duration
+	FallbackTimeout time.Duration
+	BufSize         uint16
+	WantDO          bool
+	ECSEnabled      bool
+	ECSPrefixV4     uint8
+	ECSPrefixV6     uint8
+	client          *dns.Client
+	extraRoots      []string
+	sem             chan struct{}
 	// OnForwarder is called after each forwarder attempt (addr, ok, latencyMS, errMsg).
 	OnForwarder func(addr string, ok bool, latencyMS int64, errMsg string)
 }
@@ -87,23 +89,30 @@ func New(cfg config.ResolverConfig) *Resolver {
 	}
 	fz, _ := config.NormalizeForwardZones(cfg.ForwardZones)
 	fwd, _ := config.NormalizeForwarders(cfg.Forwarders)
+	inflight := cfg.MaxInflight
+	if inflight <= 0 {
+		inflight = 4096
+	}
+	fb := time.Duration(cfg.FallbackTimeoutMS) * time.Millisecond
 	r := &Resolver{
-		Mode:          mode,
-		Forwarders:    fwd,
-		ForwardZones:  fz,
-		ForwardOnFail: cfg.ForwardOnFail,
-		RootHintsFile: cfg.RootHintsFile,
-		Timeout:       timeout,
-		BufSize:       buf,
-		WantDO:        secMode != dnssec.ModeOff,
-		ECSEnabled:    cfg.ECSEnabled,
-		ECSPrefixV4:   v4,
-		ECSPrefixV6:   v6,
+		Mode:            mode,
+		Forwarders:      fwd,
+		ForwardZones:    fz,
+		ForwardOnFail:   cfg.ForwardOnFail,
+		RootHintsFile:   cfg.RootHintsFile,
+		Timeout:         timeout,
+		FallbackTimeout: fb,
+		BufSize:         buf,
+		WantDO:          secMode != dnssec.ModeOff,
+		ECSEnabled:      cfg.ECSEnabled,
+		ECSPrefixV4:     v4,
+		ECSPrefixV6:     v6,
 		client: &dns.Client{
 			Net:     "udp",
 			Timeout: timeout,
 			UDPSize: buf,
 		},
+		sem: make(chan struct{}, inflight),
 	}
 	if cfg.RootHintsFile != "" {
 		if addrs, err := loadRootHintsFile(cfg.RootHintsFile); err == nil {
@@ -127,6 +136,12 @@ func (r *Resolver) ResolveWithECS(ctx context.Context, req *dns.Msg, sub *ecs.Su
 	q := req.Question[0]
 	q.Name = config.NormalizeName(q.Name)
 
+	release, err := r.acquire(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer release()
+
 	// Conditional / stub forwarders always win (longest-suffix match).
 	if addrs := r.matchForwardZone(q.Name); len(addrs) > 0 {
 		msg, err := r.forwardTo(ctx, req, sub, addrs)
@@ -135,17 +150,18 @@ func (r *Resolver) ResolveWithECS(ctx context.Context, req *dns.Msg, sub *ecs.Su
 
 	switch r.Mode {
 	case "recursive":
-		// Leave headroom so forward_on_fail can still answer before clients time out.
-		recBudget := r.Timeout * 2 / 3
-		if recBudget < time.Second {
-			recBudget = r.Timeout
+		// Prefer root iteration. Reserve only a short slice for forward_on_fail
+		// so fallback is a safety net, not the common path under load.
+		fbBudget := r.fallbackBudget()
+		recBudget := r.Timeout
+		if r.ForwardOnFail && len(r.Forwarders) > 0 && fbBudget > 0 && r.Timeout > fbBudget {
+			recBudget = r.Timeout - fbBudget
 		}
 		rctx, cancel := context.WithTimeout(ctx, recBudget)
 		msg, err := r.resolveRecursive(rctx, q.Name, q.Qtype)
 		cancel()
-		if err != nil && r.ForwardOnFail && len(r.Forwarders) > 0 {
-			// Recursive often exhausts its budget; give forwarders a fresh timeout.
-			fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), r.Timeout)
+		if err != nil && r.ForwardOnFail && len(r.Forwarders) > 0 && shouldFallback(err) {
+			fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), fbBudget)
 			defer fcancel()
 			msg, err = r.forward(fctx, req, sub)
 			return msg, "fallback", err
@@ -154,6 +170,44 @@ func (r *Resolver) ResolveWithECS(ctx context.Context, req *dns.Msg, sub *ecs.Su
 	default:
 		msg, err := r.forward(ctx, req, sub)
 		return msg, "forward", err
+	}
+}
+
+func (r *Resolver) fallbackBudget() time.Duration {
+	if r == nil {
+		return 400 * time.Millisecond
+	}
+	if r.FallbackTimeout > 0 {
+		return r.FallbackTimeout
+	}
+	d := r.Timeout / 5
+	if d < 200*time.Millisecond {
+		d = 200 * time.Millisecond
+	}
+	if d > 500*time.Millisecond {
+		d = 500 * time.Millisecond
+	}
+	return d
+}
+
+// shouldFallback is true for transport/timeout/iteration failures — not for
+// successful NXDOMAIN (those return err=nil from resolveRecursive).
+func shouldFallback(err error) bool {
+	if err == nil {
+		return false
+	}
+	return true
+}
+
+func (r *Resolver) acquire(ctx context.Context) (func(), error) {
+	if r == nil || r.sem == nil {
+		return func() {}, nil
+	}
+	select {
+	case r.sem <- struct{}{}:
+		return func() { <-r.sem }, nil
+	case <-ctx.Done():
+		return func() {}, ctx.Err()
 	}
 }
 

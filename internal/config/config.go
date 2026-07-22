@@ -93,9 +93,13 @@ type ResolverConfig struct {
 	QNameMinimization bool     `toml:"qname_minimization"`
 	EDNSBufferSize    uint16   `toml:"edns_buffer_size"`
 	TimeoutMS         int      `toml:"timeout_ms"`
-	ECSEnabled        bool     `toml:"ecs_enabled"`
-	ECSPrefixV4       uint8    `toml:"ecs_prefix_v4"`
-	ECSPrefixV6       uint8    `toml:"ecs_prefix_v6"`
+	// MaxInflight caps concurrent recursive/forward resolves (0 = default 4096).
+	MaxInflight int `toml:"max_inflight"`
+	// FallbackTimeoutMS is the short budget for forward_on_fail after recursive fails (0 = auto ~20% of TimeoutMS, capped 500ms).
+	FallbackTimeoutMS int `toml:"fallback_timeout_ms"`
+	ECSEnabled        bool  `toml:"ecs_enabled"`
+	ECSPrefixV4       uint8 `toml:"ecs_prefix_v4"`
+	ECSPrefixV6       uint8 `toml:"ecs_prefix_v6"`
 }
 
 // ForwardZoneConfig is a conditional/stub forwarder for a domain suffix.
@@ -189,6 +193,10 @@ type RateLimitConfig struct {
 	DefaultBurst  int      `toml:"default_burst"`
 	BlockDuration int      `toml:"block_duration"`
 	Whitelist     []string `toml:"whitelist"`
+	// GlobalQPS soft-caps total accepted QPS across all clients (0 = off).
+	GlobalQPS int `toml:"global_qps"`
+	// GlobalBurst token burst for the global bucket (0 = same as GlobalQPS).
+	GlobalBurst int `toml:"global_burst"`
 }
 
 type RPZPolicyTOML struct {

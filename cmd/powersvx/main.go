@@ -141,6 +141,7 @@ func main() {
 		sessStore = apiauth.NewSessionStore(*dataDir, apiauth.DefaultTTL, false)
 	}
 	limiter := ratelimit.New(cfg.RateLimit.Enabled, cfg.RateLimit.DefaultQPS, cfg.RateLimit.DefaultBurst, cfg.RateLimit.BlockDuration, cfg.RateLimit.Whitelist)
+	limiter.ConfigureGlobal(cfg.RateLimit.GlobalQPS, cfg.RateLimit.GlobalBurst)
 
 	rpzPath := config.RPZPoliciesPath(*dataDir)
 	if file, err := config.LoadRPZPoliciesFile(rpzPath); err == nil {

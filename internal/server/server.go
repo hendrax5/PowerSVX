@@ -428,7 +428,9 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			_ = w.WriteMsg(cached)
 		}
 		metrics.QueriesTotal.WithLabelValues(proto, "cache").Inc()
-		metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
+		sec := time.Since(start).Seconds()
+		metrics.QueryDuration.WithLabelValues(proto).Observe(sec)
+		metrics.QueryDurationByPath.WithLabelValues("cache").Observe(sec)
 		observe(dns.RcodeToString[entry.Rcode])
 		logQuery(qname, qtypeStr, entry.Rcode, true)
 		note("cache", dns.RcodeToString[entry.Rcode], false, false, false)
@@ -471,7 +473,9 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.res.Timeout)
 	defer cancel()
 
+	metrics.ResolveInflight.Inc()
 	resp, via, err := s.res.ResolveWithECS(ctx, req, sub)
+	metrics.ResolveInflight.Dec()
 	if err != nil {
 		s.log.Warn("resolve failed", "kind", "resolve", "name", qname, "err", err)
 		m := new(dns.Msg)
@@ -486,6 +490,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		if via == "" {
 			via = "servfail"
 		}
+		metrics.QueryDurationByPath.WithLabelValues(via).Observe(time.Since(start).Seconds())
 		note(via, "SERVFAIL", false, false, isTimeout)
 		return
 	}
@@ -512,12 +517,14 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 
 	s.storeAndWriteScoped(w, req, resp, ecsKey, viewName, geoTag)
 	metrics.QueriesTotal.WithLabelValues(proto, "ok").Inc()
-	metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
-	observe(dns.RcodeToString[resp.Rcode])
-	logQuery(qname, qtypeStr, resp.Rcode, false)
+	sec := time.Since(start).Seconds()
+	metrics.QueryDuration.WithLabelValues(proto).Observe(sec)
 	if via == "" {
 		via = "forward"
 	}
+	metrics.QueryDurationByPath.WithLabelValues(via).Observe(sec)
+	observe(dns.RcodeToString[resp.Rcode])
+	logQuery(qname, qtypeStr, resp.Rcode, false)
 	note(via, dns.RcodeToString[resp.Rcode], false, false, false)
 }
 

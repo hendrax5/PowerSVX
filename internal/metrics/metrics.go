@@ -20,6 +20,17 @@ var (
 		Buckets: []float64{0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1},
 	}, []string{"protocol"})
 
+	QueryDurationByPath = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "powersvx_query_duration_by_path_seconds",
+		Help:    "DNS query latency by resolve path (cache, recursive, fallback, forward, …)",
+		Buckets: []float64{0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1},
+	}, []string{"path"})
+
+	ResolveInflight = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_resolve_inflight",
+		Help: "In-flight recursive/forward resolves",
+	})
+
 	CacheHits = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "powersvx_cache_hits_total",
 		Help: "Cache hits",

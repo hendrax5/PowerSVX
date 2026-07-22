@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-// Limiter is a token-bucket rate limiter keyed by client IP (/32 or exact).
+// Limiter is a token-bucket rate limiter keyed by client IP (/32 or exact),
+// with an optional global bucket across all clients.
 type Limiter struct {
 	mu          sync.Mutex
 	buckets     map[string]*bucket
@@ -17,6 +18,9 @@ type Limiter struct {
 	blockDur    time.Duration
 	blocked     map[string]time.Time
 	enabled     bool
+	globalQPS   float64
+	globalBurst float64
+	global      *bucket
 }
 
 type bucket struct {
@@ -71,6 +75,8 @@ type Config struct {
 	Burst         int      `json:"burst"`
 	BlockDuration int      `json:"block_duration"`
 	Whitelist     []string `json:"whitelist"`
+	GlobalQPS     int      `json:"global_qps"`
+	GlobalBurst   int      `json:"global_burst"`
 }
 
 // Configure updates QPS/burst/block duration/whitelist atomically.
@@ -94,8 +100,28 @@ func (l *Limiter) Configure(qps, burst, blockSeconds int, whitelistCIDRs []strin
 	l.burst = float64(burst)
 	l.blockDur = time.Duration(blockSeconds) * time.Second
 	l.whitelist = nets
-	// Reset buckets so new limits apply immediately; keep blocked until expiry.
 	l.buckets = make(map[string]*bucket)
+}
+
+// ConfigureGlobal sets a process-wide QPS cap (0 disables).
+func (l *Limiter) ConfigureGlobal(qps, burst int) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if qps <= 0 {
+		l.globalQPS = 0
+		l.globalBurst = 0
+		l.global = nil
+		return
+	}
+	if burst <= 0 {
+		burst = qps
+	}
+	l.globalQPS = float64(qps)
+	l.globalBurst = float64(burst)
+	l.global = &bucket{tokens: float64(burst), last: time.Now()}
 }
 
 func parseWhitelist(cidrs []string) []*net.IPNet {
@@ -139,6 +165,8 @@ func (l *Limiter) SnapshotConfig() Config {
 		Burst:         int(l.burst),
 		BlockDuration: int(l.blockDur / time.Second),
 		Whitelist:     wl,
+		GlobalQPS:     int(l.globalQPS),
+		GlobalBurst:   int(l.globalBurst),
 	}
 }
 
@@ -169,7 +197,8 @@ func (l *Limiter) Allow(ipStr string) bool {
 	}
 	for _, n := range l.whitelist {
 		if n.Contains(ip) {
-			return true
+			// Whitelisted clients still count against the global cap.
+			return l.allowGlobal()
 		}
 	}
 	key := ip.String()
@@ -182,6 +211,10 @@ func (l *Limiter) Allow(ipStr string) bool {
 			return false
 		}
 		delete(l.blocked, key)
+	}
+
+	if !l.takeGlobalLocked() {
+		return false
 	}
 
 	b := l.buckets[key]
@@ -201,6 +234,34 @@ func (l *Limiter) Allow(ipStr string) bool {
 		return false
 	}
 	b.tokens--
+	return true
+}
+
+func (l *Limiter) allowGlobal() bool {
+	if l == nil {
+		return true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.takeGlobalLocked()
+}
+
+func (l *Limiter) takeGlobalLocked() bool {
+	if l.globalQPS <= 0 || l.global == nil {
+		return true
+	}
+	now := time.Now()
+	g := l.global
+	elapsed := now.Sub(g.last).Seconds()
+	g.tokens += elapsed * l.globalQPS
+	if g.tokens > l.globalBurst {
+		g.tokens = l.globalBurst
+	}
+	g.last = now
+	if g.tokens < 1 {
+		return false
+	}
+	g.tokens--
 	return true
 }
 

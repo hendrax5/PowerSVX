@@ -35,6 +35,7 @@ type Engine struct {
 	wild       *trie // wildcard-only trie in cold mode
 	bloom      *bloom.Filter
 	hot        *hotCache
+	neg        *negCache
 	hotMax     int
 	cold       bool // exact names served from Badger
 	store      *Store
@@ -190,6 +191,7 @@ func (e *Engine) Lookup(name string) (Hit, bool) {
 	bf := e.bloom
 	store := e.store
 	hot := e.hot
+	neg := e.neg
 	e.mu.RUnlock()
 
 	norm := config.NormalizeName(name)
@@ -201,14 +203,21 @@ func (e *Engine) Lookup(name string) (Hit, bool) {
 				return h, true
 			}
 		}
-		if bf == nil || bf.MightContain(norm) {
-			if store != nil {
-				if h, ok, err := store.Get(norm); err == nil && ok {
-					if hot != nil {
-						hot.Set(norm, h)
+		// Skip Badger when a recent bloom false-positive was recorded.
+		if neg == nil || !neg.Has(norm) {
+			if bf == nil || bf.MightContain(norm) {
+				if store != nil {
+					if h, ok, err := store.Get(norm); err == nil && ok {
+						if hot != nil {
+							hot.Set(norm, h)
+						}
+						e.hits.Add(1)
+						return h, true
 					}
-					e.hits.Add(1)
-					return h, true
+					// Bloom said maybe but disk miss → remember to avoid repeat I/O.
+					if bf != nil && neg != nil && bf.MightContain(norm) {
+						neg.Set(norm)
+					}
 				}
 			}
 		}
@@ -252,7 +261,7 @@ func splitCold(t *trie) (bf *bloom.Filter, wild *trie) {
 	if n < 1 {
 		n = 1
 	}
-	bf = bloom.New(n*2, 0.01)
+	bf = bloom.New(n*2, 0.001)
 	wild = newTrie()
 	t.walk(func(name string, hit Hit) {
 		norm := config.NormalizeName(name)
@@ -287,6 +296,7 @@ func (e *Engine) replaceTreeCold(t *trie, fromDisk bool) {
 	e.bloom = bf
 	e.cold = true
 	e.hot = newHot(hotMax)
+	e.neg = newNeg(hotMax, 30*time.Second)
 	e.mu.Unlock()
 	e.count.Store(int64(t.count))
 	e.fromDisk.Store(fromDisk)
@@ -295,7 +305,7 @@ func (e *Engine) replaceTreeCold(t *trie, fromDisk bool) {
 func (e *Engine) replaceTreeRAM(t *trie, fromDisk bool) {
 	var bf *bloom.Filter
 	if t != nil && t.count > 0 {
-		bf = bloom.New(t.count*2, 0.01)
+		bf = bloom.New(t.count*2, 0.001)
 		t.walk(func(name string, _ Hit) {
 			bf.Add(config.NormalizeName(name))
 		})
@@ -306,6 +316,7 @@ func (e *Engine) replaceTreeRAM(t *trie, fromDisk bool) {
 	e.bloom = bf
 	e.cold = false
 	e.hot = nil
+	e.neg = nil
 	e.mu.Unlock()
 	if t == nil {
 		e.count.Store(0)
@@ -406,6 +417,7 @@ func (e *Engine) TryLoadDisk(policies []PolicyConfig) (bool, int, error) {
 	e.bloom = bf
 	e.cold = true
 	e.hot = newHot(hotMax)
+	e.neg = newNeg(hotMax, 30*time.Second)
 	e.mu.Unlock()
 	e.count.Store(int64(n))
 	e.fromDisk.Store(true)

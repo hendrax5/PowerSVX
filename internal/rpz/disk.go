@@ -177,7 +177,7 @@ func (s *Store) BuildColdIndex() (bf *bloom.Filter, wild *trie, count int, err e
 			return nil
 		})
 	})
-	bf = bloom.New(expected*2, 0.01)
+	bf = bloom.New(expected*2, 0.001)
 	wild = newTrie()
 	err = s.db.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions

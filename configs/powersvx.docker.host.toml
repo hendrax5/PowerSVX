@@ -31,28 +31,35 @@ max_connections = 20
 [cache]
 type = "badger"
 path = "/data/cache"
-max_size_mb = 64
+# Larger L1 (entries ≈ max_size_mb * 1024) raises hit ratio under multi‑10k QPS.
+max_size_mb = 256
 ttl_seconds = 300
-negative_ttl = 30
+negative_ttl = 60
 
 [resolver]
-# Prefer forward + healthy upstreams. recursive + dead forwarders = goroutine/SERVFAIL storm.
-mode = "forward"
+# Recursive to root first; short forward_on_fail only when root iteration fails.
+mode = "recursive"
 forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
-forward_on_fail = false
+forward_on_fail = true
 dnssec_mode = "off"
 edns_buffer_size = 1232
-timeout_ms = 1500
+timeout_ms = 2000
+fallback_timeout_ms = 400
+max_inflight = 4096
 ecs_enabled = false
 ecs_prefix_v4 = 24
 ecs_prefix_v6 = 56
 
 [rate_limit]
 enabled = true
-default_qps = 500
-default_burst = 200
-block_duration = 300
-whitelist = ["127.0.0.1/32", "::1/128", "172.16.0.0/12"]
+# Per-client. Keep whitelist tiny — copying ACL here disables protection for those nets.
+default_qps = 2000
+default_burst = 400
+block_duration = 60
+whitelist = ["127.0.0.1/32", "::1/128"]
+# Soft cap across ALL clients (protects p99 under flood). Tune to capacity.
+global_qps = 18000
+global_burst = 4000
 
 [rpz]
 enabled = true

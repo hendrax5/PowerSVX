@@ -32,34 +32,32 @@ max_connections = 20
 type = "badger"
 path = "/data/cache"
 # Lean: smaller L1 (entries ≈ max_size_mb * 1024). Raise only if hit ratio stays low.
-max_size_mb = 64
+max_size_mb = 256
 ttl_seconds = 300
-negative_ttl = 30
+negative_ttl = 60
 
 [resolver]
-# forward = low CPU/RAM. recursive + dead forwarders caused 50k+ goroutines / SERVFAIL storms.
-mode = "forward"
+# Recursive to root first; short forward_on_fail only when root iteration fails.
+mode = "recursive"
 forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
-# Optional encrypted outbound forwarders:
-# forwarders = ["tls://one.one.one.one:853", "https://cloudflare-dns.com/dns-query"]
-# Optional conditional/stub forwarders (longest-suffix match, checked before recursion):
-# [[resolver.forward_zones]]
-# zone = "corp.local"
-# forwarders = ["10.0.0.1:53", "10.0.0.2:53"]
-forward_on_fail = false
+forward_on_fail = true
 dnssec_mode = "off"
 edns_buffer_size = 1232
-timeout_ms = 1500
+timeout_ms = 2000
+fallback_timeout_ms = 400
+max_inflight = 4096
 ecs_enabled = false
 ecs_prefix_v4 = 24
 ecs_prefix_v6 = 56
 
 [rate_limit]
 enabled = true
-default_qps = 500
-default_burst = 200
-block_duration = 300
-whitelist = ["127.0.0.1/32", "::1/128", "172.16.0.0/12"]
+default_qps = 2000
+default_burst = 400
+block_duration = 60
+whitelist = ["127.0.0.1/32", "::1/128"]
+global_qps = 18000
+global_burst = 4000
 
 [rpz]
 enabled = true
