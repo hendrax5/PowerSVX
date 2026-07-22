@@ -31,24 +31,27 @@ func MaskClientIP(ipStr string) string {
 }
 
 // StartRetentionLoop enforces time and/or size caps on query_logs. Stop via cancel.
-// retentionDays <= 0 skips age purge; maxSizeMB <= 0 skips size purge.
+// Limits are read each run via SetQueryLogLimits (safe to change from the UI).
 func (db *DB) StartRetentionLoop(ctx context.Context, retentionDays, maxSizeMB int, interval time.Duration) {
 	if db == nil || db.sql == nil {
 		return
 	}
+	db.SetQueryLogLimits(retentionDays, maxSizeMB)
 	if retentionDays <= 0 && maxSizeMB <= 0 {
-		return
+		// Still start the loop so a later UI enable can take effect without restart.
 	}
 	if interval <= 0 {
 		interval = time.Hour
 	}
 	run := func() {
+		days := int(db.queryLogRetentionDays.Load())
+		maxMB := int(db.queryLogMaxSizeMB.Load())
 		var purged int64
-		if retentionDays > 0 {
-			purged += db.purgeQueryLogsByAge(retentionDays)
+		if days > 0 {
+			purged += db.purgeQueryLogsByAge(days)
 		}
-		if maxSizeMB > 0 {
-			purged += db.purgeQueryLogsBySize(maxSizeMB)
+		if maxMB > 0 {
+			purged += db.purgeQueryLogsBySize(maxMB)
 		}
 		if purged > 0 {
 			c, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -60,8 +63,8 @@ func (db *DB) StartRetentionLoop(ctx context.Context, retentionDays, maxSizeMB i
 			if db.log != nil {
 				db.log.Info("query log retention purged",
 					"rows", purged,
-					"older_than_days", retentionDays,
-					"max_size_mb", maxSizeMB,
+					"older_than_days", days,
+					"max_size_mb", maxMB,
 				)
 			}
 		}

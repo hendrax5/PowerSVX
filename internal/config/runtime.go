@@ -20,6 +20,8 @@ type RuntimeSettings struct {
 	ResolverMode         *string  `json:"resolver_mode,omitempty"`
 	ForwardOnFail        *bool    `json:"forward_on_fail,omitempty"`
 	QueryLog             *bool    `json:"query_log_enabled,omitempty"`
+	QueryLogRetentionDays *int    `json:"query_log_retention_days,omitempty"`
+	QueryLogMaxSizeMB    *int     `json:"query_log_max_size_mb,omitempty"`
 	Forwarders           []string `json:"forwarders"`
 	ForwardZones         []ForwardZoneConfig `json:"forward_zones"`
 	AllowQuery           []string `json:"allow_query"`
@@ -93,6 +95,12 @@ func (c *Config) ApplyRuntimeSettings(s RuntimeSettings) {
 	}
 	if s.QueryLog != nil {
 		c.Logging.QueryLogEnabled = *s.QueryLog
+	}
+	if s.QueryLogRetentionDays != nil && *s.QueryLogRetentionDays >= 0 {
+		c.Logging.QueryLogRetentionDays = *s.QueryLogRetentionDays
+	}
+	if s.QueryLogMaxSizeMB != nil && *s.QueryLogMaxSizeMB >= 0 {
+		c.Logging.QueryLogMaxSizeMB = *s.QueryLogMaxSizeMB
 	}
 	if s.Forwarders != nil {
 		c.Resolver.Forwarders = append([]string(nil), s.Forwarders...)

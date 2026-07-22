@@ -318,7 +318,7 @@ func main() {
 		rest.SetSessionStore(sessStore)
 	}
 	rest.StartRPZAutoUpdate()
-	if db != nil && (cfg.Logging.QueryLogRetentionDays > 0 || cfg.Logging.QueryLogMaxSizeMB > 0) {
+	if db != nil {
 		retCtx, retCancel := context.WithCancel(context.Background())
 		defer retCancel()
 		db.StartRetentionLoop(retCtx, cfg.Logging.QueryLogRetentionDays, cfg.Logging.QueryLogMaxSizeMB, time.Hour)
@@ -411,6 +411,9 @@ func main() {
 				}
 				if err := dnsSrv.SetQueryACL(cfg.ACL.AllowQuery, cfg.ACL.DenyQuery); err != nil {
 					log.Warn("acl reload failed", "err", err)
+				}
+				if db != nil {
+					db.SetQueryLogLimits(cfg.Logging.QueryLogRetentionDays, cfg.Logging.QueryLogMaxSizeMB)
 				}
 			}
 			if cfg.Plugins.Enabled && plugins != nil {

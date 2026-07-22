@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -16,6 +17,9 @@ import (
 type DB struct {
 	sql *sql.DB
 	log *slog.Logger
+
+	queryLogRetentionDays atomic.Int64
+	queryLogMaxSizeMB     atomic.Int64
 }
 
 func Connect(cfg config.DatabaseConfig, log *slog.Logger) (*DB, error) {
@@ -77,6 +81,21 @@ func (d *DB) Close() error {
 		return nil
 	}
 	return d.sql.Close()
+}
+
+// SetQueryLogLimits updates live retention/size caps read by StartRetentionLoop.
+func (d *DB) SetQueryLogLimits(retentionDays, maxSizeMB int) {
+	if d == nil {
+		return
+	}
+	if retentionDays < 0 {
+		retentionDays = 0
+	}
+	if maxSizeMB < 0 {
+		maxSizeMB = 0
+	}
+	d.queryLogRetentionDays.Store(int64(retentionDays))
+	d.queryLogMaxSizeMB.Store(int64(maxSizeMB))
 }
 
 func (d *DB) Ping(ctx context.Context) error {

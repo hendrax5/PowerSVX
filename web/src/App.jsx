@@ -1534,6 +1534,8 @@ function Settings() {
     split_horizon: !!s.split_horizon,
     forward_on_fail: s.forward_on_fail !== false,
     query_log_enabled: !!s.query_log_enabled,
+    query_log_retention_days: Number(s.query_log_retention_days) || 3,
+    query_log_max_size_mb: Number(s.query_log_max_size_mb) || 5120,
     resolver_mode: s.resolver_mode === 'forward' ? 'forward' : 'recursive',
     forwarders: Array.isArray(s.forwarders) ? [...s.forwarders] : [],
     forward_zones: Array.isArray(s.forward_zones)
@@ -1596,7 +1598,9 @@ function Settings() {
       Number(draft.rate_limit_qps) !== Number(saved.rate_limit_qps || 0) ||
       Number(draft.rate_limit_burst) !== Number(saved.rate_limit_burst || 0) ||
       Number(draft.rate_limit_block_duration) !== Number(saved.rate_limit_block_duration || 0) ||
-      !sameList(draft.rate_limit_whitelist, saved.rate_limit_whitelist || []))
+      !sameList(draft.rate_limit_whitelist, saved.rate_limit_whitelist || []) ||
+      Number(draft.query_log_retention_days) !== Number(saved.query_log_retention_days || 0) ||
+      Number(draft.query_log_max_size_mb) !== Number(saved.query_log_max_size_mb || 0))
   const dirtyAcl =
     saved && draft && (!sameList(draft.allow_query, saved.allow_query) || !sameList(draft.deny_query, saved.deny_query))
   const dirty = !!(dirtyDns || dirtyFeatures || dirtyAcl)
@@ -1639,6 +1643,8 @@ function Settings() {
         split_horizon: draft.split_horizon,
         forward_on_fail: draft.forward_on_fail,
         query_log_enabled: draft.query_log_enabled,
+        query_log_retention_days: Number(draft.query_log_retention_days) || 0,
+        query_log_max_size_mb: Number(draft.query_log_max_size_mb) || 0,
         resolver_mode: draft.resolver_mode,
         forwarders: draft.forwarders,
         forward_zones: (draft.forward_zones || []).map((z) => ({
@@ -2229,6 +2235,54 @@ function Settings() {
           ) : null}
 
           {section === 'features' ? (
+            <section className="panel px-4 py-4 space-y-4 mt-4" aria-labelledby="settings-qlog-heading">
+              <div>
+                <h2 id="settings-qlog-heading" className="text-sm font-medium">
+                  Query log limits
+                </h2>
+                <p className="text-xs text-[var(--muted)] mt-1">
+                  Cap database growth. Oldest rows are deleted first when over the size limit. 0 = disabled for that
+                  guard. Default size cap is 5 GB (5120 MB).
+                </p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="text-xs text-[var(--muted)] space-y-1 block">
+                  Max size (MB)
+                  <input
+                    type="number"
+                    min={0}
+                    max={102400}
+                    disabled={busy || !isAdmin}
+                    className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-2 text-sm mono"
+                    value={draft.query_log_max_size_mb}
+                    onChange={(e) => {
+                      setOk('')
+                      setErr('')
+                      setDraft((d) => ({ ...d, query_log_max_size_mb: e.target.value }))
+                    }}
+                  />
+                </label>
+                <label className="text-xs text-[var(--muted)] space-y-1 block">
+                  Retention (days)
+                  <input
+                    type="number"
+                    min={0}
+                    max={3650}
+                    disabled={busy || !isAdmin}
+                    className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-2 text-sm mono"
+                    value={draft.query_log_retention_days}
+                    onChange={(e) => {
+                      setOk('')
+                      setErr('')
+                      setDraft((d) => ({ ...d, query_log_retention_days: e.target.value }))
+                    }}
+                  />
+                </label>
+              </div>
+            </section>
+          ) : null}
+
+          {section === 'features' ? (
             <section className="panel px-4 py-4 space-y-4 mt-4" aria-labelledby="settings-rl-heading">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
@@ -2422,6 +2476,7 @@ function Settings() {
                   ['TLS min', saved.tls_min_version],
                   ['Mask query IPs', saved.query_log_mask_ip ? 'yes' : 'no'],
                   ['Log retention (days)', saved.query_log_retention_days],
+                  ['Log max size (MB)', saved.query_log_max_size_mb],
                   ['AXFR allowed', saved.transfer?.allow_axfr ? 'yes' : 'no'],
                   ['AXFR requires TSIG', saved.transfer?.require_tsig ? 'yes' : 'no'],
                   ['NOTIFY targets', (saved.transfer?.notify || []).join(', ') || '—'],

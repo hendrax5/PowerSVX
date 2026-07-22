@@ -78,12 +78,19 @@ func (a *API) saveRuntimeFromServer(cur server.RuntimeFlags) {
 	if a.srv.Kominfo() != nil {
 		targets = a.srv.Kominfo().Targets()
 	}
+	retDays := 0
+	maxMB := 0
+	if a.cfg != nil {
+		retDays = a.cfg.Logging.QueryLogRetentionDays
+		maxMB = a.cfg.Logging.QueryLogMaxSizeMB
+	}
 	_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), config.RuntimeSettings{
 		GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 		RateLimitQPS: &rlLive.QPS, RateLimitBurst: &rlLive.Burst, RateLimitBlockDur: &rlLive.BlockDuration,
 		RateLimitWhitelist: rlLive.Whitelist,
 		ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
 		ResolverMode: &mode, ForwardOnFail: &cur.ForwardOnFail, QueryLog: &cur.QueryLog,
+		QueryLogRetentionDays: &retDays, QueryLogMaxSizeMB: &maxMB,
 		Forwarders: fwd, ForwardZones: fz, AllowQuery: allow, DenyQuery: deny,
 		AxfrSyncEnabled: &en,
 		AxfrSyncTargets: targets,

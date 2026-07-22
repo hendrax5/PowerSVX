@@ -10,7 +10,7 @@
 #   DISK_GUARD_PCT=80
 #   DISK_GUARD_PATH=/
 #   POWERSVX_DIR=/home/hendra/powersvx
-#   QUERY_LOG_MAX_MB=2048   # hard cap for query_logs (table+indexes)
+#   QUERY_LOG_MAX_MB=5120   # hard cap for query_logs (table+indexes)
 #   PG_PASSWORD=...   (or load from $POWERSVX_DIR/.env)
 
 set -euo pipefail
@@ -18,7 +18,7 @@ set -euo pipefail
 THRESHOLD="${DISK_GUARD_PCT:-80}"
 MOUNT="${DISK_GUARD_PATH:-/}"
 ROOT_DIR="${POWERSVX_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
-QUERY_LOG_MAX_MB="${QUERY_LOG_MAX_MB:-2048}"
+QUERY_LOG_MAX_MB="${QUERY_LOG_MAX_MB:-5120}"
 
 pct() {
   df -P "$MOUNT" 2>/dev/null | awk 'NR==2 { gsub(/%/,"",$5); print $5 }'

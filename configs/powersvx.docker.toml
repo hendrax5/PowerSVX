@@ -136,8 +136,8 @@ format = "json"
 query_log_enabled = false
 query_log_destination = "postgresql"
 query_log_retention_days = 3
-# Hard cap table+indexes. Oldest rows deleted first. Ideal 1–2G; 5G is a safe upper bound on ~40G disks.
-query_log_max_size_mb = 2048
+# Hard cap table+indexes (5 GB default). Oldest rows deleted first. Editable in Settings UI.
+query_log_max_size_mb = 5120
 # With Docker bridge port-publish, RemoteAddr is usually the bridge gateway
 # (e.g. 172.18.0.1), not the LAN client. Masking /24 then shows 172.18.0.0.
 # Keep false here; set true only when using network_mode: host (real client IPs).

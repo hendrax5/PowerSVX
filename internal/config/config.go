@@ -298,7 +298,7 @@ func Default() *Config {
 		Logging: LoggingConfig{
 			Level: "info", Format: "json", QueryLogEnabled: false,
 			QueryLogDestination: "postgresql", QueryLogRetentionDays: 30,
-			QueryLogMaxSizeMB: 2048, QueryLogMaskIP: true,
+			QueryLogMaxSizeMB: 5120, QueryLogMaskIP: true,
 		},
 		RateLimit: RateLimitConfig{
 			Enabled: false, DefaultQPS: 100, DefaultBurst: 200, BlockDuration: 300,

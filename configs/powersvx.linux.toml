@@ -113,7 +113,7 @@ format = "json"
 query_log_enabled = true
 query_log_destination = "postgresql"
 query_log_retention_days = 30
-query_log_max_size_mb = 2048
+query_log_max_size_mb = 5120
 query_log_mask_ip = true
 
 [plugins]

@@ -730,6 +730,8 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			ResolverMode         *string   `json:"resolver_mode"`
 			ForwardOnFail        *bool     `json:"forward_on_fail"`
 			QueryLog             *bool     `json:"query_log_enabled"`
+			QueryLogRetentionDays *int     `json:"query_log_retention_days"`
+			QueryLogMaxSizeMB    *int      `json:"query_log_max_size_mb"`
 			Forwarders           *[]string `json:"forwarders"`
 			ForwardZones         *[]config.ForwardZoneConfig `json:"forward_zones"`
 			AllowQuery           *[]string `json:"allow_query"`
@@ -769,6 +771,24 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if body.QueryLog != nil {
 			cur.QueryLog = *body.QueryLog
 		}
+		if body.QueryLogRetentionDays != nil {
+			if *body.QueryLogRetentionDays < 0 || *body.QueryLogRetentionDays > 3650 {
+				http.Error(w, "query_log_retention_days must be 0–3650", http.StatusBadRequest)
+				return
+			}
+			if a.cfg != nil {
+				a.cfg.Logging.QueryLogRetentionDays = *body.QueryLogRetentionDays
+			}
+		}
+		if body.QueryLogMaxSizeMB != nil {
+			if *body.QueryLogMaxSizeMB < 0 || *body.QueryLogMaxSizeMB > 102400 {
+				http.Error(w, "query_log_max_size_mb must be 0–102400", http.StatusBadRequest)
+				return
+			}
+			if a.cfg != nil {
+				a.cfg.Logging.QueryLogMaxSizeMB = *body.QueryLogMaxSizeMB
+			}
+		}
 		if body.Forwarders != nil {
 			fwd, err := config.NormalizeForwarders(*body.Forwarders)
 			if err != nil {
@@ -786,6 +806,9 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			cur.ForwardZones = fz
 		}
 		a.srv.ApplyRuntimeFlags(cur)
+		if a.db != nil && a.cfg != nil {
+			a.db.SetQueryLogLimits(a.cfg.Logging.QueryLogRetentionDays, a.cfg.Logging.QueryLogMaxSizeMB)
+		}
 
 		rl := a.srv.RateLimitConfig()
 		qps, burst, block := rl.QPS, rl.Burst, rl.BlockDuration
@@ -855,12 +878,19 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if a.srv.Kominfo() != nil {
 			axfrTargets = a.srv.Kominfo().Targets()
 		}
+		retDays := 0
+		maxMB := 0
+		if a.cfg != nil {
+			retDays = a.cfg.Logging.QueryLogRetentionDays
+			maxMB = a.cfg.Logging.QueryLogMaxSizeMB
+		}
 		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), config.RuntimeSettings{
 			GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 			RateLimitQPS: &rlLive.QPS, RateLimitBurst: &rlLive.Burst, RateLimitBlockDur: &rlLive.BlockDuration,
 			RateLimitWhitelist: rlLive.Whitelist,
 			ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
 			ResolverMode: &mode, ForwardOnFail: &cur.ForwardOnFail, QueryLog: &cur.QueryLog,
+			QueryLogRetentionDays: &retDays, QueryLogMaxSizeMB: &maxMB,
 			Forwarders: fwd, ForwardZones: fz, AllowQuery: allow, DenyQuery: deny,
 			AxfrSyncEnabled: &kominfoOn, AxfrSyncTargets: axfrTargets,
 			KominfoSyncEnabled: &kominfoOn,
@@ -939,9 +969,10 @@ func (a *API) settingsPayload() map[string]any {
 			"geodns", "rpz_enabled", "rate_limit", "rate_limit_qps", "rate_limit_burst",
 			"rate_limit_block_duration", "rate_limit_whitelist",
 			"ecs_enabled", "split_horizon",
-			"resolver_mode", "forward_on_fail", "forwarders", "forward_zones", "query_log_enabled", "allow_query", "deny_query",
+			"resolver_mode", "forward_on_fail", "forwarders", "forward_zones", "query_log_enabled",
+			"query_log_retention_days", "query_log_max_size_mb", "allow_query", "deny_query",
 		},
-		"note": "Edit toggles, rate limit, query ACL, forwarders, conditional forward zones, and resolver mode, then Save. Persisted to data/runtime-settings.json. Empty allow_query = allow all. AXFR ACL and IP masking are TOML-only. IXFR is answered as full AXFR.",
+		"note": "Edit toggles, rate limit, query ACL, forwarders, conditional forward zones, query log size/retention, and resolver mode, then Save. Persisted to data/runtime-settings.json. Empty allow_query = allow all. AXFR ACL and IP masking are TOML-only. IXFR is answered as full AXFR.",
 	}
 }
 
