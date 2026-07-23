@@ -3,11 +3,22 @@ package rpz
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 )
+
+func TestQuerySOASerialHintWrongKomdigiZone(t *testing.T) {
+	_, _, err := QuerySOASerial(context.Background(), "trustkominfo.", []string{"127.0.0.1:1"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "trustpositifkominfo") {
+		t.Fatalf("want spelling hint, got %v", err)
+	}
+}
 
 func TestRelativeOwner(t *testing.T) {
 	rel, ok := relativeOwner("evil.com.trustpositifkominfo.", "trustpositifkominfo.")

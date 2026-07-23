@@ -68,50 +68,51 @@ func masterAddr(master string) string {
 	return addr
 }
 
-// QuerySOASerial asks the first reachable master for the zone SOA serial.
+// QuerySOASerial asks masters (in order) for the zone SOA serial.
+// Tries UDP then TCP per master; returns the first successful serial.
 func QuerySOASerial(ctx context.Context, zone string, masters []string) (uint32, string, error) {
 	zone = config.NormalizeName(zone)
-	var lastErr error
+	var errs []string
 	for _, master := range masters {
 		addr := masterAddr(master)
-		m := new(dns.Msg)
-		m.SetQuestion(zone, dns.TypeSOA)
-		c := &dns.Client{Net: "udp", Timeout: 5 * time.Second}
-		type result struct {
-			msg *dns.Msg
-			err error
-		}
-		ch := make(chan result, 1)
-		go func() {
+		for _, netw := range []string{"udp", "tcp"} {
+			select {
+			case <-ctx.Done():
+				return 0, "", ctx.Err()
+			default:
+			}
+			m := new(dns.Msg)
+			m.SetQuestion(zone, dns.TypeSOA)
+			c := &dns.Client{Net: netw, Timeout: 5 * time.Second}
 			r, _, err := c.Exchange(m, addr)
-			ch <- result{r, err}
-		}()
-		var r *dns.Msg
-		select {
-		case <-ctx.Done():
-			return 0, "", ctx.Err()
-		case res := <-ch:
-			if res.err != nil {
-				lastErr = res.err
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s/%s: %v", addr, netw, err))
 				continue
 			}
-			r = res.msg
-		}
-		if r == nil || r.Rcode != dns.RcodeSuccess {
-			lastErr = fmt.Errorf("soa rcode from %s", addr)
-			continue
-		}
-		for _, rr := range r.Answer {
-			if soa, ok := rr.(*dns.SOA); ok {
-				return soa.Serial, addr, nil
+			if r == nil {
+				errs = append(errs, fmt.Sprintf("%s/%s: empty reply", addr, netw))
+				continue
 			}
+			if r.Rcode != dns.RcodeSuccess {
+				errs = append(errs, fmt.Sprintf("%s/%s: %s", addr, netw, dns.RcodeToString[r.Rcode]))
+				continue
+			}
+			for _, rr := range r.Answer {
+				if soa, ok := rr.(*dns.SOA); ok {
+					return soa.Serial, addr, nil
+				}
+			}
+			errs = append(errs, fmt.Sprintf("%s/%s: no SOA in answer", addr, netw))
 		}
-		lastErr = fmt.Errorf("no SOA in answer from %s", addr)
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("all masters failed SOA")
+	if len(errs) == 0 {
+		return 0, "", fmt.Errorf("all masters failed SOA for zone %s", zone)
 	}
-	return 0, "", lastErr
+	hint := ""
+	if strings.Contains(zone, "trustkominfo") && !strings.Contains(zone, "trustpositifkominfo") {
+		hint = " (Komdigi zone is usually trustpositifkominfo — check spelling)"
+	}
+	return 0, "", fmt.Errorf("all masters failed SOA for zone %s%s: %s", zone, hint, strings.Join(errs, "; "))
 }
 
 // streamAXFR pulls a zone from masters and inserts zone-relative owner names into the trie.

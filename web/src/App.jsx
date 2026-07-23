@@ -1514,7 +1514,7 @@ function AxfrSyncPanel({ isAdmin }) {
     try {
       const next = await api.setAxfrSync({ enabled: !data.enabled })
       applySnapshot(next)
-      setOk(next.enabled ? 'AXFR sync enabled' : 'AXFR sync disabled')
+      setOk(next.enabled ? 'Outbound master sync enabled' : 'Outbound master sync disabled')
     } catch (ex) {
       setErr(ex.message)
     } finally {
@@ -1602,7 +1602,7 @@ function AxfrSyncPanel({ isAdmin }) {
     try {
       const next = await api.runAxfrSync()
       applySnapshot(next)
-      setOk('Sync started')
+      setOk('NOTIFY started for your authoritative zones')
     } catch (ex) {
       setErr(ex.message)
     } finally {
@@ -1636,45 +1636,16 @@ function AxfrSyncPanel({ isAdmin }) {
 
   return (
     <div className="space-y-5 max-w-[var(--content-max)]" aria-labelledby="tools-axfr-heading">
-      <header className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-6 items-end reveal">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted)] mb-2">Zone transfer</p>
-          <h2 id="tools-axfr-heading" className="text-2xl md:text-3xl font-semibold tracking-tight leading-none">
-            AXFR
-          </h2>
-          <p className="text-sm text-[var(--muted)] mt-3 max-w-[52ch] leading-relaxed">
-            Outbound: push NOTIFY so secondaries pull your zones. Inbound: slave AXFR filter feeds pull a
-            zone from masters and apply RPZ actions to owner names.
-          </p>
-        </div>
-        <div className="flex flex-wrap lg:justify-end items-center gap-2 reveal reveal-delay-1">
-          <span
-            className={`inline-flex items-center gap-2 text-xs mono px-2.5 py-1.5 rounded-[var(--radius)] border ${
-              data.enabled
-                ? 'border-[var(--ok)]/40 text-[var(--ok)] bg-[color-mix(in_srgb,var(--ok)_12%,transparent)]'
-                : 'border-[var(--border)] text-[var(--muted)]'
-            }`}
-          >
-            <span className={`axfr-pulse-dot ${data.enabled ? 'is-on' : ''}`} aria-hidden />
-            {data.enabled ? 'Enabled' : 'Disabled'}
-          </span>
-          <button
-            type="button"
-            disabled={busy || !isAdmin}
-            onClick={toggle}
-            className={`btn min-h-[44px] disabled:opacity-50 ${data.enabled ? 'btn-secondary' : 'btn-primary'}`}
-          >
-            {data.enabled ? 'Disable' : 'Enable'}
-          </button>
-          <button
-            type="button"
-            disabled={busy || !isAdmin || !data.enabled || p.running}
-            onClick={syncNow}
-            className="btn btn-secondary min-h-[44px] disabled:opacity-50"
-          >
-            {p.running ? 'Syncing…' : 'Sync now'}
-          </button>
-        </div>
+      <header className="reveal">
+        <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted)] mb-2">Zone transfer</p>
+        <h2 id="tools-axfr-heading" className="text-2xl md:text-3xl font-semibold tracking-tight leading-none">
+          AXFR
+        </h2>
+        <p className="text-sm text-[var(--muted)] mt-3 max-w-[60ch] leading-relaxed">
+          Two different jobs. The top panel is PowerSVX as <span className="text-[var(--text)]">master</span>{' '}
+          (others pull <em>your</em> zones). The bottom panel is PowerSVX as{' '}
+          <span className="text-[var(--text)]">slave</span> (you pull the Komdigi blocklist into RPZ).
+        </p>
       </header>
 
       {err ? <ErrorBox msg={err} /> : null}
@@ -1691,27 +1662,60 @@ function AxfrSyncPanel({ isAdmin }) {
         <section className="panel overflow-hidden reveal reveal-delay-1" aria-labelledby="axfr-sources-heading">
           <div className="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-start justify-between gap-3">
             <div>
+              <p className="text-[10px] uppercase tracking-[0.12em] text-[var(--muted)] mb-1">Role: master</p>
               <h3 id="axfr-sources-heading" className="text-sm font-medium">
-                Outbound secondary (NOTIFY)
+                Outbound — secondaries pull from PowerSVX
               </h3>
-              <p className="text-xs text-[var(--muted)] mt-1 leading-relaxed max-w-[42ch]">
-                Sources (host or host:port). These IPs may AXFR without global transfer ACL when sync is
-                on.
+              <p className="text-xs text-[var(--muted)] mt-1 leading-relaxed max-w-[46ch]">
+                Allow these IPs to AXFR <strong className="font-medium text-[var(--text)]">your</strong>{' '}
+                authoritative zones and receive NOTIFY. This is <em>not</em> how you download the TrustPositif
+                blocklist — use Filter feeds below for that.
               </p>
             </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={`inline-flex items-center gap-2 text-xs mono px-2.5 py-1.5 rounded-[var(--radius)] border ${
+                  data.enabled
+                    ? 'border-[var(--ok)]/40 text-[var(--ok)] bg-[color-mix(in_srgb,var(--ok)_12%,transparent)]'
+                    : 'border-[var(--border)] text-[var(--muted)]'
+                }`}
+              >
+                <span className={`axfr-pulse-dot ${data.enabled ? 'is-on' : ''}`} aria-hidden />
+                {data.enabled ? 'On' : 'Off'}
+              </span>
+              <button
+                type="button"
+                disabled={busy || !isAdmin}
+                onClick={toggle}
+                className={`btn text-xs min-h-[36px] disabled:opacity-50 ${data.enabled ? 'btn-secondary' : 'btn-primary'}`}
+              >
+                {data.enabled ? 'Disable' : 'Enable'}
+              </button>
+              <button
+                type="button"
+                disabled={busy || !isAdmin || !data.enabled || p.running}
+                onClick={syncNow}
+                className="btn btn-secondary text-xs min-h-[36px] disabled:opacity-50"
+              >
+                {p.running ? 'Syncing…' : 'NOTIFY now'}
+              </button>
+            </div>
+          </div>
+          <div className="px-4 py-2 border-b border-[var(--border)] flex flex-wrap justify-between gap-2">
+            <p className="text-xs text-[var(--muted)]">Secondary IPs (host or host:port)</p>
             <button
               type="button"
               disabled={!isAdmin || busy}
               onClick={resetDefaults}
-              className="btn btn-secondary text-xs min-h-[36px] px-2.5 disabled:opacity-50"
+              className="btn btn-ghost text-xs min-h-[32px] px-2 disabled:opacity-50"
             >
-              Kominfo defaults
+              Fill Komdigi secondary IPs
             </button>
           </div>
           <ul className="divide-y divide-[var(--border)]">
             {draftTargets.length === 0 ? (
               <li className="px-4 py-8 text-sm text-[var(--muted)]">
-                No sources. Add one below, or restore Kominfo defaults.
+                No secondaries. Add IPs that should pull zones from this server, or fill Komdigi secondary IPs.
               </li>
             ) : (
               draftTargets.map((addr, i) => (
@@ -2023,6 +2027,13 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
       setErr('Name and zone are required')
       return
     }
+    const zNorm = z.replace(/\.$/, '').toLowerCase()
+    if (zNorm === 'trustkominfo' || zNorm === 'trustpositif') {
+      setErr(
+        `Zone "${z}" looks wrong for Komdigi. Use trustpositifkominfo (see their sample dig AXFR).`,
+      )
+      return
+    }
     if (!masters.length) {
       setErr('At least one master (host or host:port) is required')
       return
@@ -2130,12 +2141,14 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
     <section className="panel overflow-hidden reveal reveal-delay-3" aria-labelledby="axfr-filter-heading">
       <div className="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-start justify-between gap-3">
         <div>
+          <p className="text-[10px] uppercase tracking-[0.12em] text-[var(--muted)] mb-1">Role: slave</p>
           <h3 id="axfr-filter-heading" className="text-sm font-medium">
-            Filter feeds (slave AXFR)
+            Filter feeds — pull blocklist (PowerSVX as slave)
           </h3>
           <p className="text-xs text-[var(--muted)] mt-1 leading-relaxed max-w-[56ch]">
-            Pull a zone from masters via AXFR; non-apex owner names enter the RPZ engine with the chosen
-            action. Does not install the zone as authoritative. Add to draft, then Save & sync.
+            Komdigi-recommended path: AXFR zone <span className="mono text-[var(--text)]">trustpositifkominfo</span>{' '}
+            from their masters into RPZ. First sync is full AXFR; later updates use IXFR. This does{' '}
+            <em>not</em> make PowerSVX a DNS master for Komdigi.
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
             <span className={`inline-flex items-center px-2 py-0.5 border mono ${toneClass}`}>{syncState.label}</span>
@@ -2263,7 +2276,7 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
             />
           </label>
           <label className="text-xs text-[var(--muted)] space-y-1 sm:col-span-2">
-            Masters (one per line)
+            Komdigi masters (one per line)
             <textarea
               className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)] min-h-[4.5rem]"
               value={mastersText}
