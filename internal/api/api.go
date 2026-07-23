@@ -1078,24 +1078,29 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) rpzPayload() map[string]any {
 	st := rpz.LoadStatus{}
+	axfrFeeds := map[string]rpz.FeedState{}
+	var axfrEvents []rpz.AxfrEvent
 	if eng := a.srv.RPZ(); eng != nil {
 		st = eng.LoadStatus()
+		axfrFeeds, axfrEvents = eng.AxfrStatus()
 	}
 	pols := a.cfg.RPZ.Policies
 	if pols == nil {
 		pols = []config.RPZPolicyTOML{}
 	}
 	return map[string]any{
-		"enabled":               a.srv.RuntimeFlags().RPZ,
-		"entries":               a.srv.RPZCount(),
-		"policies":              pols,
-		"update_interval":       a.cfg.RPZ.UpdateInterval,
-		"axfr_update_interval":  a.cfg.RPZ.AxfrUpdateInterval,
-		"loading":               st.Loading,
-		"error":                 st.Error,
-		"last_loaded":           st.LastLoaded,
-		"from_disk":             st.FromDisk,
-		"note":                  "PUT policies + update_interval + axfr_update_interval. AXFR feeds use IXFR after the first full transfer; NOTIFY triggers AXFR-only refresh.",
+		"enabled":              a.srv.RuntimeFlags().RPZ,
+		"entries":              a.srv.RPZCount(),
+		"policies":             pols,
+		"update_interval":      a.cfg.RPZ.UpdateInterval,
+		"axfr_update_interval": a.cfg.RPZ.AxfrUpdateInterval,
+		"loading":              st.Loading,
+		"error":                st.Error,
+		"last_loaded":          st.LastLoaded,
+		"from_disk":            st.FromDisk,
+		"axfr_feeds":           axfrFeeds,
+		"axfr_events":          axfrEvents,
+		"note":                 "PUT policies + update_interval + axfr_update_interval. AXFR feeds use IXFR after the first full transfer; NOTIFY triggers AXFR-only refresh.",
 	}
 }
 

@@ -682,8 +682,11 @@ func (e *Engine) RefreshAXFR(policies []PolicyConfig, timeout time.Duration) (in
 		hit := Hit{Action: action, Target: strings.TrimSpace(p.Target)}
 		zone := config.NormalizeName(p.Zone)
 
-		remoteSerial, _, err := QuerySOASerial(ctx, zone, p.Masters)
+		remoteSerial, master, err := QuerySOASerial(ctx, zone, p.Masters)
 		if err != nil {
+			if state != nil {
+				_ = state.PutFailure(p.Name, zone, "", fmt.Sprintf("SOA failed: %v", err))
+			}
 			return 0, fmt.Errorf("policy %s soa: %w", p.Name, err)
 		}
 		var localSerial uint32
@@ -693,16 +696,28 @@ func (e *Engine) RefreshAXFR(policies []PolicyConfig, timeout time.Duration) (in
 			}
 		}
 		if localSerial != 0 && remoteSerial == localSerial {
+			if state != nil {
+				_ = state.PutSuccess(p.Name, zone, "skipped", master, remoteSerial,
+					fmt.Sprintf("SOA unchanged · serial %d · master %s", remoteSerial, master))
+			}
 			continue
 		}
 
 		res, err := PullZone(ctx, zone, p.Masters, localSerial)
 		if err != nil {
+			if state != nil {
+				_ = state.PutFailure(p.Name, zone, master, fmt.Sprintf("transfer failed: %v", err))
+			}
 			return 0, fmt.Errorf("policy %s transfer: %w", p.Name, err)
+		}
+		mode := "ixfr"
+		if res.FullReplace || localSerial == 0 {
+			mode = "full_axfr"
 		}
 		if !res.FullReplace && localSerial != 0 && len(res.Added) == 0 && len(res.Removed) == 0 {
 			if state != nil {
-				_ = state.Set(p.Name, zone, res.Serial)
+				_ = state.PutSuccess(p.Name, zone, "skipped", master, res.Serial,
+					fmt.Sprintf("IXFR empty · serial %d", res.Serial))
 			}
 			continue
 		}
@@ -710,32 +725,30 @@ func (e *Engine) RefreshAXFR(policies []PolicyConfig, timeout time.Duration) (in
 		if store != nil {
 			if res.FullReplace || localSerial == 0 {
 				if err := store.ReplaceFeed(p.Name, res.Names, hit); err != nil {
+					if state != nil {
+						_ = state.PutFailure(p.Name, zone, master, fmt.Sprintf("replace failed: %v", err))
+					}
 					return 0, fmt.Errorf("policy %s replace: %w", p.Name, err)
 				}
 			} else {
 				if err := store.ApplyFeedDelta(p.Name, res.Added, res.Removed, hit); err != nil {
+					if state != nil {
+						_ = state.PutFailure(p.Name, zone, master, fmt.Sprintf("IXFR apply failed: %v", err))
+					}
 					return 0, fmt.Errorf("policy %s ixfr apply: %w", p.Name, err)
 				}
 			}
 			changed = true
 		} else {
-			// RAM-only: fall back to full LoadPolicies for axfr+hosts would be needed;
-			// without store, rebuild from this axfr feed alone into RAM merge is incomplete.
-			// Do a targeted tree update for tests without store.
 			e.mu.Lock()
 			if e.tree == nil {
 				e.tree = newTrie()
 			}
 			if res.FullReplace || localSerial == 0 {
-				// cannot surgically clear feed without membership; insert names
 				for _, n := range res.Names {
 					e.tree.insertHit(n, hit)
 				}
 			} else {
-				for _, n := range res.Removed {
-					// trie has no delete — skip; tests use disk store
-					_ = n
-				}
 				for _, n := range res.Added {
 					e.tree.insertHit(n, hit)
 				}
@@ -745,7 +758,15 @@ func (e *Engine) RefreshAXFR(policies []PolicyConfig, timeout time.Duration) (in
 			changed = true
 		}
 		if state != nil {
-			_ = state.Set(p.Name, zone, res.Serial)
+			msg := fmt.Sprintf("%s ok · serial %d", strings.ToUpper(mode), res.Serial)
+			if mode == "ixfr" {
+				msg = fmt.Sprintf("IXFR ok · +%d −%d · serial %d · master %s",
+					len(res.Added), len(res.Removed), res.Serial, master)
+			} else {
+				msg = fmt.Sprintf("AXFR ok · %d names · serial %d · master %s",
+					len(res.Names), res.Serial, master)
+			}
+			_ = state.PutSuccess(p.Name, zone, mode, master, res.Serial, msg)
 		}
 	}
 
@@ -761,6 +782,20 @@ func (e *Engine) RefreshAXFR(policies []PolicyConfig, timeout time.Duration) (in
 		return n, nil
 	}
 	return int(e.count.Load()), nil
+}
+
+// AxfrStatus returns persisted per-feed sync state and recent events for the API/UI.
+func (e *Engine) AxfrStatus() (map[string]FeedState, []AxfrEvent) {
+	if e == nil {
+		return map[string]FeedState{}, nil
+	}
+	e.mu.RLock()
+	state := e.axfrState
+	e.mu.RUnlock()
+	if state == nil {
+		return map[string]FeedState{}, nil
+	}
+	return state.Snapshot()
 }
 
 func streamHostsFile(path string, hit Hit, t *trie) error {

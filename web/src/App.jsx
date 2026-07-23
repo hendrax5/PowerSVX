@@ -1944,10 +1944,17 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
       return
     }
     setErr('')
-    const axfrCount = (r?.policies || []).filter((p) => p.format === 'axfr').length
+    const feeds = r?.axfr_feeds || {}
+    const axfrPols = (r?.policies || []).filter((p) => p.format === 'axfr')
+    const parts = axfrPols.map((p) => {
+      const st = feeds[p.name]
+      if (!st) return `${p.name}: no status`
+      if (st.ok === false) return `${p.name}: FAILED ${st.last_error || ''}`.trim()
+      return `${p.name}: OK serial ${st.serial} (${st.last_mode || 'synced'})`
+    })
     setOk(
-      `Sync OK · ${r?.entries ?? 0} RPZ entries total` +
-        (axfrCount ? ` · ${axfrCount} AXFR feed(s) active` : ' · no AXFR feeds in policy list'),
+      `Sync OK · ${Number(r?.entries ?? 0).toLocaleString()} RPZ entries` +
+        (parts.length ? ` · ${parts.join(' · ')}` : ' · no AXFR feeds'),
     )
   }
 
@@ -2121,13 +2128,21 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
 
   const loading = !!status?.loading || awaitingSync
   const dirty = JSON.stringify(policies) !== JSON.stringify(savedAxfr)
+  const axfrFeeds = status?.axfr_feeds || {}
+  const axfrEvents = Array.isArray(status?.axfr_events) ? status.axfr_events : []
+  const feedStates = policies.map((p) => ({ policy: p, st: axfrFeeds[p.name] || null }))
+  const anyFailed =
+    !!status?.error || feedStates.some((f) => f.st && (f.st.ok === false || f.st.last_mode === 'failed'))
+  const anySynced = feedStates.some((f) => f.st && f.st.serial)
   const syncState = loading
     ? { label: 'Syncing…', tone: 'warn' }
-    : status?.error
+    : anyFailed
       ? { label: 'Failed', tone: 'danger' }
-      : policies.length
-        ? { label: 'Active', tone: 'ok' }
-        : { label: 'Idle', tone: 'muted' }
+      : anySynced
+        ? { label: 'Synced', tone: 'ok' }
+        : policies.length
+          ? { label: 'Not synced yet', tone: 'warn' }
+          : { label: 'Idle', tone: 'muted' }
   const toneClass =
     syncState.tone === 'ok'
       ? 'border-emerald-500/40 text-emerald-700 bg-emerald-500/10'
@@ -2136,6 +2151,21 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
         : syncState.tone === 'warn'
           ? 'border-amber-500/40 text-amber-800 bg-amber-500/10'
           : 'border-[var(--border)] text-[var(--muted)] bg-[var(--bg)]'
+
+  const modeLabel = (mode) => {
+    switch (mode) {
+      case 'full_axfr':
+        return 'Full AXFR'
+      case 'ixfr':
+        return 'IXFR'
+      case 'skipped':
+        return 'Skipped (serial unchanged)'
+      case 'failed':
+        return 'Failed'
+      default:
+        return mode || '—'
+    }
+  }
 
   return (
     <section className="panel overflow-hidden reveal reveal-delay-3" aria-labelledby="axfr-filter-heading">
@@ -2147,8 +2177,7 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
           </h3>
           <p className="text-xs text-[var(--muted)] mt-1 leading-relaxed max-w-[56ch]">
             Komdigi-recommended path: AXFR zone <span className="mono text-[var(--text)]">trustpositifkominfo</span>{' '}
-            from their masters into RPZ. First sync is full AXFR; later updates use IXFR. This does{' '}
-            <em>not</em> make PowerSVX a DNS master for Komdigi.
+            from their masters into RPZ. First sync is full AXFR; later updates use IXFR.
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
             <span className={`inline-flex items-center px-2 py-0.5 border mono ${toneClass}`}>{syncState.label}</span>
@@ -2158,9 +2187,8 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
               </span>
             ) : null}
             <span className="text-[var(--muted)]">
-              {status ? `${status.entries ?? 0} RPZ entries total` : '…'}
-              {status?.last_loaded ? ` · last ${status.last_loaded}` : ''}
-              {status?.from_disk ? ' · from disk' : ''}
+              {status ? `${Number(status.entries ?? 0).toLocaleString()} RPZ entries total` : '…'}
+              {status?.last_loaded ? ` · engine ${status.last_loaded}` : ''}
             </span>
           </div>
         </div>
@@ -2185,7 +2213,41 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
       </div>
 
       <div className="px-4 py-3 space-y-3">
-        {err || status?.error ? <ErrorBox msg={err || `Last sync error: ${status.error}`} /> : null}
+        <div
+          className={`border text-sm px-3 py-2 ${
+            syncState.tone === 'ok'
+              ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-800'
+              : syncState.tone === 'danger'
+                ? 'border-[var(--danger)]/40 bg-[var(--danger)]/10 text-[var(--danger)]'
+                : syncState.tone === 'warn'
+                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-900'
+                  : 'border-[var(--border)] text-[var(--muted)]'
+          }`}
+          role="status"
+        >
+          {loading ? (
+            <p>Sync in progress — large zones can take several minutes. Status updates every few seconds.</p>
+          ) : anyFailed ? (
+            <p>
+              Last sync failed
+              {status?.error ? `: ${status.error}` : err ? `: ${err}` : '.'} Check feed rows and the log below.
+            </p>
+          ) : anySynced ? (
+            <p>
+              Last sync OK
+              {feedStates
+                .filter((f) => f.st?.updated_at)
+                .map((f) => ` · ${f.policy.name} serial ${f.st.serial} (${modeLabel(f.st.last_mode)}) at ${f.st.updated_at}`)
+                .join('') || '.'}
+            </p>
+          ) : policies.length ? (
+            <p>Feeds configured but not synced yet — click Save & sync filters or Re-sync.</p>
+          ) : (
+            <p>No filter feeds configured.</p>
+          )}
+        </div>
+
+        {err || status?.error ? <ErrorBox msg={err || `Engine error: ${status.error}`} /> : null}
         {ok ? (
           <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
             {ok}
@@ -2204,55 +2266,102 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
             disabled={!isAdmin || busy}
           />
         </label>
-        <p className="text-xs text-[var(--muted)]">
-          First sync uses full AXFR; later refreshes use IXFR when the master serial changes (NOTIFY also
-          triggers). Hosts feeds keep their own interval under Tools → RPZ.
-        </p>
 
         <ul className="space-y-2 text-sm">
           {policies.length ? (
-            policies.map((p) => (
-              <li
-                key={p.name}
-                className={`flex flex-wrap items-start justify-between gap-2 border-b border-[var(--border)]/60 pb-2 ${
-                  editName === p.name ? 'bg-[var(--accent-soft)] -mx-2 px-2 rounded-[var(--radius)]' : ''
-                }`}
-              >
-                <div className="min-w-0">
-                  <div className="font-medium">{p.name}</div>
-                  <div className="mono text-xs text-[var(--muted)] break-all">zone {p.zone || p.source}</div>
-                  <div className="mono text-xs text-[var(--muted)] break-all">
-                    masters {(p.masters || []).join(', ') || '—'}
+            policies.map((p) => {
+              const st = axfrFeeds[p.name]
+              const rowTone = !st
+                ? 'text-[var(--muted)]'
+                : st.ok === false || st.last_mode === 'failed'
+                  ? 'text-[var(--danger)]'
+                  : 'text-emerald-700'
+              return (
+                <li
+                  key={p.name}
+                  className={`flex flex-wrap items-start justify-between gap-2 border-b border-[var(--border)]/60 pb-2 ${
+                    editName === p.name ? 'bg-[var(--accent-soft)] -mx-2 px-2 rounded-[var(--radius)]' : ''
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="font-medium flex flex-wrap items-center gap-2">
+                      <span>{p.name}</span>
+                      <span className={`text-[10px] uppercase tracking-wide mono ${rowTone}`}>
+                        {st ? modeLabel(st.last_mode) : 'never synced'}
+                      </span>
+                    </div>
+                    <div className="mono text-xs text-[var(--muted)] break-all">zone {p.zone || p.source}</div>
+                    <div className="mono text-xs text-[var(--muted)] break-all">
+                      masters {(p.masters || []).join(', ') || '—'}
+                    </div>
+                    <div className="text-xs text-[var(--muted)] mt-0.5">
+                      axfr · {p.action || 'nxdomain'}
+                      {p.target ? ` → ${p.target}` : ''}
+                    </div>
+                    {st ? (
+                      <div className={`text-xs mt-1 mono ${rowTone}`}>
+                        serial {st.serial ?? 0}
+                        {st.last_master ? ` · via ${st.last_master}` : ''}
+                        {st.updated_at ? ` · ${st.updated_at}` : ''}
+                        {st.last_error ? ` · ${st.last_error}` : ''}
+                      </div>
+                    ) : (
+                      <div className="text-xs mt-1 text-[var(--muted)]">No sync status yet</div>
+                    )}
                   </div>
-                  <div className="text-xs text-[var(--muted)] mt-0.5">
-                    axfr · {p.action || 'nxdomain'}
-                    {p.target ? ` → ${p.target}` : ''}
+                  <div className="flex gap-1 shrink-0">
+                    <button
+                      type="button"
+                      disabled={!isAdmin || busy || loading}
+                      onClick={() => startEdit(p)}
+                      className="btn btn-ghost text-xs disabled:opacity-40"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!isAdmin || busy || loading}
+                      onClick={() => remove(p.name)}
+                      className="btn btn-ghost text-xs text-[var(--danger)] disabled:opacity-40"
+                    >
+                      Remove
+                    </button>
                   </div>
-                </div>
-                <div className="flex gap-1 shrink-0">
-                  <button
-                    type="button"
-                    disabled={!isAdmin || busy || loading}
-                    onClick={() => startEdit(p)}
-                    className="btn btn-ghost text-xs disabled:opacity-40"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!isAdmin || busy || loading}
-                    onClick={() => remove(p.name)}
-                    className="btn btn-ghost text-xs text-[var(--danger)] disabled:opacity-40"
-                  >
-                    Remove
-                  </button>
-                </div>
-              </li>
-            ))
+                </li>
+              )
+            })
           ) : (
             <li className="text-sm text-[var(--muted)]">No slave filter feeds yet — add one below, then Save & sync.</li>
           )}
         </ul>
+
+        <div className="border border-[var(--border)] rounded-[var(--radius)] overflow-hidden">
+          <div className="px-3 py-2 border-b border-[var(--border)] text-xs font-medium flex justify-between gap-2">
+            <span>Sync log</span>
+            <span className="text-[var(--muted)] font-normal">latest {Math.min(axfrEvents.length, 20)} events</span>
+          </div>
+          {axfrEvents.length ? (
+            <ul className="max-h-48 overflow-y-auto divide-y divide-[var(--border)]/60 text-xs mono">
+              {[...axfrEvents].reverse().slice(0, 20).map((ev, i) => (
+                <li
+                  key={`${ev.time}-${i}`}
+                  className={`px-3 py-1.5 ${
+                    ev.level === 'error' ? 'text-[var(--danger)]' : 'text-[var(--muted)]'
+                  }`}
+                >
+                  <span className="text-[var(--text)]/70">{ev.time || '—'}</span>
+                  {ev.feed ? ` · ${ev.feed}` : ''}
+                  {' · '}
+                  {ev.message}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="px-3 py-4 text-xs text-[var(--muted)]">
+              No sync events yet. After the next Re-sync / Save & sync, results appear here.
+            </p>
+          )}
+        </div>
 
         <div className="grid gap-2 sm:grid-cols-2">
           <label className="text-xs text-[var(--muted)] space-y-1">
