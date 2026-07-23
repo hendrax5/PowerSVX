@@ -9,7 +9,9 @@ import (
 // RPZPoliciesFile is UI-editable RPZ policy list (survives restart; overrides TOML policies when present).
 type RPZPoliciesFile struct {
 	Policies       []RPZPolicyTOML `json:"policies"`
-	UpdateInterval int             `json:"update_interval"` // seconds; 0 = disabled
+	UpdateInterval int             `json:"update_interval"` // hosts; seconds; 0 = disabled
+	// AxfrUpdateInterval is nil when omitted from older files (caller applies default 86400).
+	AxfrUpdateInterval *int `json:"axfr_update_interval,omitempty"`
 }
 
 func RPZPoliciesPath(dir string) string {
@@ -59,9 +61,11 @@ func SaveRPZPoliciesFile(path string, f RPZPoliciesFile) error {
 func SaveRPZPolicies(path string, policies []RPZPolicyTOML) error {
 	f, err := LoadRPZPoliciesFile(path)
 	if err != nil && !os.IsNotExist(err) {
-		// keep interval if file corrupt? start fresh
 		f = RPZPoliciesFile{}
 	}
 	f.Policies = policies
 	return SaveRPZPoliciesFile(path, f)
 }
+
+// DefaultAxfrUpdateInterval is used when axfr_update_interval is omitted from disk.
+const DefaultAxfrUpdateInterval = 86400

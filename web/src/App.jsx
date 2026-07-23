@@ -1902,7 +1902,9 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
   const defaultRedirectTarget = '139.255.196.196'
   const [hostsPolicies, setHostsPolicies] = useState([])
   const [policies, setPolicies] = useState([])
-  const [intervalSec, setIntervalSec] = useState(0)
+  const [savedAxfr, setSavedAxfr] = useState([])
+  const [hostsIntervalSec, setHostsIntervalSec] = useState(3600)
+  const [axfrIntervalSec, setAxfrIntervalSec] = useState(86400)
   const [status, setStatus] = useState(null)
   const [name, setName] = useState('')
   const [zone, setZone] = useState('')
@@ -1913,13 +1915,36 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
   const [err, setErr] = useState('')
   const [ok, setOk] = useState('')
   const [busy, setBusy] = useState(false)
+  const [awaitingSync, setAwaitingSync] = useState(false)
 
   const applyRPZ = (r) => {
     setStatus(r)
     const all = clonePolicies(r?.policies)
+    const axfr = all.filter((p) => p.format === 'axfr')
     setHostsPolicies(all.filter((p) => (p.format || 'hosts') !== 'axfr'))
-    setPolicies(all.filter((p) => p.format === 'axfr'))
-    setIntervalSec(Number(r?.update_interval) || 0)
+    setPolicies(axfr)
+    setSavedAxfr(axfr)
+    setHostsIntervalSec(Number(r?.update_interval) || 0)
+    setAxfrIntervalSec(
+      r?.axfr_update_interval === undefined || r?.axfr_update_interval === null
+        ? 86400
+        : Number(r.axfr_update_interval),
+    )
+  }
+
+  const finishSyncBanner = (r) => {
+    setAwaitingSync(false)
+    if (r?.error) {
+      setOk('')
+      setErr(`Sync failed: ${r.error}`)
+      return
+    }
+    setErr('')
+    const axfrCount = (r?.policies || []).filter((p) => p.format === 'axfr').length
+    setOk(
+      `Sync OK · ${r?.entries ?? 0} RPZ entries total` +
+        (axfrCount ? ` · ${axfrCount} AXFR feed(s) active` : ' · no AXFR feeds in policy list'),
+    )
   }
 
   const load = () =>
@@ -1938,21 +1963,21 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
   }, [action, target])
 
   useEffect(() => {
-    if (!status?.loading) return undefined
+    if (!status?.loading && !awaitingSync) return undefined
     const t = setInterval(() => {
       api
         .rpz()
         .then((r) => {
           applyRPZ(r)
-          if (!r.loading) {
-            setOk(r.error ? '' : `Synced · ${r.entries} entries`)
-            if (r.error) setErr(r.error)
-          }
+          if (!r.loading) finishSyncBanner(r)
         })
-        .catch((e) => setErr(e.message))
+        .catch((e) => {
+          setAwaitingSync(false)
+          setErr(e.message)
+        })
     }, 2000)
     return () => clearInterval(t)
-  }, [status?.loading])
+  }, [status?.loading, awaitingSync])
 
   const parseMasters = (text) =>
     text
@@ -2025,7 +2050,7 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
         return
       }
       setPolicies((list) => list.map((p) => (p.name === editName ? nextPolicy : p)))
-      setOk(`Updated "${n}" in list — Save & sync filters to apply`)
+      setOk(`Updated "${n}" in draft — click Save & sync filters to apply`)
       resetForm()
       return
     }
@@ -2034,12 +2059,13 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
       return
     }
     setPolicies((p) => [...p, nextPolicy])
+    setOk(`Added "${n}" to draft — click Save & sync filters to pull AXFR`)
     resetForm()
   }
 
   const remove = (n) => {
     setErr('')
-    setOk('')
+    setOk(`Removed "${n}" from draft — click Save & sync filters to apply`)
     setPolicies((p) => p.filter((x) => x.name !== n))
     if (editName === n) resetForm()
   }
@@ -2049,12 +2075,18 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
     setErr('')
     setOk('')
     try {
-      const sec = Math.max(0, Number(intervalSec) || 0)
-      const r = await api.updateRPZ([...hostsPolicies, ...policies], false, sec)
+      const hostsSec = Math.max(0, Number(hostsIntervalSec) || 0)
+      const axfrSec = Math.max(0, Number(axfrIntervalSec) || 0)
+      const r = await api.updateRPZ([...hostsPolicies, ...policies], false, hostsSec, axfrSec, true)
       applyRPZ(r)
-      setOk(r.loading ? 'Saved — syncing filter feeds…' : `Saved · ${r.entries} entries`)
+      if (r.loading) {
+        setAwaitingSync(true)
+        setOk('Saved — AXFR/IXFR syncing from masters… (first pull can take several minutes)')
+      } else {
+        finishSyncBanner(r)
+      }
     } catch (ex) {
-      setErr(ex.message)
+      setErr(`Save failed: ${ex.message}`)
     } finally {
       setBusy(false)
     }
@@ -2065,17 +2097,34 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
     setErr('')
     setOk('')
     try {
-      const r = await api.reloadRPZ()
+      const r = await api.reloadRPZ(true)
       applyRPZ(r)
-      setOk('Re-sync started…')
+      setAwaitingSync(true)
+      setOk('Re-sync started… SOA check then IXFR/AXFR')
     } catch (ex) {
-      setErr(ex.message)
+      setErr(`Re-sync failed: ${ex.message}`)
     } finally {
       setBusy(false)
     }
   }
 
-  const loading = !!status?.loading
+  const loading = !!status?.loading || awaitingSync
+  const dirty = JSON.stringify(policies) !== JSON.stringify(savedAxfr)
+  const syncState = loading
+    ? { label: 'Syncing…', tone: 'warn' }
+    : status?.error
+      ? { label: 'Failed', tone: 'danger' }
+      : policies.length
+        ? { label: 'Active', tone: 'ok' }
+        : { label: 'Idle', tone: 'muted' }
+  const toneClass =
+    syncState.tone === 'ok'
+      ? 'border-emerald-500/40 text-emerald-700 bg-emerald-500/10'
+      : syncState.tone === 'danger'
+        ? 'border-[var(--danger)]/40 text-[var(--danger)] bg-[var(--danger)]/10'
+        : syncState.tone === 'warn'
+          ? 'border-amber-500/40 text-amber-800 bg-amber-500/10'
+          : 'border-[var(--border)] text-[var(--muted)] bg-[var(--bg)]'
 
   return (
     <section className="panel overflow-hidden reveal reveal-delay-3" aria-labelledby="axfr-filter-heading">
@@ -2086,13 +2135,21 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
           </h3>
           <p className="text-xs text-[var(--muted)] mt-1 leading-relaxed max-w-[56ch]">
             Pull a zone from masters via AXFR; non-apex owner names enter the RPZ engine with the chosen
-            action. Does not install the zone as authoritative.
+            action. Does not install the zone as authoritative. Add to draft, then Save & sync.
           </p>
-          <p className="text-xs text-[var(--muted)] mt-1">
-            {status ? `${status.entries ?? 0} RPZ entries total` : '…'}
-            {loading ? ' · syncing…' : null}
-            {status?.last_loaded ? ` · last ${status.last_loaded}` : ''}
-          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+            <span className={`inline-flex items-center px-2 py-0.5 border mono ${toneClass}`}>{syncState.label}</span>
+            {dirty ? (
+              <span className="inline-flex items-center px-2 py-0.5 border border-amber-500/40 text-amber-800 bg-amber-500/10">
+                Unsaved draft
+              </span>
+            ) : null}
+            <span className="text-[var(--muted)]">
+              {status ? `${status.entries ?? 0} RPZ entries total` : '…'}
+              {status?.last_loaded ? ` · last ${status.last_loaded}` : ''}
+              {status?.from_disk ? ' · from disk' : ''}
+            </span>
+          </div>
         </div>
         <div className="flex gap-2">
           <button
@@ -2109,18 +2166,35 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
             onClick={saveSync}
             className="btn btn-primary text-xs min-h-[36px] disabled:opacity-50"
           >
-            {busy ? 'Saving…' : 'Save & sync filters'}
+            {busy ? 'Saving…' : loading ? 'Syncing…' : 'Save & sync filters'}
           </button>
         </div>
       </div>
 
       <div className="px-4 py-3 space-y-3">
-        {err ? <ErrorBox msg={err} /> : null}
+        {err || status?.error ? <ErrorBox msg={err || `Last sync error: ${status.error}`} /> : null}
         {ok ? (
           <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
             {ok}
           </div>
         ) : null}
+
+        <label className="text-xs text-[var(--muted)] space-y-1 block max-w-xs">
+          AXFR auto-refresh interval (seconds, 0 = off · default 86400 = 24h)
+          <input
+            type="number"
+            min={0}
+            step={3600}
+            className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
+            value={axfrIntervalSec}
+            onChange={(e) => setAxfrIntervalSec(e.target.value)}
+            disabled={!isAdmin || busy}
+          />
+        </label>
+        <p className="text-xs text-[var(--muted)]">
+          First sync uses full AXFR; later refreshes use IXFR when the master serial changes (NOTIFY also
+          triggers). Hosts feeds keep their own interval under Tools → RPZ.
+        </p>
 
         <ul className="space-y-2 text-sm">
           {policies.length ? (
@@ -2163,7 +2237,7 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
               </li>
             ))
           ) : (
-            <li className="text-sm text-[var(--muted)]">No slave filter feeds yet — add one below.</li>
+            <li className="text-sm text-[var(--muted)]">No slave filter feeds yet — add one below, then Save & sync.</li>
           )}
         </ul>
 
@@ -2175,7 +2249,7 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={!isAdmin || busy}
-              placeholder="kominfo-block"
+              placeholder="trustpositif-axfr"
             />
           </label>
           <label className="text-xs text-[var(--muted)] space-y-1">
@@ -2185,7 +2259,7 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
               value={zone}
               onChange={(e) => setZone(e.target.value)}
               disabled={!isAdmin || busy}
-              placeholder="blocklist.example."
+              placeholder="trustpositifkominfo"
             />
           </label>
           <label className="text-xs text-[var(--muted)] space-y-1 sm:col-span-2">
@@ -2260,6 +2334,11 @@ function RPZPanel({ initial, onChange }) {
   const [policies, setPolicies] = useState(() => hostsOnlyPolicies(initial?.policies))
   const [axfrPolicies, setAxfrPolicies] = useState(() => axfrOnlyPolicies(initial?.policies))
   const [intervalSec, setIntervalSec] = useState(() => Number(initial?.update_interval) || 0)
+  const [axfrIntervalSec, setAxfrIntervalSec] = useState(() =>
+    initial?.axfr_update_interval === undefined || initial?.axfr_update_interval === null
+      ? 86400
+      : Number(initial.axfr_update_interval),
+  )
   const [status, setStatus] = useState(initial)
   const [name, setName] = useState(defaultName)
   const [source, setSource] = useState(defaultSource)
@@ -2274,6 +2353,11 @@ function RPZPanel({ initial, onChange }) {
     setPolicies(hostsOnlyPolicies(initial?.policies))
     setAxfrPolicies(axfrOnlyPolicies(initial?.policies))
     setIntervalSec(Number(initial?.update_interval) || 0)
+    setAxfrIntervalSec(
+      initial?.axfr_update_interval === undefined || initial?.axfr_update_interval === null
+        ? 86400
+        : Number(initial.axfr_update_interval),
+    )
     setStatus(initial)
   }, [initial])
 
@@ -2384,11 +2468,17 @@ function RPZPanel({ initial, onChange }) {
     setOk('')
     try {
       const sec = Math.max(0, Number(intervalSec) || 0)
-      const r = await api.updateRPZ([...policies, ...axfrPolicies], false, sec)
+      const axfrSec = Math.max(0, Number(axfrIntervalSec) || 0)
+      const r = await api.updateRPZ([...policies, ...axfrPolicies], false, sec, axfrSec)
       setStatus(r)
       setPolicies(hostsOnlyPolicies(r.policies))
       setAxfrPolicies(axfrOnlyPolicies(r.policies))
       setIntervalSec(Number(r.update_interval) || 0)
+      setAxfrIntervalSec(
+        r.axfr_update_interval === undefined || r.axfr_update_interval === null
+          ? 86400
+          : Number(r.axfr_update_interval),
+      )
       onChange?.(r)
       setOk(r.loading ? 'Saved — syncing feeds in background…' : `Saved · ${r.entries} entries`)
     } catch (ex) {
@@ -2468,7 +2558,7 @@ function RPZPanel({ initial, onChange }) {
       ) : null}
 
       <label className="text-xs text-[var(--muted)] space-y-1 block max-w-xs">
-        Auto-refresh interval (seconds, 0 = off)
+        Hosts auto-refresh interval (seconds, 0 = off)
         <input
           type="number"
           min={0}
@@ -2478,6 +2568,9 @@ function RPZPanel({ initial, onChange }) {
           onChange={(e) => setIntervalSec(e.target.value)}
         />
       </label>
+      <p className="text-xs text-[var(--muted)]">
+        AXFR filter interval is under Tools → AXFR (default 24h · IXFR after first pull).
+      </p>
 
       <ul className="space-y-2 text-sm">
         {policies.length ? (

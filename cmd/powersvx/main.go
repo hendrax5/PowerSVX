@@ -159,13 +159,20 @@ func main() {
 		if file.UpdateInterval > 0 {
 			cfg.RPZ.UpdateInterval = file.UpdateInterval
 		}
-		log.Info("rpz policies loaded", "path", rpzPath, "count", len(file.Policies), "update_interval", cfg.RPZ.UpdateInterval)
+		if file.AxfrUpdateInterval != nil {
+			cfg.RPZ.AxfrUpdateInterval = *file.AxfrUpdateInterval
+		} else if cfg.RPZ.AxfrUpdateInterval <= 0 {
+			cfg.RPZ.AxfrUpdateInterval = config.DefaultAxfrUpdateInterval
+		}
+		log.Info("rpz policies loaded", "path", rpzPath, "count", len(file.Policies),
+			"update_interval", cfg.RPZ.UpdateInterval, "axfr_update_interval", cfg.RPZ.AxfrUpdateInterval)
 	}
 
 	rpzEng := rpz.New(cfg.RPZ.Enabled)
 	if err := rpzEng.OpenDisk(filepath.Join(*dataDir, "rpz-store")); err != nil {
 		log.Warn("rpz disk store unavailable", "err", err)
 	}
+	rpzEng.SetAxfrState(rpz.LoadAxfrState(rpz.AxfrStatePath(*dataDir)))
 	defer func() { _ = rpzEng.Close() }()
 
 	wl := allowlist.New(allowlist.DefaultPath(*dataDir))

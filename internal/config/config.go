@@ -231,7 +231,10 @@ type RPZPolicyTOML struct {
 type RPZConfig struct {
 	Enabled        bool            `toml:"enabled"`
 	Policies       []RPZPolicyTOML `toml:"policies"`
-	UpdateInterval int             `toml:"update_interval"`
+	UpdateInterval int             `toml:"update_interval"` // hosts feeds; seconds; 0 = off
+	// AxfrUpdateInterval is the refresh cadence for format=axfr feeds (seconds; 0 = off).
+	// Independent of UpdateInterval. Default 86400 (24h).
+	AxfrUpdateInterval int `toml:"axfr_update_interval"`
 }
 
 type MetricsConfig struct {
@@ -331,7 +334,8 @@ func Default() *Config {
 			Enabled: false, DefaultQPS: 100, DefaultBurst: 200, BlockDuration: 300,
 			Whitelist: []string{"127.0.0.1/32", "::1/128"},
 			GlobalQPS: 7500, GlobalBurst: 2000,
-		},		RPZ: RPZConfig{Enabled: false, UpdateInterval: 3600},
+		},
+		RPZ: RPZConfig{Enabled: false, UpdateInterval: 3600, AxfrUpdateInterval: 86400},
 		Metrics: MetricsConfig{
 			PrometheusEnabled: true,
 			PrometheusBind:    "0.0.0.0:9100",

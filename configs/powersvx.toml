@@ -44,6 +44,7 @@ whitelist = ["127.0.0.1/32", "::1/128"]
 [rpz]
 enabled = true
 update_interval = 3600
+axfr_update_interval = 86400
 policies = [
   { name = "sample", source = "./configs/sample-blocklist.txt", format = "hosts", action = "nxdomain" }
 ]

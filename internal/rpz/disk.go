@@ -17,6 +17,7 @@ const (
 	metaFPKey    = "meta\x00fp"
 	metaCountKey = "meta\x00count"
 	domPrefix    = "d\x00"
+	feedPrefix   = "f\x00" // f\x00policy\x00name → membership for AXFR feed replace/IXFR
 )
 
 // Store persists the compact RPZ set so restarts skip re-downloading large HTTP feeds.
@@ -153,6 +154,223 @@ func (s *Store) Put(name string, hit Hit) error {
 	val := append([]byte{actionCode(hit.Action)}, []byte(strings.TrimSpace(hit.Target))...)
 	return s.db.Update(func(txn *badger.Txn) error {
 		return txn.Set(key, val)
+	})
+}
+
+// Delete removes one domain from Badger (no-op if missing).
+func (s *Store) Delete(name string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store closed")
+	}
+	name = config.NormalizeName(name)
+	key := append([]byte(domPrefix), []byte(name)...)
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Delete(key)
+	})
+}
+
+func feedKey(policy, name string) []byte {
+	return []byte(feedPrefix + policy + "\x00" + config.NormalizeName(name))
+}
+
+func feedPolicyPrefix(policy string) []byte {
+	return []byte(feedPrefix + policy + "\x00")
+}
+
+// ClearFeed removes all domains belonging to an AXFR policy (membership index).
+func (s *Store) ClearFeed(policy string) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("store closed")
+	}
+	policy = strings.TrimSpace(policy)
+	if policy == "" {
+		return 0, fmt.Errorf("feed policy required")
+	}
+	prefix := feedPolicyPrefix(policy)
+	var names []string
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			key := it.Item().Key()
+			name := string(key[len(prefix):])
+			names = append(names, name)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	wb := s.db.NewWriteBatch()
+	for i, name := range names {
+		if err := wb.Delete(append([]byte(domPrefix), []byte(name)...)); err != nil {
+			wb.Cancel()
+			return 0, err
+		}
+		if err := wb.Delete(feedKey(policy, name)); err != nil {
+			wb.Cancel()
+			return 0, err
+		}
+		if (i+1)%100_000 == 0 {
+			if err := wb.Flush(); err != nil {
+				return 0, err
+			}
+			wb = s.db.NewWriteBatch()
+		}
+	}
+	if err := wb.Flush(); err != nil {
+		return 0, err
+	}
+	if err := s.recount(); err != nil {
+		return len(names), err
+	}
+	return len(names), nil
+}
+
+// ReplaceFeed clears prior membership for policy then writes names with feed tags.
+func (s *Store) ReplaceFeed(policy string, names []string, hit Hit) error {
+	if _, err := s.ClearFeed(policy); err != nil {
+		return err
+	}
+	return s.applyFeedWrites(policy, names, nil, hit)
+}
+
+// ApplyFeedDelta applies IXFR add/remove for one policy.
+func (s *Store) ApplyFeedDelta(policy string, added, removed []string, hit Hit) error {
+	return s.applyFeedWrites(policy, added, removed, hit)
+}
+
+func (s *Store) applyFeedWrites(policy string, added, removed []string, hit Hit) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store closed")
+	}
+	policy = strings.TrimSpace(policy)
+	if policy == "" {
+		return fmt.Errorf("feed policy required")
+	}
+	if hit.Action == "" {
+		hit.Action = ActionNXDOMAIN
+	}
+	hit.Target = strings.TrimSpace(hit.Target)
+	val := append([]byte{actionCode(hit.Action)}, []byte(hit.Target)...)
+
+	wb := s.db.NewWriteBatch()
+	n := 0
+	flush := func() error {
+		if err := wb.Flush(); err != nil {
+			return err
+		}
+		wb = s.db.NewWriteBatch()
+		return nil
+	}
+	for _, name := range removed {
+		name = config.NormalizeName(name)
+		if name == "" {
+			continue
+		}
+		if err := wb.Delete(append([]byte(domPrefix), []byte(name)...)); err != nil {
+			wb.Cancel()
+			return err
+		}
+		if err := wb.Delete(feedKey(policy, name)); err != nil {
+			wb.Cancel()
+			return err
+		}
+		n++
+		if n%100_000 == 0 {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+	}
+	for _, name := range added {
+		name = config.NormalizeName(name)
+		if name == "" {
+			continue
+		}
+		if err := wb.Set(append([]byte(domPrefix), []byte(name)...), val); err != nil {
+			wb.Cancel()
+			return err
+		}
+		if err := wb.Set(feedKey(policy, name), []byte{1}); err != nil {
+			wb.Cancel()
+			return err
+		}
+		n++
+		if n%100_000 == 0 {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+	}
+	if err := wb.Flush(); err != nil {
+		return err
+	}
+	return s.recount()
+}
+
+// TagFeed writes membership keys for names already present (after full ReplaceAll).
+func (s *Store) TagFeed(policy string, names []string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store closed")
+	}
+	policy = strings.TrimSpace(policy)
+	if policy == "" {
+		return fmt.Errorf("feed policy required")
+	}
+	wb := s.db.NewWriteBatch()
+	n := 0
+	for _, name := range names {
+		name = config.NormalizeName(name)
+		if name == "" {
+			continue
+		}
+		if err := wb.Set(feedKey(policy, name), []byte{1}); err != nil {
+			wb.Cancel()
+			return err
+		}
+		n++
+		if n%100_000 == 0 {
+			if err := wb.Flush(); err != nil {
+				return err
+			}
+			wb = s.db.NewWriteBatch()
+		}
+	}
+	return wb.Flush()
+}
+
+func (s *Store) recount() error {
+	count := 0
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
+		opts.Prefix = []byte(domPrefix)
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			count++
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte(metaCountKey), []byte(fmt.Sprintf("%d", count)))
+	})
+}
+
+// SetFingerprint updates the policies fingerprint without rewriting domains.
+func (s *Store) SetFingerprint(fp string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store closed")
+	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte(metaFPKey), []byte(fp))
 	})
 }
 

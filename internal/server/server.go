@@ -871,9 +871,20 @@ func (s *Server) ReloadRPZ(policies []rpz.PolicyConfig, timeout time.Duration) (
 		return 0, nil
 	}
 	if timeout <= 0 {
-		timeout = 15 * time.Minute
+		timeout = 30 * time.Minute
 	}
 	return s.rpz.LoadPolicies(policies, timeout)
+}
+
+// RefreshRPZAXFR updates AXFR feeds via IXFR/SOA without re-downloading hosts feeds.
+func (s *Server) RefreshRPZAXFR(policies []rpz.PolicyConfig, timeout time.Duration) (int, error) {
+	if s.rpz == nil {
+		return 0, nil
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Minute
+	}
+	return s.rpz.RefreshAXFR(policies, timeout)
 }
 
 // RuntimeFlags are feature toggles editable via the API/UI.

@@ -98,16 +98,19 @@ export const api = {
   acme: () => request('/api/v1/acme'),
   acmeObtain: () => request('/api/v1/acme', { method: 'POST', body: '{}' }),
   rpz: () => request('/api/v1/rpz'),
-  updateRPZ: (policies, sync = false, updateInterval) =>
+  updateRPZ: (policies, sync = false, updateInterval, axfrUpdateInterval, axfrOnly = false) =>
     request('/api/v1/rpz', {
       method: 'PUT',
       body: JSON.stringify({
         policies,
         sync,
         ...(updateInterval === undefined ? {} : { update_interval: updateInterval }),
+        ...(axfrUpdateInterval === undefined ? {} : { axfr_update_interval: axfrUpdateInterval }),
+        ...(axfrOnly ? { axfr_only: true } : {}),
       }),
     }),
-  reloadRPZ: () => request('/api/v1/rpz', { method: 'POST', body: '{}' }),
+  reloadRPZ: (axfrOnly = false) =>
+    request(`/api/v1/rpz${axfrOnly ? '?axfr_only=1' : ''}`, { method: 'POST', body: '{}' }),
   domainLookup: (name) =>
     request(`/api/v1/domains/lookup?name=${encodeURIComponent(name)}`),
   whitelist: () => request('/api/v1/domains/whitelist'),

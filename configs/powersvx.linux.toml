@@ -71,6 +71,7 @@ global_burst = 2000
 [rpz]
 enabled = true
 update_interval = 3600
+axfr_update_interval = 86400
 policies = [
   { name = "sample", source = "/etc/powersvx/sample-blocklist.txt", format = "hosts", action = "nxdomain" }
 ]

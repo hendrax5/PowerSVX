@@ -993,9 +993,11 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.rpzPayload())
 	case http.MethodPut:
 		var body struct {
-			Policies       []config.RPZPolicyTOML `json:"policies"`
-			UpdateInterval *int                   `json:"update_interval"`
-			Sync           *bool                  `json:"sync"`
+			Policies           []config.RPZPolicyTOML `json:"policies"`
+			UpdateInterval     *int                   `json:"update_interval"`
+			AxfrUpdateInterval *int                   `json:"axfr_update_interval"`
+			Sync               *bool                  `json:"sync"`
+			AxfrOnly           *bool                  `json:"axfr_only"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
@@ -1014,24 +1016,41 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 			}
 			interval = *body.UpdateInterval
 		}
+		axfrInterval := a.cfg.RPZ.AxfrUpdateInterval
+		if body.AxfrUpdateInterval != nil {
+			if *body.AxfrUpdateInterval < 0 {
+				http.Error(w, "axfr_update_interval must be >= 0", http.StatusBadRequest)
+				return
+			}
+			axfrInterval = *body.AxfrUpdateInterval
+		}
 		eng := a.srv.RPZ()
 		if eng != nil && eng.LoadStatus().Loading {
 			http.Error(w, "rpz sync already in progress", http.StatusConflict)
 			return
 		}
+		axfrPtr := axfrInterval
 		path := config.RPZPoliciesPath(a.dataDir)
 		if err := config.SaveRPZPoliciesFile(path, config.RPZPoliciesFile{
-			Policies: pols, UpdateInterval: interval,
+			Policies: pols, UpdateInterval: interval, AxfrUpdateInterval: &axfrPtr,
 		}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		a.cfg.RPZ.Policies = pols
 		a.cfg.RPZ.UpdateInterval = interval
+		a.cfg.RPZ.AxfrUpdateInterval = axfrInterval
 		a.StartRPZAutoUpdate()
 		sync := body.Sync != nil && *body.Sync
-		if err := a.startRPZReload(sync); err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
+		axfrOnly := body.AxfrOnly != nil && *body.AxfrOnly
+		var startErr error
+		if axfrOnly {
+			startErr = a.startRPZAXFRRefresh(sync)
+		} else {
+			startErr = a.startRPZReload(sync)
+		}
+		if startErr != nil {
+			http.Error(w, startErr.Error(), http.StatusConflict)
 			return
 		}
 		writeJSON(w, http.StatusOK, a.rpzPayload())
@@ -1040,8 +1059,15 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "rpz sync already in progress", http.StatusConflict)
 			return
 		}
-		if err := a.startRPZReload(false); err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
+		axfrOnly := r.URL.Query().Get("axfr_only") == "1" || r.URL.Query().Get("axfr_only") == "true"
+		var startErr error
+		if axfrOnly {
+			startErr = a.startRPZAXFRRefresh(false)
+		} else {
+			startErr = a.startRPZReload(false)
+		}
+		if startErr != nil {
+			http.Error(w, startErr.Error(), http.StatusConflict)
 			return
 		}
 		writeJSON(w, http.StatusAccepted, a.rpzPayload())
@@ -1060,15 +1086,16 @@ func (a *API) rpzPayload() map[string]any {
 		pols = []config.RPZPolicyTOML{}
 	}
 	return map[string]any{
-		"enabled":         a.srv.RuntimeFlags().RPZ,
-		"entries":         a.srv.RPZCount(),
-		"policies":        pols,
-		"update_interval": a.cfg.RPZ.UpdateInterval,
-		"loading":         st.Loading,
-		"error":           st.Error,
-		"last_loaded":     st.LastLoaded,
-		"from_disk":       st.FromDisk,
-		"note":            "PUT policies + update_interval. Large feeds sync in background; radix+Badger snapshot skips re-download on restart.",
+		"enabled":               a.srv.RuntimeFlags().RPZ,
+		"entries":               a.srv.RPZCount(),
+		"policies":              pols,
+		"update_interval":       a.cfg.RPZ.UpdateInterval,
+		"axfr_update_interval":  a.cfg.RPZ.AxfrUpdateInterval,
+		"loading":               st.Loading,
+		"error":                 st.Error,
+		"last_loaded":           st.LastLoaded,
+		"from_disk":             st.FromDisk,
+		"note":                  "PUT policies + update_interval + axfr_update_interval. AXFR feeds use IXFR after the first full transfer; NOTIFY triggers AXFR-only refresh.",
 	}
 }
 
@@ -1177,7 +1204,7 @@ func (a *API) startRPZReload(sync bool) error {
 	}
 	policies := rpzPolicyConfigs(a.cfg.RPZ.Policies)
 	run := func() {
-		n, err := a.srv.ReloadRPZ(policies, 15*time.Minute)
+		n, err := a.srv.ReloadRPZ(policies, 30*time.Minute)
 		eng.EndLoad(err)
 		if err != nil {
 			a.log.Warn("rpz reload failed", "err", err)
@@ -1193,7 +1220,33 @@ func (a *API) startRPZReload(sync bool) error {
 	return nil
 }
 
-// HandleRPZNotify returns true when zone matches an axfr RPZ feed and kicks a background reload.
+func (a *API) startRPZAXFRRefresh(sync bool) error {
+	eng := a.srv.RPZ()
+	if eng == nil {
+		return nil
+	}
+	if !eng.TryBeginLoad() {
+		return errRPZ("rpz sync already in progress")
+	}
+	policies := rpzPolicyConfigs(a.cfg.RPZ.Policies)
+	run := func() {
+		n, err := a.srv.RefreshRPZAXFR(policies, 30*time.Minute)
+		eng.EndLoad(err)
+		if err != nil {
+			a.log.Warn("rpz axfr refresh failed", "err", err)
+			return
+		}
+		a.log.Info("rpz axfr refreshed", "entries", n)
+	}
+	if sync {
+		run()
+		return nil
+	}
+	go run()
+	return nil
+}
+
+// HandleRPZNotify returns true when zone matches an axfr RPZ feed and kicks an AXFR/IXFR refresh.
 func (a *API) HandleRPZNotify(zone string) bool {
 	if a == nil || a.cfg == nil {
 		return false
@@ -1209,7 +1262,7 @@ func (a *API) HandleRPZNotify(zone string) bool {
 	if !match {
 		return false
 	}
-	if err := a.startRPZReload(false); err != nil {
+	if err := a.startRPZAXFRRefresh(false); err != nil {
 		a.log.Debug("rpz notify reload skip", "zone", zone, "err", err)
 	} else {
 		a.log.Info("rpz axfr notify reload started", "zone", zone)
@@ -1217,7 +1270,7 @@ func (a *API) HandleRPZNotify(zone string) bool {
 	return true
 }
 
-// StartRPZAutoUpdate reloads feeds on update_interval (seconds). 0 disables.
+// StartRPZAutoUpdate runs separate tickers for hosts and AXFR feeds.
 func (a *API) StartRPZAutoUpdate() {
 	a.rpzAutoMu.Lock()
 	defer a.rpzAutoMu.Unlock()
@@ -1225,30 +1278,50 @@ func (a *API) StartRPZAutoUpdate() {
 		close(a.rpzAutoStop)
 		a.rpzAutoStop = nil
 	}
-	sec := a.cfg.RPZ.UpdateInterval
-	if sec <= 0 {
+	hostsSec := a.cfg.RPZ.UpdateInterval
+	axfrSec := a.cfg.RPZ.AxfrUpdateInterval
+	if hostsSec <= 0 && axfrSec <= 0 {
 		a.log.Info("rpz auto-update disabled")
 		return
 	}
 	stop := make(chan struct{})
 	a.rpzAutoStop = stop
-	interval := time.Duration(sec) * time.Second
-	a.log.Info("rpz auto-update enabled", "interval_sec", sec)
+	a.log.Info("rpz auto-update enabled", "hosts_interval_sec", hostsSec, "axfr_interval_sec", axfrSec)
 	go func() {
-		t := time.NewTicker(interval)
-		defer t.Stop()
+		var hostsTick <-chan time.Time
+		var axfrTick <-chan time.Time
+		var hostsTicker, axfrTicker *time.Ticker
+		if hostsSec > 0 {
+			hostsTicker = time.NewTicker(time.Duration(hostsSec) * time.Second)
+			hostsTick = hostsTicker.C
+			defer hostsTicker.Stop()
+		}
+		if axfrSec > 0 {
+			axfrTicker = time.NewTicker(time.Duration(axfrSec) * time.Second)
+			axfrTick = axfrTicker.C
+			defer axfrTicker.Stop()
+		}
 		for {
 			select {
 			case <-stop:
 				return
-			case <-t.C:
+			case <-hostsTick:
 				if a.srv.RPZ() != nil && a.srv.RPZ().LoadStatus().Loading {
 					continue
 				}
 				if err := a.startRPZReload(false); err != nil {
-					a.log.Debug("rpz auto-update skip", "err", err)
+					a.log.Debug("rpz hosts auto-update skip", "err", err)
 				} else {
-					a.log.Info("rpz auto-update started")
+					a.log.Info("rpz hosts auto-update started")
+				}
+			case <-axfrTick:
+				if a.srv.RPZ() != nil && a.srv.RPZ().LoadStatus().Loading {
+					continue
+				}
+				if err := a.startRPZAXFRRefresh(false); err != nil {
+					a.log.Debug("rpz axfr auto-update skip", "err", err)
+				} else {
+					a.log.Info("rpz axfr auto-update started")
 				}
 			}
 		}
