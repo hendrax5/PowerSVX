@@ -16,6 +16,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/powersvx/powersvx/internal/acme"
 	"github.com/powersvx/powersvx/internal/acl"
+	"github.com/powersvx/powersvx/internal/aclban"
 	"github.com/powersvx/powersvx/internal/allowlist"
 	"github.com/powersvx/powersvx/internal/analytics"
 	"github.com/powersvx/powersvx/internal/anomaly"
@@ -71,6 +72,8 @@ type Server struct {
 	log          *slog.Logger
 	queryACLMu sync.RWMutex
 	queryACL   *acl.List
+	aclBan     *aclban.Guard
+	aclDenyN   atomic.Uint64
 	// refreshInflight dedupes background cache refresh/prefetch by cache key.
 	refreshInflight sync.Map // uint64 -> struct{}
 	udp     *dns.Server
@@ -127,6 +130,15 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 	} else {
 		qacl = acl.Open()
 	}
+	var ban *aclban.Guard
+	if cfg != nil && cfg.ACL.DenyAutobanThreshold > 0 {
+		ban = aclban.New(aclban.Config{
+			Threshold: cfg.ACL.DenyAutobanThreshold,
+			Window:    time.Duration(cfg.ACL.DenyAutobanWindowSec) * time.Second,
+			TTL:       time.Duration(cfg.ACL.DenyAutobanTTLSec) * time.Second,
+			NFT:       cfg.ACL.DenyAutobanNFT,
+		}, log)
+	}
 	return &Server{
 		cfg:      cfg,
 		cache:    d.Cache,
@@ -150,6 +162,7 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 		qlog:     d.QLog,
 		log:      log,
 		queryACL: qacl,
+		aclBan:   ban,
 		started:  time.Now(),
 	}
 }
@@ -255,6 +268,16 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	s.queryACLMu.RUnlock()
 	if qacl != nil && clientIP != "" && !qacl.Allows(clientIP) {
 		metrics.QueriesTotal.WithLabelValues(proto, "acl_denied").Inc()
+		// Autoban: after threshold, silent-drop (no REFUSED / no query-log) to cut CPU.
+		if s.aclBan != nil {
+			if silent, newBan := s.aclBan.Observe(clientIP); silent {
+				metrics.ACLSilentDrop.Inc()
+				if newBan {
+					metrics.ACLAutoban.Inc()
+				}
+				return
+			}
+		}
 		if s.events != nil {
 			s.events.EmitSampled("acl:"+clientIP, 30*time.Second, "warn", "acl",
 				"client denied by query ACL", map[string]string{"client": clientIP, "proto": proto})
@@ -262,11 +285,11 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		m := new(dns.Msg)
 		m.SetRcode(req, dns.RcodeRefused)
 		_ = w.WriteMsg(m)
-		if len(req.Question) > 0 {
-			q := req.Question[0]
-			logQuery(config.NormalizeName(q.Name), dns.TypeToString[q.Qtype], dns.RcodeRefused, false)
+		// Do not query-log ACL denies — spam fills Postgres and burns CPU.
+		// Sample monitor sparsely (≈1%).
+		if s.aclDenyN.Add(1)%100 == 1 {
+			note("acl_denied", "REFUSED", true, false, false)
 		}
-		note("acl_denied", "REFUSED", true, false, false)
 		return
 	}
 
@@ -970,6 +993,9 @@ func (s *Server) SetRPZNotifyHandler(fn func(zone string) bool) { s.onRPZNotify 
 
 // SetQueryACL replaces the live DNS query ACL (allow/deny CIDRs).
 func (s *Server) SetQueryACL(allow, deny []string) error {
+	if s.aclBan != nil {
+		s.aclBan.Reset() // clear bans so newly allowed clients are not nft-dropped
+	}
 	l, err := acl.Parse(allow, deny)
 	if err != nil {
 		return err

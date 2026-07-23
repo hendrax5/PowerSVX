@@ -37,6 +37,13 @@ type Config struct {
 type ACLConfig struct {
 	AllowQuery []string `toml:"allow_query" json:"allow_query"`
 	DenyQuery  []string `toml:"deny_query" json:"deny_query"`
+	// DenyAutobanThreshold: ACL-deny count per IP within DenyAutobanWindowSec
+	// before silent-drop (+ optional nft DROP). 0 = disable autoban.
+	DenyAutobanThreshold int `toml:"deny_autoban_threshold" json:"deny_autoban_threshold"`
+	DenyAutobanWindowSec int `toml:"deny_autoban_window_sec" json:"deny_autoban_window_sec"`
+	DenyAutobanTTLSec    int `toml:"deny_autoban_ttl_sec" json:"deny_autoban_ttl_sec"`
+	// DenyAutobanNFT installs nftables set drop for banned sources (needs nft + NET_ADMIN).
+	DenyAutobanNFT bool `toml:"deny_autoban_nft" json:"deny_autoban_nft"`
 }
 
 type ServerConfig struct {

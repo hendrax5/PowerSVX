@@ -66,6 +66,16 @@ var (
 		Help: "Queries dropped by rate limiter",
 	})
 
+	ACLSilentDrop = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "powersvx_acl_silent_drop_total",
+		Help: "ACL-denied queries silently dropped after autoban (no REFUSED reply)",
+	})
+
+	ACLAutoban = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "powersvx_acl_autoban_total",
+		Help: "ACL-denied client IPs autobanned (silent drop / nft)",
+	})
+
 	ForwarderAttempts = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "powersvx_forwarder_attempts_total",
 		Help: "Outbound forwarder attempts",

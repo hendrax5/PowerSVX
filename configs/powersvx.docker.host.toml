@@ -99,6 +99,11 @@ enabled = false
 # Mirror Unbound: list only customer/resolver nets to cut non-customer flood.
 # allow_query = ["10.0.0.0/8", "192.168.0.0/16", "127.0.0.1", "::1"]
 # deny_query = []
+# Non-ACL spam: reply REFUSED up to threshold, then silent-drop + nft DROP.
+deny_autoban_threshold = 64
+deny_autoban_window_sec = 30
+deny_autoban_ttl_sec = 300
+deny_autoban_nft = true
 
 [transfer]
 allow_axfr = false
