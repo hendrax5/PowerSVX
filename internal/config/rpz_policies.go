@@ -10,6 +10,8 @@ import (
 type RPZPoliciesFile struct {
 	Policies       []RPZPolicyTOML `json:"policies"`
 	UpdateInterval int             `json:"update_interval"` // hosts; seconds; 0 = disabled
+	// UpdateAt is local "HH:MM" for daily hosts refresh (empty = interval ticker from start).
+	UpdateAt string `json:"update_at,omitempty"`
 	// AxfrUpdateInterval is nil when omitted from older files (caller applies default 86400).
 	AxfrUpdateInterval *int `json:"axfr_update_interval,omitempty"`
 }

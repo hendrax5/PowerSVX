@@ -512,7 +512,21 @@ func parseHosts(r io.Reader, action Action) (map[string]Action, error) {
 	return out, nil
 }
 
-func streamHosts(r io.Reader, hit Hit, t *trie) error {
+// domainSink receives streamed RPZ domains (RAM trie or Badger ReplaceBuilder).
+type domainSink interface {
+	Put(name string, hit Hit) error
+}
+
+type feedSink struct {
+	b      *ReplaceBuilder
+	policy string
+}
+
+func (f feedSink) Put(name string, hit Hit) error {
+	return f.b.PutFeed(f.policy, name, hit)
+}
+
+func streamHosts(r io.Reader, hit Hit, sink domainSink) error {
 	if hit.Action == "" {
 		hit.Action = ActionNXDOMAIN
 	}
@@ -542,7 +556,9 @@ func streamHosts(r io.Reader, hit Hit, t *trie) error {
 		if !strings.Contains(domain, ".") && domain != "*" {
 			continue
 		}
-		t.insertHit(config.NormalizeName(domain), hit)
+		if err := sink.Put(config.NormalizeName(domain), hit); err != nil {
+			return err
+		}
 	}
 	return sc.Err()
 }
@@ -560,10 +576,176 @@ type PolicyConfig struct {
 	Masters []string
 }
 
+func (e *Engine) applyColdIndex(bf *bloom.Filter, wild *trie, n int, fromDisk bool) {
+	hotMax := e.hotMax
+	if hotMax <= 0 {
+		hotMax = 500_000
+	}
+	e.mu.Lock()
+	e.tree = nil
+	e.wild = wild
+	e.bloom = bf
+	e.cold = true
+	e.hot = newHot(hotMax)
+	e.neg = newNeg(hotMax, 30*time.Second)
+	e.mu.Unlock()
+	e.count.Store(int64(n))
+	e.fromDisk.Store(fromDisk)
+	e.lastLoaded.Store(time.Now().UTC())
+	e.lastErr.Store("")
+}
+
 // LoadPolicies merges all policies into the radix and snapshots to Badger when configured.
+// With a disk store, domains stream into Badger (no multi-million-node RAM trie) to avoid OOM.
 func (e *Engine) LoadPolicies(policies []PolicyConfig, timeout time.Duration) (int, error) {
+	if timeout <= 0 {
+		timeout = defaultAXFRTimeout
+	}
+	e.mu.RLock()
+	store := e.store
+	state := e.axfrState
+	e.mu.RUnlock()
+	if store != nil {
+		return e.loadPoliciesDisk(policies, timeout, store, state)
+	}
+	return e.loadPoliciesRAM(policies, timeout, state)
+}
+
+func (e *Engine) loadPoliciesDisk(policies []PolicyConfig, timeout time.Duration, store *Store, state *AxfrStateStore) (int, error) {
+	// Open/download hosts feeds before BeginReplace — Replace wipes the Badger directory.
+	type hostsFeed struct {
+		name    string
+		hit     Hit
+		path    string
+		cleanup bool
+	}
+	var hosts []hostsFeed
+	var axfrPols []PolicyConfig
+	axfrSerials := map[string]struct {
+		zone   string
+		serial uint32
+	}{}
+	keepFeeds := map[string]bool{}
+
+	for _, p := range policies {
+		action := p.Action
+		if action == "" {
+			action = ActionNXDOMAIN
+		}
+		hit := Hit{Action: action, Target: strings.TrimSpace(p.Target)}
+		format := strings.ToLower(strings.TrimSpace(p.Format))
+		if format == "" {
+			format = "hosts"
+		}
+		switch format {
+		case "axfr":
+			keepFeeds[p.Name] = true
+			axfrPols = append(axfrPols, p)
+		case "hosts":
+			src := p.Source
+			if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+				tmp, err := downloadHostsTemp(src, timeout)
+				if err != nil {
+					return 0, fmt.Errorf("policy %s: %w", p.Name, err)
+				}
+				hosts = append(hosts, hostsFeed{name: p.Name, hit: hit, path: tmp, cleanup: true})
+			} else {
+				if _, err := os.Stat(src); err != nil {
+					return 0, fmt.Errorf("policy %s: %w", p.Name, err)
+				}
+				hosts = append(hosts, hostsFeed{name: p.Name, hit: hit, path: src})
+			}
+		default:
+			return 0, fmt.Errorf("policy %s: unsupported format %q", p.Name, p.Format)
+		}
+	}
+	defer func() {
+		for _, h := range hosts {
+			if h.cleanup {
+				_ = os.Remove(h.path)
+			}
+		}
+	}()
+
+	b, err := store.BeginReplace(10_000_000)
+	if err != nil {
+		return 0, fmt.Errorf("rpz begin replace: %w", err)
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			b.Cancel()
+		}
+	}()
+
+	for _, h := range hosts {
+		if err := streamHostsFile(h.path, h.hit, b); err != nil {
+			return 0, fmt.Errorf("policy %s: %w", h.name, err)
+		}
+	}
+	for _, p := range axfrPols {
+		action := p.Action
+		if action == "" {
+			action = ActionNXDOMAIN
+		}
+		hit := Hit{Action: action, Target: strings.TrimSpace(p.Target)}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		serial, _, err := streamAXFRToSink(ctx, p.Zone, p.Masters, hit, feedSink{b: b, policy: p.Name})
+		cancel()
+		if err != nil {
+			return 0, fmt.Errorf("policy %s: %w", p.Name, err)
+		}
+		axfrSerials[p.Name] = struct {
+			zone   string
+			serial uint32
+		}{zone: config.NormalizeName(p.Zone), serial: serial}
+	}
+
+	bf, wild, n, err := b.Finish(PoliciesFingerprint(policies))
+	if err != nil {
+		return 0, fmt.Errorf("rpz finish replace: %w", err)
+	}
+	ok = true
+	e.applyColdIndex(bf, wild, n, true)
+	if state != nil {
+		_ = state.Prune(keepFeeds)
+		for name, meta := range axfrSerials {
+			_ = state.Set(name, meta.zone, meta.serial)
+		}
+	}
+	return n, nil
+}
+
+func downloadHostsTemp(url string, timeout time.Duration) (string, error) {
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("http %d", resp.StatusCode)
+	}
+	f, err := os.CreateTemp("", "powersvx-hosts-*.txt")
+	if err != nil {
+		return "", err
+	}
+	path := f.Name()
+	_, copyErr := io.Copy(f, resp.Body)
+	closeErr := f.Close()
+	if copyErr != nil {
+		_ = os.Remove(path)
+		return "", copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(path)
+		return "", closeErr
+	}
+	return path, nil
+}
+
+func (e *Engine) loadPoliciesRAM(policies []PolicyConfig, timeout time.Duration, state *AxfrStateStore) (int, error) {
 	merged := newTrie()
-	axfrNames := map[string][]string{}
 	axfrSerials := map[string]struct {
 		zone   string
 		serial uint32
@@ -583,11 +765,11 @@ func (e *Engine) LoadPolicies(policies []PolicyConfig, timeout time.Duration) (i
 		switch format {
 		case "axfr":
 			keepFeeds[p.Name] = true
-			var names []string
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			var serial uint32
-			names, serial, err = streamAXFR(p.Zone, p.Masters, hit, timeout, merged)
+			serial, _, err = streamAXFRToSink(ctx, p.Zone, p.Masters, hit, merged)
+			cancel()
 			if err == nil {
-				axfrNames[p.Name] = names
 				axfrSerials[p.Name] = struct {
 					zone   string
 					serial uint32
@@ -607,28 +789,9 @@ func (e *Engine) LoadPolicies(policies []PolicyConfig, timeout time.Duration) (i
 			return 0, fmt.Errorf("policy %s: %w", p.Name, err)
 		}
 	}
-	e.mu.RLock()
-	store := e.store
-	state := e.axfrState
-	e.mu.RUnlock()
-	if store != nil {
-		if err := e.persist(merged, policies); err != nil {
-			e.replaceTreeRAM(merged, false)
-			return merged.count, fmt.Errorf("rpz persist: %w", err)
-		}
-		for name, names := range axfrNames {
-			_ = store.TagFeed(name, names)
-		}
-		e.replaceTreeCold(merged, false)
-		if state != nil {
-			_ = state.Prune(keepFeeds)
-			for name, meta := range axfrSerials {
-				_ = state.Set(name, meta.zone, meta.serial)
-			}
-		}
-		return merged.count, nil
-	}
 	e.replaceTreeRAM(merged, false)
+	e.lastLoaded.Store(time.Now().UTC())
+	e.lastErr.Store("")
 	if state != nil {
 		_ = state.Prune(keepFeeds)
 		for name, meta := range axfrSerials {
@@ -798,16 +961,16 @@ func (e *Engine) AxfrStatus() (map[string]FeedState, []AxfrEvent) {
 	return state.Snapshot()
 }
 
-func streamHostsFile(path string, hit Hit, t *trie) error {
+func streamHostsFile(path string, hit Hit, sink domainSink) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return streamHosts(f, hit, t)
+	return streamHosts(f, hit, sink)
 }
 
-func streamHostsURL(url string, hit Hit, timeout time.Duration, t *trie) error {
+func streamHostsURL(url string, hit Hit, timeout time.Duration, sink domainSink) error {
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -817,5 +980,5 @@ func streamHostsURL(url string, hit Hit, timeout time.Duration, t *trie) error {
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("http %d", resp.StatusCode)
 	}
-	return streamHosts(resp.Body, hit, t)
+	return streamHosts(resp.Body, hit, sink)
 }

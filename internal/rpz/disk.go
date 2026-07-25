@@ -486,3 +486,110 @@ func (s *Store) ReplaceAll(t *trie, fingerprint string) error {
 	}
 	return wb.Flush()
 }
+
+// ReplaceBuilder recreates the Badger store and streams domains without a full RAM trie.
+type ReplaceBuilder struct {
+	s      *Store
+	wb     *badger.WriteBatch
+	n      int // approximate unique domain count
+	writes int
+	bf     *bloom.Filter
+	wild   *trie
+}
+
+// BeginReplace clears the on-disk store and returns a streaming writer.
+func (s *Store) BeginReplace(expected int) (*ReplaceBuilder, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store closed")
+	}
+	// DropAll clears keys without deleting the directory (safe if other files share the path).
+	if err := s.db.DropAll(); err != nil {
+		return nil, err
+	}
+	if expected < 1_000_000 {
+		expected = 10_000_000
+	}
+	return &ReplaceBuilder{
+		s:    s,
+		wb:   s.db.NewWriteBatch(),
+		bf:   bloom.New(expected*2, 0.001),
+		wild: newTrie(),
+	}, nil
+}
+
+func (b *ReplaceBuilder) Put(name string, hit Hit) error {
+	return b.put(name, hit, "")
+}
+
+// PutFeed writes a domain and AXFR membership tag for policy.
+func (b *ReplaceBuilder) PutFeed(policy, name string, hit Hit) error {
+	return b.put(name, hit, policy)
+}
+
+func (b *ReplaceBuilder) put(name string, hit Hit, policy string) error {
+	if b == nil || b.s == nil || b.s.db == nil {
+		return fmt.Errorf("store closed")
+	}
+	name = config.NormalizeName(name)
+	if name == "" {
+		return nil
+	}
+	if hit.Action == "" {
+		hit.Action = ActionNXDOMAIN
+	}
+	hit.Target = strings.TrimSpace(hit.Target)
+	key := append([]byte(domPrefix), []byte(name)...)
+	val := append([]byte{actionCode(hit.Action)}, []byte(hit.Target)...)
+	if err := b.wb.Set(key, val); err != nil {
+		return err
+	}
+	if policy != "" {
+		if err := b.wb.Set(feedKey(policy, name), []byte{1}); err != nil {
+			return err
+		}
+	}
+	norm := config.NormalizeName(name)
+	// Approximate unique count: bloom FPs may under-count slightly (metrics only).
+	existed := b.bf.MightContain(norm)
+	b.bf.Add(norm)
+	if strings.HasPrefix(norm, "*.") {
+		b.wild.insertHit(norm, hit)
+	}
+	if !existed {
+		b.n++
+	}
+	b.writes++
+	if b.writes%100_000 == 0 {
+		if err := b.wb.Flush(); err != nil {
+			return err
+		}
+		b.wb = b.s.db.NewWriteBatch()
+	}
+	return nil
+}
+
+// Finish writes metadata and returns cold-index pieces.
+func (b *ReplaceBuilder) Finish(fingerprint string) (bf *bloom.Filter, wild *trie, count int, err error) {
+	if b == nil || b.s == nil || b.s.db == nil {
+		return nil, nil, 0, fmt.Errorf("store closed")
+	}
+	if err := b.wb.Set([]byte(metaFPKey), []byte(fingerprint)); err != nil {
+		b.wb.Cancel()
+		return nil, nil, 0, err
+	}
+	if err := b.wb.Set([]byte(metaCountKey), []byte(fmt.Sprintf("%d", b.n))); err != nil {
+		b.wb.Cancel()
+		return nil, nil, 0, err
+	}
+	if err := b.wb.Flush(); err != nil {
+		return nil, nil, 0, err
+	}
+	return b.bf, b.wild, b.n, nil
+}
+
+func (b *ReplaceBuilder) Cancel() {
+	if b == nil || b.wb == nil {
+		return
+	}
+	b.wb.Cancel()
+}

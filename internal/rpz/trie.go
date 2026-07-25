@@ -64,6 +64,12 @@ func (t *trie) insert(name string, action Action) {
 	t.insertHit(name, Hit{Action: action})
 }
 
+// Put implements domainSink for RAM / test paths.
+func (t *trie) Put(name string, hit Hit) error {
+	t.insertHit(name, hit)
+	return nil
+}
+
 func (t *trie) insertHit(name string, hit Hit) {
 	if t == nil || t.root == nil {
 		return

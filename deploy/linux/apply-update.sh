@@ -42,6 +42,12 @@ echo "15 * * * * root . /etc/default/powersvx-disk-guard 2>/dev/null; /usr/local
 sudo POWERSVX_DIR="$ROOT" /usr/local/sbin/powersvx-disk-guard || true
 
 echo "==> recreate stack (logging limits + retention)"
+# Percent-based Docker mem_limit (default 70% of host RAM).
+if [ -f "$ROOT/deploy/linux/calc-mem-env.sh" ]; then
+  # shellcheck disable=SC1091
+  eval "$("$ROOT/deploy/linux/calc-mem-env.sh")"
+  export POWERSVX_MEM_LIMIT GOMEMLIMIT POWERSVX_MEM_PERCENT
+fi
 if docker inspect powersvx --format '{{.HostConfig.NetworkMode}}' 2>/dev/null | grep -q host; then
   echo "detected host networking"
   docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --build

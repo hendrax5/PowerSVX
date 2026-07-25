@@ -70,7 +70,9 @@ global_burst = 0
 
 [rpz]
 enabled = true
-update_interval = 3600
+# Hosts HTTP feeds: daily at 04:00 local (TZ=Asia/Jakarta in compose). 0 interval disables.
+update_interval = 86400
+update_at = "04:00"
 axfr_update_interval = 86400
 policies = [
   { name = "sample", source = "/etc/PowerSVX/sample-blocklist.txt", format = "hosts", action = "nxdomain" }

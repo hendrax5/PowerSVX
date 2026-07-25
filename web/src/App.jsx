@@ -45,6 +45,56 @@ function EmptyState({ title, hint, action }) {
   )
 }
 
+function UpdateWatcher() {
+  const [pending, setPending] = useState(false)
+  const buildRef = useRef('')
+
+  useEffect(() => {
+    let alive = true
+    const check = async () => {
+      try {
+        const h = await api.health()
+        const id = h?.build_id || `${h?.version || ''}+${h?.started_at || ''}`
+        if (!id) return
+        if (!buildRef.current) {
+          buildRef.current = id
+          return
+        }
+        if (buildRef.current !== id && alive) {
+          setPending(true)
+        }
+      } catch {
+        /* offline / restarting */
+      }
+    }
+    check()
+    const t = setInterval(check, 45000)
+    return () => {
+      alive = false
+      clearInterval(t)
+    }
+  }, [])
+
+  if (!pending) return null
+  return (
+    <div
+      className="fixed bottom-4 right-4 z-50 max-w-sm border border-[var(--accent)]/50 bg-[var(--bg-elevated)] shadow-lg px-4 py-3 text-sm"
+      role="status"
+    >
+      <p className="font-medium">Update tersedia</p>
+      <p className="text-[var(--muted)] text-xs mt-1">Server sudah di-deploy ulang. Muat ulang untuk UI terbaru.</p>
+      <div className="flex gap-2 mt-3">
+        <button type="button" className="btn btn-primary text-xs" onClick={() => window.location.reload()}>
+          Reload sekarang
+        </button>
+        <button type="button" className="btn btn-ghost text-xs" onClick={() => setPending(false)}>
+          Nanti
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function Shell({ children }) {
   const { me, refresh } = useAuth()
   const nav = useNavigate()
@@ -2456,6 +2506,7 @@ function RPZPanel({ initial, onChange }) {
   const [policies, setPolicies] = useState(() => hostsOnlyPolicies(initial?.policies))
   const [axfrPolicies, setAxfrPolicies] = useState(() => axfrOnlyPolicies(initial?.policies))
   const [intervalSec, setIntervalSec] = useState(() => Number(initial?.update_interval) || 0)
+  const [updateAt, setUpdateAt] = useState(() => initial?.update_at || '')
   const [axfrIntervalSec, setAxfrIntervalSec] = useState(() =>
     initial?.axfr_update_interval === undefined || initial?.axfr_update_interval === null
       ? 86400
@@ -2475,6 +2526,7 @@ function RPZPanel({ initial, onChange }) {
     setPolicies(hostsOnlyPolicies(initial?.policies))
     setAxfrPolicies(axfrOnlyPolicies(initial?.policies))
     setIntervalSec(Number(initial?.update_interval) || 0)
+    setUpdateAt(initial?.update_at || '')
     setAxfrIntervalSec(
       initial?.axfr_update_interval === undefined || initial?.axfr_update_interval === null
         ? 86400
@@ -2591,11 +2643,13 @@ function RPZPanel({ initial, onChange }) {
     try {
       const sec = Math.max(0, Number(intervalSec) || 0)
       const axfrSec = Math.max(0, Number(axfrIntervalSec) || 0)
-      const r = await api.updateRPZ([...policies, ...axfrPolicies], false, sec, axfrSec)
+      const at = String(updateAt || '').trim()
+      const r = await api.updateRPZ([...policies, ...axfrPolicies], false, sec, axfrSec, false, at)
       setStatus(r)
       setPolicies(hostsOnlyPolicies(r.policies))
       setAxfrPolicies(axfrOnlyPolicies(r.policies))
       setIntervalSec(Number(r.update_interval) || 0)
+      setUpdateAt(r.update_at || '')
       setAxfrIntervalSec(
         r.axfr_update_interval === undefined || r.axfr_update_interval === null
           ? 86400
@@ -2679,18 +2733,30 @@ function RPZPanel({ initial, onChange }) {
         </div>
       ) : null}
 
-      <label className="text-xs text-[var(--muted)] space-y-1 block max-w-xs">
-        Hosts auto-refresh interval (seconds, 0 = off)
-        <input
-          type="number"
-          min={0}
-          step={60}
-          className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
-          value={intervalSec}
-          onChange={(e) => setIntervalSec(e.target.value)}
-        />
-      </label>
+      <div className="grid gap-3 sm:grid-cols-2 max-w-lg">
+        <label className="text-xs text-[var(--muted)] space-y-1 block">
+          Hosts interval (seconds, 0 = off · 86400 = 24h)
+          <input
+            type="number"
+            min={0}
+            step={60}
+            className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
+            value={intervalSec}
+            onChange={(e) => setIntervalSec(e.target.value)}
+          />
+        </label>
+        <label className="text-xs text-[var(--muted)] space-y-1 block">
+          Daily at (local HH:MM, empty = interval from start)
+          <input
+            type="time"
+            className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
+            value={updateAt || ''}
+            onChange={(e) => setUpdateAt(e.target.value)}
+          />
+        </label>
+      </div>
       <p className="text-xs text-[var(--muted)]">
+        With a daily time set, hosts reload runs at that clock each day (process TZ, e.g. Asia/Jakarta).
         AXFR filter interval is under Tools → AXFR (default 24h · IXFR after first pull).
       </p>
 
@@ -3292,20 +3358,27 @@ function DomainsPage() {
   const { canWrite } = useAuth()
   const [q, setQ] = useState('')
   const [result, setResult] = useState(null)
-  const [domains, setDomains] = useState([])
-  const [draft, setDraft] = useState('')
+  const [whitelist, setWhitelist] = useState([])
+  const [blacklist, setBlacklist] = useState([])
+  const [wlDraft, setWlDraft] = useState('')
+  const [blDraft, setBlDraft] = useState('')
   const [err, setErr] = useState('')
   const [ok, setOk] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const loadWL = () =>
+  const loadLists = () => {
     api
       .whitelist()
-      .then((r) => setDomains(r.domains || []))
+      .then((r) => setWhitelist(r.domains || []))
       .catch((e) => setErr(e.message))
+    api
+      .blacklist()
+      .then((r) => setBlacklist(r.domains || []))
+      .catch((e) => setErr(e.message))
+  }
 
   useEffect(() => {
-    loadWL()
+    loadLists()
   }, [])
 
   const search = async (e) => {
@@ -3328,11 +3401,15 @@ function DomainsPage() {
     }
   }
 
-  const add = async (e) => {
+  const refreshLookup = async () => {
+    if (q.trim()) setResult(await api.domainLookup(q.trim()))
+  }
+
+  const addWhitelist = async (e) => {
     e?.preventDefault?.()
     setErr('')
     setOk('')
-    const name = draft.trim() || q.trim()
+    const name = wlDraft.trim() || q.trim()
     if (!name) {
       setErr('Domain required')
       return
@@ -3340,10 +3417,10 @@ function DomainsPage() {
     setBusy(true)
     try {
       const r = await api.addWhitelist(name)
-      setDomains(r.domains || [])
-      setDraft('')
+      setWhitelist(r.domains || [])
+      setWlDraft('')
       setOk(`Whitelisted ${r.domain}`)
-      if (q.trim()) setResult(await api.domainLookup(q.trim()))
+      await refreshLookup()
     } catch (ex) {
       setErr(ex.message)
     } finally {
@@ -3351,20 +3428,68 @@ function DomainsPage() {
     }
   }
 
-  const remove = async (name) => {
+  const removeWhitelist = async (name) => {
     setErr('')
     setOk('')
     setBusy(true)
     try {
       const r = await api.removeWhitelist(name)
-      setDomains(r.domains || [])
-      setOk(`Removed ${name}`)
-      if (q.trim()) setResult(await api.domainLookup(q.trim()))
+      setWhitelist(r.domains || [])
+      setOk(`Removed ${name} from whitelist`)
+      await refreshLookup()
     } catch (ex) {
       setErr(ex.message)
     } finally {
       setBusy(false)
     }
+  }
+
+  const addBlacklist = async (e) => {
+    e?.preventDefault?.()
+    setErr('')
+    setOk('')
+    const name = blDraft.trim() || q.trim()
+    if (!name) {
+      setErr('Domain required')
+      return
+    }
+    setBusy(true)
+    try {
+      const r = await api.addBlacklist(name)
+      setBlacklist(r.domains || [])
+      setBlDraft('')
+      setOk(`Blacklisted ${r.domain}`)
+      await refreshLookup()
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const removeBlacklist = async (name) => {
+    setErr('')
+    setOk('')
+    setBusy(true)
+    try {
+      const r = await api.removeBlacklist(name)
+      setBlacklist(r.domains || [])
+      setOk(`Removed ${name} from blacklist`)
+      await refreshLookup()
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const statusLabel = (r) => {
+    if (!r) return ''
+    if (r.whitelisted) return 'whitelisted (allowed)'
+    if (r.blacklisted) return 'manual blacklist (nxdomain)'
+    if (r.blocked) return `blocked (${r.action || 'nxdomain'}${r.block_source ? ` · ${r.block_source}` : ''})`
+    if (r.in_rpz) return `in RPZ (${r.action})`
+    return 'not blocked'
   }
 
   return (
@@ -3372,14 +3497,14 @@ function DomainsPage() {
       <PageHeader
         eyebrow="Operate"
         title="Domains"
-        sub="Search the RPZ blacklist and manage the whitelist (bypasses blocklists)."
+        sub="Lookup RPZ status and manage manual whitelist / blacklist. Whitelist always wins."
       />
 
       {err ? <ErrorBox msg={err} /> : null}
       {ok ? <div className="flash-ok" role="status">{ok}</div> : null}
 
       <section className="panel p-4 space-y-3">
-        <h2 className="text-sm font-medium">Blacklist lookup</h2>
+        <h2 className="text-sm font-medium">Domain lookup</h2>
         <form onSubmit={search} className="flex flex-wrap gap-2">
           <input
             className="input flex-1 min-w-[12rem] mono"
@@ -3387,22 +3512,28 @@ function DomainsPage() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
-          <button
-            type="submit"
-            disabled={busy}
-            className="btn btn-primary"
-          >
+          <button type="submit" disabled={busy} className="btn btn-primary">
             Search
           </button>
           {canWrite ? (
-            <button
-              type="button"
-              disabled={busy || !q.trim()}
-              onClick={add}
-              className="btn btn-secondary"
-            >
-              Add to whitelist
-            </button>
+            <>
+              <button
+                type="button"
+                disabled={busy || !q.trim()}
+                onClick={addWhitelist}
+                className="btn btn-secondary"
+              >
+                Add to whitelist
+              </button>
+              <button
+                type="button"
+                disabled={busy || !q.trim()}
+                onClick={addBlacklist}
+                className="btn btn-secondary"
+              >
+                Add to blacklist
+              </button>
+            </>
           ) : null}
         </form>
         {result ? (
@@ -3411,13 +3542,7 @@ function DomainsPage() {
             <div>
               Status:{' '}
               <span className={result.blocked ? 'text-[var(--warn)]' : 'text-[var(--ok)]'}>
-                {result.whitelisted
-                  ? 'whitelisted (allowed)'
-                  : result.blocked
-                    ? `blocked (${result.action || 'nxdomain'})`
-                    : result.in_rpz
-                      ? `in RPZ (${result.action})`
-                      : 'not in blacklist'}
+                {statusLabel(result)}
               </span>
             </div>
             {result.target ? <div className="text-xs text-[var(--muted)]">Target: {result.target}</div> : null}
@@ -3427,31 +3552,25 @@ function DomainsPage() {
 
       <section className="panel p-4 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-medium">Whitelist ({domains.length})</h2>
-          <a href="/settings" className="text-xs text-[var(--accent)] underline">
-            RPZ feeds
-          </a>
+          <h2 className="text-sm font-medium">Manual blacklist ({blacklist.length})</h2>
+          <span className="text-xs text-[var(--muted)]">NXDOMAIN · parent / *.wild match</span>
         </div>
         {canWrite ? (
-          <form onSubmit={add} className="flex flex-wrap gap-2">
+          <form onSubmit={addBlacklist} className="flex flex-wrap gap-2">
             <input
               className="input flex-1 min-w-[12rem] mono"
-              placeholder="example.com or *.cdn.example"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              placeholder="evil.example or *.cdn.bad"
+              value={blDraft}
+              onChange={(e) => setBlDraft(e.target.value)}
             />
-            <button
-              type="submit"
-              disabled={busy}
-              className="btn btn-primary"
-            >
+            <button type="submit" disabled={busy} className="btn btn-primary">
               Add
             </button>
           </form>
         ) : null}
-        {domains.length ? (
+        {blacklist.length ? (
           <ul className="space-y-1 text-sm mono max-h-96 overflow-auto">
-            {domains.map((d) => (
+            {blacklist.map((d) => (
               <li
                 key={d}
                 className="flex justify-between gap-3 border-b border-[var(--border)]/50 py-1.5 items-center"
@@ -3461,7 +3580,7 @@ function DomainsPage() {
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => remove(d)}
+                    onClick={() => removeBlacklist(d)}
                     className="text-xs text-[var(--warn)] cursor-pointer disabled:opacity-40"
                   >
                     Remove
@@ -3471,7 +3590,53 @@ function DomainsPage() {
             ))}
           </ul>
         ) : (
-          <EmptyState title="Whitelist empty" hint="Add domains that should never be blocked by RPZ." />
+          <EmptyState title="Blacklist empty" hint="Add domains to block immediately (independent of RPZ feeds)." />
+        )}
+      </section>
+
+      <section className="panel p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-medium">Whitelist ({whitelist.length})</h2>
+          <a href="/settings" className="text-xs text-[var(--accent)] underline">
+            RPZ feeds
+          </a>
+        </div>
+        {canWrite ? (
+          <form onSubmit={addWhitelist} className="flex flex-wrap gap-2">
+            <input
+              className="input flex-1 min-w-[12rem] mono"
+              placeholder="example.com or *.cdn.example"
+              value={wlDraft}
+              onChange={(e) => setWlDraft(e.target.value)}
+            />
+            <button type="submit" disabled={busy} className="btn btn-primary">
+              Add
+            </button>
+          </form>
+        ) : null}
+        {whitelist.length ? (
+          <ul className="space-y-1 text-sm mono max-h-96 overflow-auto">
+            {whitelist.map((d) => (
+              <li
+                key={d}
+                className="flex justify-between gap-3 border-b border-[var(--border)]/50 py-1.5 items-center"
+              >
+                <span className="truncate">{d}</span>
+                {canWrite ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => removeWhitelist(d)}
+                    className="text-xs text-[var(--warn)] cursor-pointer disabled:opacity-40"
+                  >
+                    Remove
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <EmptyState title="Whitelist empty" hint="Add domains that should never be blocked by RPZ or manual blacklist." />
         )}
       </section>
     </div>
@@ -3716,6 +3881,7 @@ export default function App() {
 
   return (
     <AuthCtx.Provider value={value}>
+      <UpdateWatcher />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route

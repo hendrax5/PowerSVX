@@ -222,6 +222,82 @@ func axfrPull(ctx context.Context, zone, master string) (TransferResult, error) 
 	return TransferResult{Serial: serial, Names: names, FullReplace: true}, nil
 }
 
+// streamAXFRToSink transfers the zone and writes each relative owner into sink (no giant names slice retained by caller).
+func streamAXFRToSink(ctx context.Context, zone string, masters []string, hit Hit, sink domainSink) (serial uint32, count int, err error) {
+	zone = config.NormalizeName(zone)
+	if zone == "" || zone == "." {
+		return 0, 0, fmt.Errorf("axfr zone required")
+	}
+	if len(masters) == 0 {
+		return 0, 0, fmt.Errorf("axfr masters required")
+	}
+	if hit.Action == "" {
+		hit.Action = ActionNXDOMAIN
+	}
+	hit.Target = strings.TrimSpace(hit.Target)
+	var lastErr error
+	for _, master := range masters {
+		ser, n, err := axfrStreamToSink(ctx, zone, master, hit, sink)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return ser, n, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("all masters failed")
+	}
+	return 0, 0, lastErr
+}
+
+func axfrStreamToSink(ctx context.Context, zone, master string, hit Hit, sink domainSink) (uint32, int, error) {
+	addr := masterAddr(master)
+	m := new(dns.Msg)
+	m.SetAxfr(zone)
+	tr := &dns.Transfer{DialTimeout: xferDialTimeout, ReadTimeout: xferReadTimeout}
+	env, err := tr.In(m, addr)
+	if err != nil {
+		return 0, 0, err
+	}
+	var serial uint32
+	seenSOA := 0
+	n := 0
+	for e := range env {
+		if e.Error != nil {
+			return 0, 0, e.Error
+		}
+		select {
+		case <-ctx.Done():
+			return 0, 0, ctx.Err()
+		default:
+		}
+		for _, rr := range e.RR {
+			if soa, ok := rr.(*dns.SOA); ok {
+				seenSOA++
+				serial = soa.Serial
+				continue
+			}
+			switch rr.(type) {
+			case *dns.A, *dns.AAAA, *dns.CNAME, *dns.NS, *dns.TXT:
+			default:
+				continue
+			}
+			rel, ok := relativeOwner(rr.Header().Name, zone)
+			if !ok {
+				continue
+			}
+			if err := sink.Put(rel, hit); err != nil {
+				return 0, 0, err
+			}
+			n++
+		}
+	}
+	if seenSOA < 2 {
+		return 0, 0, fmt.Errorf("incomplete AXFR from %s", addr)
+	}
+	return serial, n, nil
+}
+
 func ixfrPull(ctx context.Context, zone, master string, serial uint32) (TransferResult, error) {
 	addr := masterAddr(master)
 	m := new(dns.Msg)

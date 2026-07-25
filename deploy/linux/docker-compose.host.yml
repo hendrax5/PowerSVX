@@ -15,6 +15,12 @@ services:
   powersvx:
     network_mode: host
     ports: !override []
+    # Memory: percent of host RAM (default 70%). calc-mem-env.sh sets POWERSVX_MEM_LIMIT;
+    # entrypoint sets GOMEMLIMIT to ~90% of that slice. Compose cannot do % natively.
+    mem_limit: ${POWERSVX_MEM_LIMIT:-0}
+    environment:
+      - POWERSVX_MEM_PERCENT=${POWERSVX_MEM_PERCENT:-70}
+      - GOGC=${GOGC:-50}
     # depends_on still works; host networking ignores compose networks
     cap_add:
       - NET_BIND_SERVICE

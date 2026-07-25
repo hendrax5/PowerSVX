@@ -15,6 +15,7 @@ import (
 
 	"github.com/powersvx/powersvx/internal/acme"
 	"github.com/powersvx/powersvx/internal/allowlist"
+	"github.com/powersvx/powersvx/internal/denylist"
 	"github.com/powersvx/powersvx/internal/analytics"
 	"github.com/powersvx/powersvx/internal/anomaly"
 	"github.com/powersvx/powersvx/internal/api"
@@ -159,13 +160,17 @@ func main() {
 		if file.UpdateInterval > 0 {
 			cfg.RPZ.UpdateInterval = file.UpdateInterval
 		}
+		if strings.TrimSpace(file.UpdateAt) != "" {
+			cfg.RPZ.UpdateAt = strings.TrimSpace(file.UpdateAt)
+		}
 		if file.AxfrUpdateInterval != nil {
 			cfg.RPZ.AxfrUpdateInterval = *file.AxfrUpdateInterval
 		} else if cfg.RPZ.AxfrUpdateInterval <= 0 {
 			cfg.RPZ.AxfrUpdateInterval = config.DefaultAxfrUpdateInterval
 		}
 		log.Info("rpz policies loaded", "path", rpzPath, "count", len(file.Policies),
-			"update_interval", cfg.RPZ.UpdateInterval, "axfr_update_interval", cfg.RPZ.AxfrUpdateInterval)
+			"update_interval", cfg.RPZ.UpdateInterval, "update_at", cfg.RPZ.UpdateAt,
+			"axfr_update_interval", cfg.RPZ.AxfrUpdateInterval)
 	}
 
 	rpzEng := rpz.New(cfg.RPZ.Enabled)
@@ -180,6 +185,12 @@ func main() {
 		log.Warn("whitelist load failed", "err", err)
 	} else {
 		log.Info("whitelist ready", "entries", wl.Count())
+	}
+	bl := denylist.New(denylist.DefaultPath(*dataDir))
+	if err := bl.Load(); err != nil {
+		log.Warn("blacklist load failed", "err", err)
+	} else {
+		log.Info("blacklist ready", "entries", bl.Count())
 	}
 	var policies []rpz.PolicyConfig
 	for _, p := range cfg.RPZ.Policies {
@@ -303,7 +314,7 @@ func main() {
 	}
 	dnsSrv := server.New(cfg, server.Deps{
 		Cache: tier, Res: res, Auth: auth, DNSSEC: sec, Signer: signer,
-		Limiter: limiter, RPZ: rpzEng, Allow: wl, TSIG: tsigStore,
+		Limiter: limiter, RPZ: rpzEng, Allow: wl, Deny: bl, TSIG: tsigStore,
 		Views: views, Geo: geoRes, TLS: tlsCfg, Events: bus,
 		ACME: acmeStore, Stats: stats, Anomaly: anom, Monitor: mon, Plugins: plugins, QLog: qlog,
 	}, log)

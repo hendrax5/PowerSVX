@@ -15,6 +15,7 @@ import (
 	"github.com/powersvx/powersvx/internal/authoritative"
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
+	"github.com/powersvx/powersvx/internal/denylist"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
 	"github.com/powersvx/powersvx/internal/resolver"
@@ -177,9 +178,10 @@ func TestWhitelistAndDomainLookup(t *testing.T) {
 	tier := cache.NewTier(cache.NewL1(1000), nil, time.Minute, time.Minute)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	wl := allowlist.New("")
+	bl := denylist.New("")
 	eng := rpz.New(true)
 	eng.Replace(map[string]rpz.Action{"bad.example.com.": rpz.ActionNXDOMAIN})
-	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth, Allow: wl, RPZ: eng}, log)
+	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth, Allow: wl, Deny: bl, RPZ: eng}, log)
 	a := api.New(cfg, srv, nil, tier, auth, log)
 	h := a.Handler()
 	authH := func(method, url string, body io.Reader) *httptest.ResponseRecorder {
@@ -211,5 +213,25 @@ func TestWhitelistAndDomainLookup(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &out)
 	if out["blocked"] != true {
 		t.Fatalf("should block after remove: %v", out)
+	}
+
+	rr = authH(http.MethodPost, "/api/v1/domains/blacklist", bytes.NewBufferString(`{"domain":"manual.block.test"}`))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("add bl: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = authH(http.MethodGet, "/api/v1/domains/lookup?name=sub.manual.block.test", nil)
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if out["blacklisted"] != true || out["blocked"] != true || out["block_source"] != "manual" {
+		t.Fatalf("manual bl: %v", out)
+	}
+	// whitelist wins over manual blacklist
+	rr = authH(http.MethodPost, "/api/v1/domains/whitelist", bytes.NewBufferString(`{"domain":"manual.block.test"}`))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("wl over bl: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = authH(http.MethodGet, "/api/v1/domains/lookup?name=sub.manual.block.test", nil)
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if out["whitelisted"] != true || out["blocked"] != false {
+		t.Fatalf("whitelist should win: %v", out)
 	}
 }

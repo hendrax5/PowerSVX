@@ -232,6 +232,9 @@ type RPZConfig struct {
 	Enabled        bool            `toml:"enabled"`
 	Policies       []RPZPolicyTOML `toml:"policies"`
 	UpdateInterval int             `toml:"update_interval"` // hosts feeds; seconds; 0 = off
+	// UpdateAt is local wall clock "HH:MM" for hosts auto-refresh (e.g. "04:00").
+	// When set and UpdateInterval > 0, reloads run at that time each day (TZ from process).
+	UpdateAt string `toml:"update_at"`
 	// AxfrUpdateInterval is the refresh cadence for format=axfr feeds (seconds; 0 = off).
 	// Independent of UpdateInterval. Default 86400 (24h).
 	AxfrUpdateInterval int `toml:"axfr_update_interval"`

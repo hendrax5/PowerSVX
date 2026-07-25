@@ -18,6 +18,7 @@ import (
 	"github.com/powersvx/powersvx/internal/acl"
 	"github.com/powersvx/powersvx/internal/aclban"
 	"github.com/powersvx/powersvx/internal/allowlist"
+	"github.com/powersvx/powersvx/internal/denylist"
 	"github.com/powersvx/powersvx/internal/analytics"
 	"github.com/powersvx/powersvx/internal/anomaly"
 	"github.com/powersvx/powersvx/internal/authoritative"
@@ -55,6 +56,7 @@ type Server struct {
 	limiter *ratelimit.Limiter
 	rpz     *rpz.Engine
 	allow   *allowlist.List
+	deny    *denylist.List
 	tsig    *tsig.Store
 	views   *view.Matcher
 	geo     *geo.Resolver
@@ -102,6 +104,7 @@ type Deps struct {
 	Limiter *ratelimit.Limiter
 	RPZ     *rpz.Engine
 	Allow   *allowlist.List
+	Deny    *denylist.List
 	TSIG    *tsig.Store
 	Views   *view.Matcher
 	Geo     *geo.Resolver
@@ -149,6 +152,7 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 		limiter:  d.Limiter,
 		rpz:      d.RPZ,
 		allow:    d.Allow,
+		deny:     d.Deny,
 		tsig:     d.TSIG,
 		views:    d.Views,
 		geo:      d.Geo,
@@ -401,48 +405,64 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 
-	if s.rpz != nil {
+	if s.rpz != nil || s.deny != nil {
 		whitelisted := s.allow != nil && s.allow.Allows(qname)
 		if !whitelisted {
-			if hit, ok := s.rpz.Lookup(qname); ok {
-				if hit.Action == rpz.ActionPass {
-					// Explicit allow — continue to cache / auth / recursive.
-				} else {
-					metrics.RPZBlocked.Inc()
-					metrics.QueriesTotal.WithLabelValues(proto, "blocked").Inc()
-					m := new(dns.Msg)
-					m.SetReply(req)
-					m.RecursionAvailable = true
-					rcode := dns.RcodeNameError
-					code := "NXDOMAIN"
-					switch hit.Action {
-					case rpz.ActionNODATA:
-						m.Rcode = dns.RcodeSuccess
-						rcode = dns.RcodeSuccess
-						code = "NOERROR"
-					case rpz.ActionRedirect:
-						m.Rcode = dns.RcodeSuccess
-						rcode = dns.RcodeSuccess
-						code = "NOERROR"
-						if rr := rpzRedirectRR(qname, qtype, hit.Target); rr != nil {
-							m.Answer = []dns.RR{rr}
+			if s.deny != nil && s.deny.Blocks(qname) {
+				metrics.RPZBlocked.Inc()
+				metrics.QueriesTotal.WithLabelValues(proto, "blocked").Inc()
+				m := new(dns.Msg)
+				m.SetReply(req)
+				m.RecursionAvailable = true
+				m.Rcode = dns.RcodeNameError
+				_ = w.WriteMsg(m)
+				metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
+				observe("NXDOMAIN")
+				logQuery(qname, qtypeStr, dns.RcodeNameError, false)
+				note("blacklist", "NXDOMAIN", false, false, false)
+				return
+			}
+			if s.rpz != nil {
+				if hit, ok := s.rpz.Lookup(qname); ok {
+					if hit.Action == rpz.ActionPass {
+						// Explicit allow — continue to cache / auth / recursive.
+					} else {
+						metrics.RPZBlocked.Inc()
+						metrics.QueriesTotal.WithLabelValues(proto, "blocked").Inc()
+						m := new(dns.Msg)
+						m.SetReply(req)
+						m.RecursionAvailable = true
+						rcode := dns.RcodeNameError
+						code := "NXDOMAIN"
+						switch hit.Action {
+						case rpz.ActionNODATA:
+							m.Rcode = dns.RcodeSuccess
+							rcode = dns.RcodeSuccess
+							code = "NOERROR"
+						case rpz.ActionRedirect:
+							m.Rcode = dns.RcodeSuccess
+							rcode = dns.RcodeSuccess
+							code = "NOERROR"
+							if rr := rpzRedirectRR(qname, qtype, hit.Target); rr != nil {
+								m.Answer = []dns.RR{rr}
+							}
+						case rpz.ActionCNAME:
+							m.Rcode = dns.RcodeSuccess
+							rcode = dns.RcodeSuccess
+							code = "NOERROR"
+							if rr := rpzCNAMERR(qname, hit.Target); rr != nil {
+								m.Answer = []dns.RR{rr}
+							}
+						default:
+							m.Rcode = dns.RcodeNameError
 						}
-					case rpz.ActionCNAME:
-						m.Rcode = dns.RcodeSuccess
-						rcode = dns.RcodeSuccess
-						code = "NOERROR"
-						if rr := rpzCNAMERR(qname, hit.Target); rr != nil {
-							m.Answer = []dns.RR{rr}
-						}
-					default:
-						m.Rcode = dns.RcodeNameError
+						_ = w.WriteMsg(m)
+						metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
+						observe(code)
+						logQuery(qname, qtypeStr, rcode, false)
+						note("rpz", code, false, false, false)
+						return
 					}
-					_ = w.WriteMsg(m)
-					metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
-					observe(code)
-					logQuery(qname, qtypeStr, rcode, false)
-					note("rpz", code, false, false, false)
-					return
 				}
 			}
 		}
@@ -1034,6 +1054,7 @@ func (s *Server) QueryLogger() *database.QueryLogger     { return s.qlog }
 func (s *Server) Analytics() *analytics.Collector { return s.stats }
 func (s *Server) Monitor() *monitor.Collector     { return s.mon }
 func (s *Server) Allowlist() *allowlist.List      { return s.allow }
+func (s *Server) Denylist() *denylist.List        { return s.deny }
 
 func (s *Server) RateLimitConfig() ratelimit.Config {
 	if s == nil || s.limiter == nil {

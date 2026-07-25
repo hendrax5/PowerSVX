@@ -17,6 +17,8 @@ func (a *API) handleDomains(w http.ResponseWriter, r *http.Request) {
 		a.handleDomainLookup(w, r)
 	case path == "whitelist":
 		a.handleWhitelist(w, r)
+	case path == "blacklist":
+		a.handleBlacklist(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -40,13 +42,19 @@ func (a *API) handleDomainLookup(w http.ResponseWriter, r *http.Request) {
 	if wl := a.srv.Allowlist(); wl != nil {
 		whitelisted = wl.Allows(norm)
 	}
+	blacklisted := false
+	if bl := a.srv.Denylist(); bl != nil {
+		blacklisted = bl.Blocks(norm)
+	}
 	out := map[string]any{
-		"name":        strings.TrimSuffix(norm, "."),
-		"whitelisted": whitelisted,
-		"blocked":     false,
-		"action":      "",
-		"target":      "",
-		"in_rpz":      false,
+		"name":         strings.TrimSuffix(norm, "."),
+		"whitelisted":  whitelisted,
+		"blacklisted":  blacklisted,
+		"blocked":      false,
+		"action":       "",
+		"target":       "",
+		"in_rpz":       false,
+		"block_source": "",
 	}
 	if eng := a.srv.RPZ(); eng != nil && eng.Enabled() {
 		hit, ok := eng.Lookup(norm)
@@ -54,9 +62,23 @@ func (a *API) handleDomainLookup(w http.ResponseWriter, r *http.Request) {
 			out["in_rpz"] = true
 			out["action"] = string(hit.Action)
 			out["target"] = hit.Target
-			if hit.Action != rpz.ActionPass && !whitelisted {
-				out["blocked"] = true
-			}
+		}
+	}
+	if whitelisted {
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	if blacklisted {
+		out["blocked"] = true
+		out["action"] = "nxdomain"
+		out["block_source"] = "manual"
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	if out["in_rpz"] == true {
+		if action, _ := out["action"].(string); action != "" && action != string(rpz.ActionPass) {
+			out["blocked"] = true
+			out["block_source"] = "rpz"
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -118,6 +140,68 @@ func (a *API) handleWhitelist(w http.ResponseWriter, r *http.Request) {
 			"removed": strings.TrimSuffix(config.NormalizeName(name), "."),
 			"domains": wl.List(),
 			"count":   wl.Count(),
+		})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *API) handleBlacklist(w http.ResponseWriter, r *http.Request) {
+	bl := a.srv.Denylist()
+	if bl == nil {
+		http.Error(w, "blacklist unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"domains": bl.List(),
+			"count":   bl.Count(),
+		})
+	case http.MethodPost:
+		var body struct {
+			Domain string `json:"domain"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Domain) == "" {
+			http.Error(w, "domain required", http.StatusBadRequest)
+			return
+		}
+		d, err := bl.Add(body.Domain)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"domain":  strings.TrimSuffix(d, "."),
+			"domains": bl.List(),
+			"count":   bl.Count(),
+		})
+	case http.MethodDelete:
+		name := strings.TrimSpace(r.URL.Query().Get("name"))
+		if name == "" {
+			var body struct {
+				Domain string `json:"domain"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			name = body.Domain
+		}
+		if strings.TrimSpace(name) == "" {
+			http.Error(w, "name required", http.StatusBadRequest)
+			return
+		}
+		ok, err := bl.Remove(name)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !ok {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"removed": strings.TrimSuffix(config.NormalizeName(name), "."),
+			"domains": bl.List(),
+			"count":   bl.Count(),
 		})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

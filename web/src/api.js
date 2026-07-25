@@ -98,13 +98,14 @@ export const api = {
   acme: () => request('/api/v1/acme'),
   acmeObtain: () => request('/api/v1/acme', { method: 'POST', body: '{}' }),
   rpz: () => request('/api/v1/rpz'),
-  updateRPZ: (policies, sync = false, updateInterval, axfrUpdateInterval, axfrOnly = false) =>
+  updateRPZ: (policies, sync = false, updateInterval, axfrUpdateInterval, axfrOnly = false, updateAt) =>
     request('/api/v1/rpz', {
       method: 'PUT',
       body: JSON.stringify({
         policies,
         sync,
         ...(updateInterval === undefined ? {} : { update_interval: updateInterval }),
+        ...(updateAt === undefined ? {} : { update_at: updateAt }),
         ...(axfrUpdateInterval === undefined ? {} : { axfr_update_interval: axfrUpdateInterval }),
         ...(axfrOnly ? { axfr_only: true } : {}),
       }),
@@ -121,6 +122,14 @@ export const api = {
     }),
   removeWhitelist: (name) =>
     request(`/api/v1/domains/whitelist?name=${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  blacklist: () => request('/api/v1/domains/blacklist'),
+  addBlacklist: (domain) =>
+    request('/api/v1/domains/blacklist', {
+      method: 'POST',
+      body: JSON.stringify({ domain }),
+    }),
+  removeBlacklist: (name) =>
+    request(`/api/v1/domains/blacklist?name=${encodeURIComponent(name)}`, { method: 'DELETE' }),
   lookup: (name, type) =>
     request('/api/v1/tools/lookup', { method: 'POST', body: JSON.stringify({ name, type }) }),
   secondary: () => request('/api/v1/secondary'),

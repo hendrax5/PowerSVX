@@ -29,7 +29,7 @@ import (
 	"github.com/powersvx/powersvx/internal/server"
 )
 
-const Version = "1.3.0-auth"
+const Version = "1.4.0"
 
 type API struct {
 	cfg      *config.Config
@@ -221,8 +221,15 @@ func (a *API) spaHandler() http.Handler {
 		if p == "" || p == "." {
 			p = "index.html"
 		}
+		// Hashed Vite assets can be cached; HTML must revalidate so deploys show up.
+		if p == "index.html" || strings.HasSuffix(p, ".html") {
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		} else if strings.HasPrefix(p, "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
 		if _, err := fs.Stat(a.webFS, p); err != nil {
 			r.URL.Path = "/"
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			fileServer.ServeHTTP(w, r)
 			return
 		}
@@ -363,7 +370,13 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 	}
 
 	return map[string]any{
-		"status": status, "checks": checks, "auth": authInfo, "uptime_seconds": int(time.Since(a.start).Seconds()),
+		"status":         status,
+		"checks":         checks,
+		"auth":           authInfo,
+		"uptime_seconds": int(time.Since(a.start).Seconds()),
+		"version":        Version,
+		"started_at":     a.start.UTC().Format(time.RFC3339),
+		"build_id":       Version + "+" + strconv.FormatInt(a.start.Unix(), 10),
 	}
 }
 
@@ -995,6 +1008,7 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Policies           []config.RPZPolicyTOML `json:"policies"`
 			UpdateInterval     *int                   `json:"update_interval"`
+			UpdateAt           *string                `json:"update_at"`
 			AxfrUpdateInterval *int                   `json:"axfr_update_interval"`
 			Sync               *bool                  `json:"sync"`
 			AxfrOnly           *bool                  `json:"axfr_only"`
@@ -1016,6 +1030,17 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 			}
 			interval = *body.UpdateInterval
 		}
+		updateAt := a.cfg.RPZ.UpdateAt
+		if body.UpdateAt != nil {
+			at := strings.TrimSpace(*body.UpdateAt)
+			if at != "" {
+				if _, _, _, err := config.ParseHHMM(at); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+			}
+			updateAt = at
+		}
 		axfrInterval := a.cfg.RPZ.AxfrUpdateInterval
 		if body.AxfrUpdateInterval != nil {
 			if *body.AxfrUpdateInterval < 0 {
@@ -1032,13 +1057,14 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 		axfrPtr := axfrInterval
 		path := config.RPZPoliciesPath(a.dataDir)
 		if err := config.SaveRPZPoliciesFile(path, config.RPZPoliciesFile{
-			Policies: pols, UpdateInterval: interval, AxfrUpdateInterval: &axfrPtr,
+			Policies: pols, UpdateInterval: interval, UpdateAt: updateAt, AxfrUpdateInterval: &axfrPtr,
 		}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		a.cfg.RPZ.Policies = pols
 		a.cfg.RPZ.UpdateInterval = interval
+		a.cfg.RPZ.UpdateAt = updateAt
 		a.cfg.RPZ.AxfrUpdateInterval = axfrInterval
 		a.StartRPZAutoUpdate()
 		sync := body.Sync != nil && *body.Sync
@@ -1093,6 +1119,7 @@ func (a *API) rpzPayload() map[string]any {
 		"entries":              a.srv.RPZCount(),
 		"policies":             pols,
 		"update_interval":      a.cfg.RPZ.UpdateInterval,
+		"update_at":            a.cfg.RPZ.UpdateAt,
 		"axfr_update_interval": a.cfg.RPZ.AxfrUpdateInterval,
 		"loading":              st.Loading,
 		"error":                st.Error,
@@ -1100,7 +1127,7 @@ func (a *API) rpzPayload() map[string]any {
 		"from_disk":            st.FromDisk,
 		"axfr_feeds":           axfrFeeds,
 		"axfr_events":          axfrEvents,
-		"note":                 "PUT policies + update_interval + axfr_update_interval. AXFR feeds use IXFR after the first full transfer; NOTIFY triggers AXFR-only refresh.",
+		"note":                 "PUT policies + update_interval + update_at (HH:MM local) + axfr_update_interval. When update_at is set, hosts reload daily at that time. AXFR uses IXFR after first pull; NOTIFY triggers AXFR-only refresh.",
 	}
 }
 
@@ -1275,7 +1302,9 @@ func (a *API) HandleRPZNotify(zone string) bool {
 	return true
 }
 
-// StartRPZAutoUpdate runs separate tickers for hosts and AXFR feeds.
+// StartRPZAutoUpdate runs separate schedules for hosts and AXFR feeds.
+// Hosts: when update_at (HH:MM) is set, fires at that local wall clock daily;
+// otherwise uses update_interval as a plain ticker from process start.
 func (a *API) StartRPZAutoUpdate() {
 	a.rpzAutoMu.Lock()
 	defer a.rpzAutoMu.Unlock()
@@ -1285,33 +1314,83 @@ func (a *API) StartRPZAutoUpdate() {
 	}
 	hostsSec := a.cfg.RPZ.UpdateInterval
 	axfrSec := a.cfg.RPZ.AxfrUpdateInterval
+	hostsAt := strings.TrimSpace(a.cfg.RPZ.UpdateAt)
+	if hostsAt != "" {
+		if _, _, ok, err := config.ParseHHMM(hostsAt); err != nil || !ok {
+			a.log.Warn("rpz update_at invalid; using interval ticker", "update_at", hostsAt, "err", err)
+			hostsAt = ""
+		}
+	}
 	if hostsSec <= 0 && axfrSec <= 0 {
 		a.log.Info("rpz auto-update disabled")
 		return
 	}
 	stop := make(chan struct{})
 	a.rpzAutoStop = stop
-	a.log.Info("rpz auto-update enabled", "hosts_interval_sec", hostsSec, "axfr_interval_sec", axfrSec)
+	a.log.Info("rpz auto-update enabled",
+		"hosts_interval_sec", hostsSec, "hosts_update_at", hostsAt, "axfr_interval_sec", axfrSec)
 	go func() {
-		var hostsTick <-chan time.Time
-		var axfrTick <-chan time.Time
-		var hostsTicker, axfrTicker *time.Ticker
-		if hostsSec > 0 {
-			hostsTicker = time.NewTicker(time.Duration(hostsSec) * time.Second)
-			hostsTick = hostsTicker.C
-			defer hostsTicker.Stop()
+		var hostsTimer, axfrTimer *time.Timer
+		var hostsTick, axfrTick <-chan time.Time
+
+		armHosts := func() {
+			hostsTick = nil
+			if hostsTimer != nil {
+				hostsTimer.Stop()
+				hostsTimer = nil
+			}
+			if hostsSec <= 0 {
+				return
+			}
+			var d time.Duration
+			if hostsAt != "" {
+				next, err := config.NextDailyAt(time.Now(), hostsAt)
+				if err != nil {
+					a.log.Warn("rpz hosts schedule", "err", err)
+					d = time.Duration(hostsSec) * time.Second
+				} else {
+					d = time.Until(next)
+					if d < time.Second {
+						d = time.Second
+					}
+					a.log.Info("rpz hosts next run", "at", next.Format(time.RFC3339))
+				}
+			} else {
+				d = time.Duration(hostsSec) * time.Second
+			}
+			hostsTimer = time.NewTimer(d)
+			hostsTick = hostsTimer.C
 		}
-		if axfrSec > 0 {
-			axfrTicker = time.NewTicker(time.Duration(axfrSec) * time.Second)
-			axfrTick = axfrTicker.C
-			defer axfrTicker.Stop()
+		armAxfr := func() {
+			axfrTick = nil
+			if axfrTimer != nil {
+				axfrTimer.Stop()
+				axfrTimer = nil
+			}
+			if axfrSec <= 0 {
+				return
+			}
+			axfrTimer = time.NewTimer(time.Duration(axfrSec) * time.Second)
+			axfrTick = axfrTimer.C
 		}
+		armHosts()
+		armAxfr()
+		defer func() {
+			if hostsTimer != nil {
+				hostsTimer.Stop()
+			}
+			if axfrTimer != nil {
+				axfrTimer.Stop()
+			}
+		}()
+
 		for {
 			select {
 			case <-stop:
 				return
 			case <-hostsTick:
 				if a.srv.RPZ() != nil && a.srv.RPZ().LoadStatus().Loading {
+					armHosts()
 					continue
 				}
 				if err := a.startRPZReload(false); err != nil {
@@ -1319,8 +1398,10 @@ func (a *API) StartRPZAutoUpdate() {
 				} else {
 					a.log.Info("rpz hosts auto-update started")
 				}
+				armHosts()
 			case <-axfrTick:
 				if a.srv.RPZ() != nil && a.srv.RPZ().LoadStatus().Loading {
+					armAxfr()
 					continue
 				}
 				if err := a.startRPZAXFRRefresh(false); err != nil {
@@ -1328,6 +1409,7 @@ func (a *API) StartRPZAutoUpdate() {
 				} else {
 					a.log.Info("rpz axfr auto-update started")
 				}
+				armAxfr()
 			}
 		}
 	}()
