@@ -238,6 +238,8 @@ type RPZConfig struct {
 	// AxfrUpdateInterval is the refresh cadence for format=axfr feeds (seconds; 0 = off).
 	// Independent of UpdateInterval. Default 86400 (24h).
 	AxfrUpdateInterval int `toml:"axfr_update_interval"`
+	// HotCacheMax is max exact RPZ hits kept in RAM in cold/disk mode (0 = default 500k).
+	HotCacheMax int `toml:"hot_cache_max"`
 }
 
 type MetricsConfig struct {

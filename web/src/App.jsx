@@ -2644,7 +2644,7 @@ function RPZPanel({ initial, onChange }) {
       const sec = Math.max(0, Number(intervalSec) || 0)
       const axfrSec = Math.max(0, Number(axfrIntervalSec) || 0)
       const at = String(updateAt || '').trim()
-      const r = await api.updateRPZ([...policies, ...axfrPolicies], false, sec, axfrSec, false, at)
+      const r = await api.updateRPZ([...policies, ...axfrPolicies], false, sec, axfrSec, false, at, true)
       setStatus(r)
       setPolicies(hostsOnlyPolicies(r.policies))
       setAxfrPolicies(axfrOnlyPolicies(r.policies))
@@ -2669,7 +2669,7 @@ function RPZPanel({ initial, onChange }) {
     setErr('')
     setOk('')
     try {
-      const r = await api.reloadRPZ()
+      const r = await api.reloadRPZ(false, true)
       setStatus(r)
       onChange?.(r)
       setOk('Re-sync started…')

@@ -98,7 +98,7 @@ export const api = {
   acme: () => request('/api/v1/acme'),
   acmeObtain: () => request('/api/v1/acme', { method: 'POST', body: '{}' }),
   rpz: () => request('/api/v1/rpz'),
-  updateRPZ: (policies, sync = false, updateInterval, axfrUpdateInterval, axfrOnly = false, updateAt) =>
+  updateRPZ: (policies, sync = false, updateInterval, axfrUpdateInterval, axfrOnly = false, updateAt, force = false) =>
     request('/api/v1/rpz', {
       method: 'PUT',
       body: JSON.stringify({
@@ -108,10 +108,16 @@ export const api = {
         ...(updateAt === undefined ? {} : { update_at: updateAt }),
         ...(axfrUpdateInterval === undefined ? {} : { axfr_update_interval: axfrUpdateInterval }),
         ...(axfrOnly ? { axfr_only: true } : {}),
+        ...(force ? { force: true } : {}),
       }),
     }),
-  reloadRPZ: (axfrOnly = false) =>
-    request(`/api/v1/rpz${axfrOnly ? '?axfr_only=1' : ''}`, { method: 'POST', body: '{}' }),
+  reloadRPZ: (axfrOnly = false, force = false) => {
+    const q = new URLSearchParams()
+    if (axfrOnly) q.set('axfr_only', '1')
+    if (force) q.set('force', '1')
+    const qs = q.toString()
+    return request(`/api/v1/rpz${qs ? `?${qs}` : ''}`, { method: 'POST', body: '{}' })
+  },
   domainLookup: (name) =>
     request(`/api/v1/domains/lookup?name=${encodeURIComponent(name)}`),
   whitelist: () => request('/api/v1/domains/whitelist'),

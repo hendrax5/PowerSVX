@@ -226,7 +226,16 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			return
 		}
 		rate := s.cfg.Logging.QueryLogSampleRate
+		// 0 = keep all (when logging enabled). Under admit pressure, tighten further.
 		if rate > 0 && rate < 1 {
+			if s.res != nil {
+				if capN := s.res.InflightCap(); capN > 0 && s.res.Inflight()*2 >= capN {
+					rate *= 0.2
+					if rate < 0.005 {
+						rate = 0.005
+					}
+				}
+			}
 			// Sample: keep roughly rate fraction using cheap counter.
 			if (s.queries.Load() % 1000) >= uint64(rate*1000) {
 				return

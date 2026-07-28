@@ -32,15 +32,15 @@ max_connections = 20
 type = "badger"
 path = "/data/cache"
 # Larger L1 (entries ≈ max_size_mb * 1024) raises hit ratio under multi‑10k QPS.
-max_size_mb = 256
+max_size_mb = 384
 ttl_seconds = 300
 min_ttl = 120
 negative_ttl = 60
 # Serve expired answers briefly (Unbound-like) while refreshing in background.
 serve_stale = true
-stale_ttl = 60
+stale_ttl = 120
 # Prefetch when remaining TTL below this percent of stored lifetime (0 = off).
-prefetch_pct = 10
+prefetch_pct = 15
 
 [resolver]
 # Recursive to root first; short forward_on_fail only when root iteration fails.
@@ -50,9 +50,10 @@ forward_on_fail = true
 dnssec_mode = "off"
 edns_buffer_size = 1232
 timeout_ms = 2000
-fallback_timeout_ms = 400
+# Tight fallback budget; under load-shed recursive is skipped entirely.
+fallback_timeout_ms = 350
 # Hard admit cap (~Unbound reqlist). Full = fail-fast SERVFAIL, no queue pile-up.
-max_inflight = 1024
+max_inflight = 1536
 ecs_enabled = false
 ecs_prefix_v4 = 24
 ecs_prefix_v6 = 56
@@ -70,6 +71,8 @@ global_burst = 0
 
 [rpz]
 enabled = true
+# Exact-hit LRU in cold/disk mode (default engine 500k). Larger = fewer Badger lookups on hot names.
+hot_cache_max = 1000000
 # Hosts HTTP feeds: daily at 04:00 local (TZ=Asia/Jakarta in compose). 0 interval disables.
 update_interval = 86400
 update_at = "04:00"

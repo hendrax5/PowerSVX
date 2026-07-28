@@ -80,9 +80,11 @@ func (a *API) saveRuntimeFromServer(cur server.RuntimeFlags) {
 	}
 	retDays := 0
 	maxMB := 0
+	sampleRate := 0.0
 	if a.cfg != nil {
 		retDays = a.cfg.Logging.QueryLogRetentionDays
 		maxMB = a.cfg.Logging.QueryLogMaxSizeMB
+		sampleRate = a.cfg.Logging.QueryLogSampleRate
 	}
 	_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), config.RuntimeSettings{
 		GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
@@ -90,7 +92,7 @@ func (a *API) saveRuntimeFromServer(cur server.RuntimeFlags) {
 		RateLimitWhitelist: rlLive.Whitelist,
 		ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
 		ResolverMode: &mode, ForwardOnFail: &cur.ForwardOnFail, QueryLog: &cur.QueryLog,
-		QueryLogRetentionDays: &retDays, QueryLogMaxSizeMB: &maxMB,
+		QueryLogRetentionDays: &retDays, QueryLogMaxSizeMB: &maxMB, QueryLogSampleRate: &sampleRate,
 		Forwarders: fwd, ForwardZones: fz, AllowQuery: allow, DenyQuery: deny,
 		AxfrSyncEnabled: &en,
 		AxfrSyncTargets: targets,

@@ -113,6 +113,7 @@ export default function Settings({ tools = {} }) {
     query_log_enabled: !!s.query_log_enabled,
     query_log_retention_days: Number(s.query_log_retention_days) || 3,
     query_log_max_size_mb: Number(s.query_log_max_size_mb) || 5120,
+    query_log_sample_rate: s.query_log_sample_rate == null ? 0.05 : Number(s.query_log_sample_rate),
     resolver_mode: s.resolver_mode === 'forward' ? 'forward' : 'recursive',
     forwarders: Array.isArray(s.forwarders) ? [...s.forwarders] : [],
     forward_zones: Array.isArray(s.forward_zones)
@@ -205,7 +206,8 @@ export default function Settings({ tools = {} }) {
     draft &&
     (!!draft.query_log_enabled !== !!saved.query_log_enabled ||
       Number(draft.query_log_retention_days) !== Number(saved.query_log_retention_days || 0) ||
-      Number(draft.query_log_max_size_mb) !== Number(saved.query_log_max_size_mb || 0))
+      Number(draft.query_log_max_size_mb) !== Number(saved.query_log_max_size_mb || 0) ||
+      Number(draft.query_log_sample_rate) !== Number(saved.query_log_sample_rate ?? 0.05))
 
   const dirtyFlags = useMemo(
     () => ({
@@ -261,6 +263,7 @@ export default function Settings({ tools = {} }) {
         query_log_enabled: draft.query_log_enabled,
         query_log_retention_days: Number(draft.query_log_retention_days) || 0,
         query_log_max_size_mb: Number(draft.query_log_max_size_mb) || 0,
+        query_log_sample_rate: Math.min(1, Math.max(0, Number(draft.query_log_sample_rate) || 0)),
         resolver_mode: draft.resolver_mode,
         forwarders: draft.forwarders,
         forward_zones: (draft.forward_zones || []).map((z) => ({
@@ -912,9 +915,26 @@ export default function Settings({ tools = {} }) {
                     }}
                   />
                 </label>
+                <label className="text-xs text-[var(--muted)] space-y-1 block">
+                  Sample rate (0–1)
+                  <input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    disabled={busy || !isAdmin}
+                    className="input mono w-full"
+                    value={draft.query_log_sample_rate}
+                    onChange={(e) => {
+                      setOk('')
+                      setErr('')
+                      setDraft((d) => ({ ...d, query_log_sample_rate: e.target.value }))
+                    }}
+                  />
+                </label>
               </div>
               <p className="text-[11px] text-[var(--muted)] mt-3 leading-relaxed">
-                Oldest rows are deleted first when over the size limit. 0 disables that guard. Default size cap is 5 GB (5120 MB).
+                Oldest rows are deleted first when over the size limit. 0 disables that guard. Default size cap is 5 GB (5120 MB). Sample rate 0.05 = log ~5%; under high load sampling tightens further.
               </p>
             </SettingSection>
           ) : null}
@@ -932,6 +952,7 @@ export default function Settings({ tools = {} }) {
                   ['Mask query IPs', saved.query_log_mask_ip ? 'yes' : 'no'],
                   ['Log retention (days)', saved.query_log_retention_days],
                   ['Log max size (MB)', saved.query_log_max_size_mb],
+                  ['Log sample rate', saved.query_log_sample_rate],
                   ['AXFR allowed', saved.transfer?.allow_axfr ? 'yes' : 'no'],
                   ['AXFR requires TSIG', saved.transfer?.require_tsig ? 'yes' : 'no'],
                   ['NOTIFY targets', (saved.transfer?.notify || []).join(', ') || '—'],

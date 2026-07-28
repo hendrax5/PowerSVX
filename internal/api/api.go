@@ -29,7 +29,7 @@ import (
 	"github.com/powersvx/powersvx/internal/server"
 )
 
-const Version = "1.4.0"
+const Version = "1.5.0"
 
 type API struct {
 	cfg      *config.Config
@@ -745,6 +745,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			QueryLog             *bool     `json:"query_log_enabled"`
 			QueryLogRetentionDays *int     `json:"query_log_retention_days"`
 			QueryLogMaxSizeMB    *int      `json:"query_log_max_size_mb"`
+			QueryLogSampleRate   *float64  `json:"query_log_sample_rate"`
 			Forwarders           *[]string `json:"forwarders"`
 			ForwardZones         *[]config.ForwardZoneConfig `json:"forward_zones"`
 			AllowQuery           *[]string `json:"allow_query"`
@@ -800,6 +801,15 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			if a.cfg != nil {
 				a.cfg.Logging.QueryLogMaxSizeMB = *body.QueryLogMaxSizeMB
+			}
+		}
+		if body.QueryLogSampleRate != nil {
+			if *body.QueryLogSampleRate < 0 || *body.QueryLogSampleRate > 1 {
+				http.Error(w, "query_log_sample_rate must be 0–1", http.StatusBadRequest)
+				return
+			}
+			if a.cfg != nil {
+				a.cfg.Logging.QueryLogSampleRate = *body.QueryLogSampleRate
 			}
 		}
 		if body.Forwarders != nil {
@@ -893,9 +903,11 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		retDays := 0
 		maxMB := 0
+		sampleRate := 0.0
 		if a.cfg != nil {
 			retDays = a.cfg.Logging.QueryLogRetentionDays
 			maxMB = a.cfg.Logging.QueryLogMaxSizeMB
+			sampleRate = a.cfg.Logging.QueryLogSampleRate
 		}
 		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), config.RuntimeSettings{
 			GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
@@ -903,7 +915,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			RateLimitWhitelist: rlLive.Whitelist,
 			ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
 			ResolverMode: &mode, ForwardOnFail: &cur.ForwardOnFail, QueryLog: &cur.QueryLog,
-			QueryLogRetentionDays: &retDays, QueryLogMaxSizeMB: &maxMB,
+			QueryLogRetentionDays: &retDays, QueryLogMaxSizeMB: &maxMB, QueryLogSampleRate: &sampleRate,
 			Forwarders: fwd, ForwardZones: fz, AllowQuery: allow, DenyQuery: deny,
 			AxfrSyncEnabled: &kominfoOn, AxfrSyncTargets: axfrTargets,
 			KominfoSyncEnabled: &kominfoOn,
@@ -962,6 +974,7 @@ func (a *API) settingsPayload() map[string]any {
 		"query_log_mask_ip":        a.cfg.Logging.QueryLogMaskIP,
 		"query_log_retention_days": a.cfg.Logging.QueryLogRetentionDays,
 		"query_log_max_size_mb":    a.cfg.Logging.QueryLogMaxSizeMB,
+		"query_log_sample_rate":    a.cfg.Logging.QueryLogSampleRate,
 		"allow_query":              allow,
 		"deny_query":               deny,
 		"transfer": map[string]any{
@@ -983,9 +996,9 @@ func (a *API) settingsPayload() map[string]any {
 			"rate_limit_block_duration", "rate_limit_whitelist",
 			"ecs_enabled", "split_horizon",
 			"resolver_mode", "forward_on_fail", "forwarders", "forward_zones", "query_log_enabled",
-			"query_log_retention_days", "query_log_max_size_mb", "allow_query", "deny_query",
+			"query_log_retention_days", "query_log_max_size_mb", "query_log_sample_rate", "allow_query", "deny_query",
 		},
-		"note": "Edit toggles, rate limit, query ACL, forwarders, conditional forward zones, query log size/retention, and resolver mode, then Save. Persisted to data/runtime-settings.json. Empty allow_query = allow all. AXFR ACL and IP masking are TOML-only. IXFR is answered as full AXFR.",
+		"note": "Edit toggles, rate limit, query ACL, forwarders, conditional forward zones, query log size/retention/sample rate, and resolver mode, then Save. Persisted to data/runtime-settings.json. Empty allow_query = allow all. AXFR ACL and IP masking are TOML-only. IXFR is answered as full AXFR.",
 	}
 }
 
@@ -1012,6 +1025,7 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 			AxfrUpdateInterval *int                   `json:"axfr_update_interval"`
 			Sync               *bool                  `json:"sync"`
 			AxfrOnly           *bool                  `json:"axfr_only"`
+			Force              *bool                  `json:"force"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
@@ -1069,10 +1083,15 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 		a.StartRPZAutoUpdate()
 		sync := body.Sync != nil && *body.Sync
 		axfrOnly := body.AxfrOnly != nil && *body.AxfrOnly
+		force := body.Force != nil && *body.Force
 		var startErr error
 		if axfrOnly {
 			startErr = a.startRPZAXFRRefresh(sync)
 		} else {
+			if hostsFullReloadDaytime(time.Now()) && !force {
+				http.Error(w, "full hosts RPZ reload blocked 06:00–22:00 local; set force=true or wait for update_at", http.StatusForbidden)
+				return
+			}
 			startErr = a.startRPZReload(sync)
 		}
 		if startErr != nil {
@@ -1086,10 +1105,15 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		axfrOnly := r.URL.Query().Get("axfr_only") == "1" || r.URL.Query().Get("axfr_only") == "true"
+		force := r.URL.Query().Get("force") == "1" || r.URL.Query().Get("force") == "true"
 		var startErr error
 		if axfrOnly {
 			startErr = a.startRPZAXFRRefresh(false)
 		} else {
+			if hostsFullReloadDaytime(time.Now()) && !force {
+				http.Error(w, "full hosts RPZ reload blocked 06:00–22:00 local; set force=1 or wait for update_at", http.StatusForbidden)
+				return
+			}
 			startErr = a.startRPZReload(false)
 		}
 		if startErr != nil {
@@ -1127,7 +1151,7 @@ func (a *API) rpzPayload() map[string]any {
 		"from_disk":            st.FromDisk,
 		"axfr_feeds":           axfrFeeds,
 		"axfr_events":          axfrEvents,
-		"note":                 "PUT policies + update_interval + update_at (HH:MM local) + axfr_update_interval. When update_at is set, hosts reload daily at that time. AXFR uses IXFR after first pull; NOTIFY triggers AXFR-only refresh.",
+		"note": "PUT policies + update_interval + update_at (HH:MM local) + axfr_update_interval. When update_at is set, hosts reload daily at that time. Full hosts reload via API is blocked 06:00–22:00 local unless force=true (scheduled update_at still runs). AXFR uses IXFR after first pull; NOTIFY triggers AXFR-only refresh.",
 	}
 }
 
@@ -1225,6 +1249,12 @@ type rpzError string
 
 func (e rpzError) Error() string { return string(e) }
 func errRPZ(s string) error      { return rpzError(s) }
+
+// hostsFullReloadDaytime is true during 06:00–22:00 local — full hosts rebuild is expensive.
+func hostsFullReloadDaytime(now time.Time) bool {
+	h := now.Hour()
+	return h >= 6 && h < 22
+}
 
 func (a *API) startRPZReload(sync bool) error {
 	eng := a.srv.RPZ()

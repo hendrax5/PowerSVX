@@ -191,7 +191,7 @@ func NewQueryLogger(db *DB, enabled bool, log *slog.Logger) *QueryLogger {
 	_ = enabled // enable/disable is controlled at call site via config flag
 	ql := &QueryLogger{
 		db:   db,
-		ch:   make(chan QueryLogEntry, 4096),
+		ch:   make(chan QueryLogEntry, 16384),
 		done: make(chan struct{}),
 		log:  log,
 	}
@@ -212,8 +212,9 @@ func (q *QueryLogger) Log(e QueryLogEntry) {
 
 func (q *QueryLogger) loop() {
 	defer close(q.done)
-	batch := make([]QueryLogEntry, 0, 64)
-	ticker := time.NewTicker(500 * time.Millisecond)
+	const batchMax = 256
+	batch := make([]QueryLogEntry, 0, batchMax)
+	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	flush := func() {
 		if len(batch) == 0 {
@@ -250,7 +251,7 @@ func (q *QueryLogger) loop() {
 				return
 			}
 			batch = append(batch, e)
-			if len(batch) >= 64 {
+			if len(batch) >= batchMax {
 				flush()
 			}
 		case <-ticker.C:

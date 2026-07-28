@@ -174,6 +174,9 @@ func main() {
 	}
 
 	rpzEng := rpz.New(cfg.RPZ.Enabled)
+	if cfg.RPZ.HotCacheMax > 0 {
+		rpzEng.SetHotCacheSize(cfg.RPZ.HotCacheMax)
+	}
 	if err := rpzEng.OpenDisk(filepath.Join(*dataDir, "rpz-store")); err != nil {
 		log.Warn("rpz disk store unavailable", "err", err)
 	}

@@ -165,18 +165,18 @@ func (r *Resolver) ResolveWithECS(ctx context.Context, req *dns.Msg, sub *ecs.Su
 		if r.ForwardOnFail && len(r.Forwarders) > 0 && fbBudget > 0 && r.Timeout > fbBudget {
 			recBudget = r.Timeout - fbBudget
 		}
-		// Load shed: when >75% of admit slots busy, shorten recursive or skip to fallback.
+		// Load shed: when admit slots are ≥75% busy, skip recursive and go straight
+		// to forwarders — recursive under pressure mostly times out then falls back anyway.
+		if r.loadShed() && r.ForwardOnFail && len(r.Forwarders) > 0 {
+			fctx, fcancel := context.WithTimeout(ctx, fbBudget)
+			defer fcancel()
+			msg, err := r.forward(fctx, req, sub)
+			return msg, "fallback", err
+		}
 		if r.loadShed() {
-			if r.ForwardOnFail && len(r.Forwarders) > 0 {
-				recBudget = fbBudget
-				if recBudget > 200*time.Millisecond {
-					recBudget = 200 * time.Millisecond
-				}
-			} else {
-				recBudget = recBudget / 2
-				if recBudget < 200*time.Millisecond {
-					recBudget = 200 * time.Millisecond
-				}
+			recBudget = recBudget / 2
+			if recBudget < 200*time.Millisecond {
+				recBudget = 200 * time.Millisecond
 			}
 		}
 		rctx, cancel := context.WithTimeout(ctx, recBudget)

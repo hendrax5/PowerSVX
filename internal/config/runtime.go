@@ -19,9 +19,10 @@ type RuntimeSettings struct {
 	SplitHorizon         *bool    `json:"split_horizon,omitempty"`
 	ResolverMode         *string  `json:"resolver_mode,omitempty"`
 	ForwardOnFail        *bool    `json:"forward_on_fail,omitempty"`
-	QueryLog             *bool    `json:"query_log_enabled,omitempty"`
-	QueryLogRetentionDays *int    `json:"query_log_retention_days,omitempty"`
-	QueryLogMaxSizeMB    *int     `json:"query_log_max_size_mb,omitempty"`
+	QueryLog              *bool    `json:"query_log_enabled,omitempty"`
+	QueryLogRetentionDays *int     `json:"query_log_retention_days,omitempty"`
+	QueryLogMaxSizeMB     *int     `json:"query_log_max_size_mb,omitempty"`
+	QueryLogSampleRate    *float64 `json:"query_log_sample_rate,omitempty"`
 	Forwarders           []string `json:"forwarders"`
 	ForwardZones         []ForwardZoneConfig `json:"forward_zones"`
 	AllowQuery           []string `json:"allow_query"`
@@ -101,6 +102,9 @@ func (c *Config) ApplyRuntimeSettings(s RuntimeSettings) {
 	}
 	if s.QueryLogMaxSizeMB != nil && *s.QueryLogMaxSizeMB >= 0 {
 		c.Logging.QueryLogMaxSizeMB = *s.QueryLogMaxSizeMB
+	}
+	if s.QueryLogSampleRate != nil && *s.QueryLogSampleRate >= 0 && *s.QueryLogSampleRate <= 1 {
+		c.Logging.QueryLogSampleRate = *s.QueryLogSampleRate
 	}
 	if s.Forwarders != nil {
 		c.Resolver.Forwarders = append([]string(nil), s.Forwarders...)

@@ -91,7 +91,9 @@ const (
 	maxRecursionDepth = 16
 	defaultHopTimeout = 300 * time.Millisecond
 	maxNSLookups      = 6
-	raceParallel      = 3
+	// raceParallel: more parallel NS probes cuts recursive latency under good RTT;
+	// 4 is a balance vs UDP amplification to roots/TLD.
+	raceParallel = 4
 )
 
 func (r *Resolver) resolveRecursive(ctx context.Context, qname string, qtype uint16) (*dns.Msg, error) {
