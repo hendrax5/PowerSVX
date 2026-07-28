@@ -7,7 +7,7 @@
 #   docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --build
 #
 # DB: with host network, PowerSVX must reach Postgres via the published host port:
-#   configs/powersvx.docker.toml → host = "127.0.0.1", port = 5433
+#   configs/powersvx.docker.host.toml → host = "127.0.0.1", port = 5433
 #
 # Prometheus scrapes metrics via host.docker.internal:9100 (see prometheus.yml job powersvx-host).
 

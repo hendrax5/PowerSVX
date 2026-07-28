@@ -35,23 +35,36 @@ go run ./cmd/powersvx --config configs/powersvx.ui.toml
 
 ## Docker
 
+**Linux / VPS (recommended):** use **host networking** so DNS sees real client IPs (ACL, rate-limit, query log). Bridge mode SNAT sources to `172.18.0.1` and breaks per-IP controls.
+
 ```bash
-docker compose up -d --build
+cp .env.example .env   # set PG_PASSWORD + API_TOKEN (+ ADMIN_PASSWORD)
+# stop anything bound to :53 on the host first (e.g. systemd-resolved)
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --build
 ```
 
 | Host | Service |
 |------|---------|
-| 5453 | DNS |
+| 53 | DNS (UDP/TCP) |
+| 853 / 443 / 784 | DoT / DoH / DoQ |
 | 5380 | API + UI |
 | 9100 | Prometheus metrics (app) |
-| 9090 | Prometheus server |
-| 3000 | Grafana (admin/admin by default) |
+| 9091 | Prometheus server |
+| 3000 | Grafana |
+| 5433 | Postgres (published on loopback in host override) |
 
-Copy `.env.example` → `.env` and set `PG_PASSWORD` / `API_TOKEN` before production use.
+This mounts `configs/powersvx.docker.host.toml` (Postgres via `127.0.0.1:5433`). Do **not** later run plain `docker compose up` alone — that drops `network_mode: host` and returns to bridge.
+
+**Local / Windows-friendly bridge** (mapped ports, not for production DNS):
+
+```bash
+docker compose up -d --build
+# DNS on host 5453 → container 53; UI http://127.0.0.1:5380/
+```
 
 ## Linux production deploy
 
-See **[deploy/linux/README.md](deploy/linux/README.md)** for systemd install, `configs/powersvx.linux.toml`, secrets env, firewall, and a production Docker Compose override (port `53`, all services on `0.0.0.0`).
+See **[deploy/linux/README.md](deploy/linux/README.md)** for systemd install, `configs/powersvx.linux.toml`, secrets env, firewall, and Docker host-network details.
 
 ```bash
 # Bare metal / VM
@@ -59,9 +72,9 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags='-w -s' -o powersvx ./cm
 (cd web && npm install && npm run build)
 sudo ./deploy/linux/install.sh ./powersvx
 
-# Or Docker on Linux with real DNS ports
+# Or Docker on Linux (host network — preferred)
 cp .env.example .env   # set PG_PASSWORD + API_TOKEN
-docker compose -f docker-compose.yml -f deploy/linux/docker-compose.linux.yml up -d --build
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --build
 ```
 
 ## RPZ actions

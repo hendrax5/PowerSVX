@@ -110,18 +110,17 @@ If using kernel TPROXY, set `tproxy = true`, add `CAP_NET_ADMIN` to the unit’s
 
 ## B. Docker Compose on Linux
 
-Use host ports `53` directly (stop systemd-resolved conflict first if needed):
+**Default for a DNS VPS: host networking.** Bridge/`ports:` publish SNAT client IPs to the Docker gateway (`172.18.0.1`), so ACL, rate-limit, and query logs look wrong (almost all traffic from one IP).
+
+Stop host conflicts on `:53` first if needed (e.g. `systemd-resolved`), then:
 
 ```bash
-# /etc/docker compose override example — map 53:53
-# Or edit docker-compose.yml ports to "53:53/udp" and "53:53/tcp"
-
 cp .env.example .env
-# set strong PG_PASSWORD and API_TOKEN
-docker compose up -d --build
+# set strong PG_PASSWORD, API_TOKEN, ADMIN_PASSWORD
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --build
 ```
 
-For production Docker, prefer `configs/powersvx.docker.toml` plus a `.env` with strong secrets. Ports publish on **0.0.0.0**. Prometheus is on host **9091** (maps to container 9090) because host 9090 is often already in use. Restrict `[acl] allow_query` and firewall unused ports.
+This override sets `network_mode: host` and mounts `configs/powersvx.docker.host.toml` (Postgres via `127.0.0.1:5433`). Prometheus is on host **9091** (container 9090). Restrict `[acl] allow_query` and firewall unused ports.
 
 | Host port | Service |
 |-----------|---------|
@@ -131,21 +130,13 @@ For production Docker, prefer `configs/powersvx.docker.toml` plus a `.env` with 
 | 9100 | App metrics |
 | 9091 | Prometheus UI |
 | 3000 | Grafana |
-| 5433 | Postgres |
+| 5433 | Postgres (loopback publish in host override) |
 
-### Host networking (real client IPs / VPS)
+Do **not** overwrite a host-network deploy with plain `docker compose up` / bridge-only `docker-compose.yml` — that drops `network_mode: host` and client IPs become `172.x` again.
 
-Published ports SNAT client IPs to the Docker bridge (`172.x`), which breaks ACL and rate-limit by source. On a dedicated DNS VPS use:
+### Bridge networking (dev / avoid if possible)
 
-```bash
-docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --build
-```
-
-This override mounts `configs/powersvx.docker.host.toml`, which points PowerSVX at Postgres on `127.0.0.1:5433`.
-
-Do **not** overwrite a host-network deploy with the default bridge `docker-compose.yml` alone — that drops `network_mode: host`.
-
-### Bridge networking without the UDP RAM bomb
+Only for local lab where host `:53` must stay free. Prefer mapped ports in root `docker-compose.yml` (e.g. `5453→53`).
 
 Default Docker **published UDP ports** use `docker-proxy` (userland). Under high DNS QPS that process can eat **multiple GB RAM and tens of % CPU** (seen ~4 GB on :53 alone). Options if you must stay on bridge:
 
@@ -160,7 +151,7 @@ sudo systemctl restart docker
 # then recreate the stack
 ```
 
-2. **Host networking** (above) — best for DNS VPS: real client IPs, no proxy, lowest overhead.
+2. Prefer switching to **host networking** (section above) instead of staying on bridge.
 
 3. **macvlan / ipvlan** — container gets its own L2/L3 address; more ops complexity.
 
@@ -211,7 +202,7 @@ Recreate cleanly:
 
 ```bash
 git pull origin main
-docker compose -f docker-compose.yml -f deploy/linux/docker-compose.linux.yml up -d --build --force-recreate
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --build --force-recreate
 docker ps
 ss -ulnp | grep ':53'
 dig @127.0.0.1 example.com
@@ -224,7 +215,7 @@ PowerSVX images use **Debian bookworm** (not Alpine) so builds do not depend on 
 ```bash
 git pull origin main
 docker compose build --no-cache powersvx
-docker compose -f docker-compose.yml -f deploy/linux/docker-compose.linux.yml up -d
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d
 ```
 
 If `apt-get` still fails, check host egress/DNS, then retry with an explicit host-network build:
@@ -239,10 +230,12 @@ Fallback without Docker image builds: use the **systemd** path in section A (com
 
 ## Checklist before go-live
 
+- [ ] Docker uses **host** compose: `-f deploy/linux/docker-compose.host.yml` (not bridge-only)
 - [ ] Strong `API_TOKEN` / `PG_PASSWORD`
 - [ ] `[acl] allow_query` set for your networks
 - [ ] Real TLS certs (or ACME) replacing install.sh self-signed
 - [ ] Postgres backups
 - [ ] Firewall limits who can reach UI/metrics/DB
 - [ ] UI/API protected (`API_TOKEN` / admin password)
-- [ ] `systemctl status powersvx` healthy; `dig @127.0.0.1 example.com` works
+- [ ] `systemctl status powersvx` or `docker ps` healthy; `dig @127.0.0.1 example.com` works
+- [ ] Query logs show real client IPs (not `172.18.0.1`)
