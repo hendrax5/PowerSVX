@@ -53,6 +53,11 @@ apply_gomemlimit_percent() {
 
 apply_gomemlimit_percent || true
 
+# Prefer steadier GC under multi-GB heaps unless the operator set GOGC explicitly.
+if [ -z "${GOGC:-}" ]; then
+  export GOGC=50
+fi
+
 ensure_geodb() {
   # GEODB_AUTO_DOWNLOAD=0 skips. Path defaults to persistent volume file.
   if [ "${GEODB_AUTO_DOWNLOAD:-1}" = "0" ]; then

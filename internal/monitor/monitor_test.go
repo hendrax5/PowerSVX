@@ -47,6 +47,9 @@ func TestObserveQPSAndLatency(t *testing.T) {
 	if len(snap.TopBlocked) == 0 || snap.TopBlocked[0].Key != "ads.tracker.com" {
 		t.Fatalf("top_blocked=%v", snap.TopBlocked)
 	}
+	if len(snap.BlockedCover) == 0 || snap.BlockedCover[0].Hits < 2 {
+		t.Fatalf("blocked_cover=%v", snap.BlockedCover)
+	}
 	if len(snap.Recent) < 1 {
 		t.Fatal("recent empty")
 	}

@@ -240,6 +240,8 @@ type RPZConfig struct {
 	AxfrUpdateInterval int `toml:"axfr_update_interval"`
 	// HotCacheMax is max exact RPZ hits kept in RAM in cold/disk mode (0 = default 500k).
 	HotCacheMax int `toml:"hot_cache_max"`
+	// HotSeedTopN periodically seeds the RPZ hot cache from the top blocked qnames (0 = off).
+	HotSeedTopN int `toml:"hot_seed_top_n"`
 }
 
 type MetricsConfig struct {

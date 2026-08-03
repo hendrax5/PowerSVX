@@ -220,6 +220,47 @@ func (e *Engine) Hits() uint64 {
 	return e.hits.Load()
 }
 
+// SeedHot preloads the RAM hot cache for known-blocked names (cold/disk mode).
+// Skips names not present in the store/trie. Does not increment hit counters.
+func (e *Engine) SeedHot(names []string) int {
+	if e == nil || len(names) == 0 || !e.Enabled() {
+		return 0
+	}
+	e.mu.RLock()
+	cold := e.cold
+	store := e.store
+	hot := e.hot
+	tree := e.tree
+	wild := e.wild
+	e.mu.RUnlock()
+	if hot == nil {
+		return 0
+	}
+	seeded := 0
+	for _, name := range names {
+		norm := config.NormalizeName(name)
+		if norm == "" || norm == "." {
+			continue
+		}
+		var hit Hit
+		var ok bool
+		if cold && store != nil {
+			hit, ok, _ = store.Get(norm)
+			if !ok && wild != nil {
+				hit, ok = wild.lookup(norm)
+			}
+		} else if tree != nil {
+			hit, ok = tree.lookup(norm)
+		}
+		if !ok || hit.Action == ActionPass {
+			continue
+		}
+		hot.Set(norm, hit)
+		seeded++
+	}
+	return seeded
+}
+
 // Lookup returns a hit when the domain matched a policy.
 func (e *Engine) Lookup(name string) (Hit, bool) {
 	if !e.Enabled() {

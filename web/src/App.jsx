@@ -562,14 +562,22 @@ function Dashboard() {
             </a>
           </div>
           {(mon.top_blocked || []).length ? (
-            <ul>
-              {mon.top_blocked.map((n, i) => (
-                <li key={n.key} className="data-row text-sm mono" style={{ '--index': i }}>
-                  <span className="truncate">{n.key}</span>
-                  <span className="text-[var(--warn)] shrink-0">{n.count}</span>
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul>
+                {mon.top_blocked.slice(0, 15).map((n, i) => (
+                  <li key={n.key} className="data-row text-sm mono" style={{ '--index': i }}>
+                    <span className="truncate">{n.key}</span>
+                    <span className="text-[var(--warn)] shrink-0">{n.count}</span>
+                  </li>
+                ))}
+              </ul>
+              {(mon.blocked_cover || []).length ? (
+                <p className="text-xs text-[var(--muted)] mt-2 mono">
+                  cover{' '}
+                  {mon.blocked_cover.map((c) => `top${c.n}=${Number(c.percent).toFixed(0)}%`).join(' · ')}
+                </p>
+              ) : null}
+            </>
           ) : (
             <EmptyState title="No blocks yet" hint="Appears when RPZ or a plugin blocks a query." />
           )}

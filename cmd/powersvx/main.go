@@ -211,6 +211,11 @@ func main() {
 				} else if ok {
 					rpzEng.EndLoad(nil)
 					log.Info("rpz loaded from disk", "entries", n)
+					seedPath := filepath.Join(*dataDir, rpz.HotSeedPath)
+					if names, err := rpz.ReadHotSeed(seedPath); err == nil && len(names) > 0 {
+						s := rpzEng.SeedHot(names)
+						log.Info("rpz hot-seed from disk file", "names", len(names), "seeded", s)
+					}
 					return
 				}
 				n, err := rpzEng.LoadPolicies(policies, 15*time.Minute)
@@ -220,6 +225,11 @@ func main() {
 					return
 				}
 				log.Info("rpz loaded", "entries", n)
+				seedPath := filepath.Join(*dataDir, rpz.HotSeedPath)
+				if names, err := rpz.ReadHotSeed(seedPath); err == nil && len(names) > 0 {
+					s := rpzEng.SeedHot(names)
+					log.Info("rpz hot-seed from disk file", "names", len(names), "seeded", s)
+				}
 			}()
 		}
 	}
@@ -350,6 +360,33 @@ func main() {
 		rest.SetSessionStore(sessStore)
 	}
 	rest.StartRPZAutoUpdate()
+	if n := cfg.RPZ.HotSeedTopN; n > 0 {
+		seedPath := filepath.Join(*dataDir, rpz.HotSeedPath)
+		go func() {
+			// Warm shortly after start, then refresh from live top-blocked.
+			t := time.NewTicker(5 * time.Minute)
+			defer t.Stop()
+			run := func() {
+				top := mon.TopBlockedNames(n)
+				if len(top) == 0 {
+					return
+				}
+				names := make([]string, 0, len(top))
+				for _, c := range top {
+					names = append(names, c.Key)
+				}
+				_ = rpz.WriteHotSeed(seedPath, names)
+				s := rpzEng.SeedHot(names)
+				log.Info("rpz hot-seed refreshed", "top_n", n, "names", len(names), "seeded", s)
+			}
+			time.Sleep(30 * time.Second)
+			run()
+			for range t.C {
+				run()
+			}
+		}()
+		log.Info("rpz hot-seed loop enabled", "top_n", n, "path", seedPath)
+	}
 	if db != nil {
 		retCtx, retCancel := context.WithCancel(context.Background())
 		defer retCancel()

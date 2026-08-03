@@ -40,18 +40,20 @@ negative_ttl = 60
 serve_stale = true
 stale_ttl = 120
 # Prefetch when remaining TTL below this percent of stored lifetime (0 = off).
-prefetch_pct = 15
+# Keep low under multi-k QPS — prefetch storms burn CPU for little hit-rate gain.
+prefetch_pct = 5
 
 [resolver]
-# Recursive to root first; short forward_on_fail only when root iteration fails.
-mode = "recursive"
+# Forward-first: under multi-k QPS, recursive-to-root is the expensive path.
+# Put the fastest / local upstream first; Cloudflare/Google as backup.
+mode = "forward"
 forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
-forward_on_fail = true
+forward_on_fail = false
 dnssec_mode = "off"
 edns_buffer_size = 1232
-timeout_ms = 2000
-# Tight fallback budget; under load-shed recursive is skipped entirely.
-fallback_timeout_ms = 350
+timeout_ms = 1500
+# Tight fallback budget unused in forward mode; kept for UI toggles back to recursive.
+fallback_timeout_ms = 250
 # Hard admit cap (~Unbound reqlist). Full = fail-fast SERVFAIL, no queue pile-up.
 max_inflight = 1536
 ecs_enabled = false
@@ -71,8 +73,10 @@ global_burst = 0
 
 [rpz]
 enabled = true
-# Exact-hit LRU in cold/disk mode (default engine 500k). Larger = fewer Badger lookups on hot names.
-hot_cache_max = 1000000
+# Exact-hit LRU in cold/disk mode. 300k covers hot blockers without multi-GB RSS.
+hot_cache_max = 300000
+# Seed hot cache from top blocked qnames every 5m (+ persist under data-dir).
+hot_seed_top_n = 20000
 # Hosts HTTP feeds: daily at 04:00 local (TZ=Asia/Jakarta in compose). 0 interval disables.
 update_interval = 86400
 update_at = "04:00"

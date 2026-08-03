@@ -38,17 +38,17 @@ min_ttl = 120
 negative_ttl = 60
 serve_stale = true
 stale_ttl = 60
-prefetch_pct = 10
+prefetch_pct = 5
 
 [resolver]
-# Recursive to root first; short forward_on_fail only when root iteration fails.
-mode = "recursive"
+# Forward-first keeps CPU predictable; switch to recursive in UI if needed.
+mode = "forward"
 forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
-forward_on_fail = true
+forward_on_fail = false
 dnssec_mode = "off"
 edns_buffer_size = 1232
-timeout_ms = 2000
-fallback_timeout_ms = 400
+timeout_ms = 1500
+fallback_timeout_ms = 250
 max_inflight = 1024
 ecs_enabled = false
 ecs_prefix_v4 = 24
@@ -65,6 +65,8 @@ global_burst = 0
 
 [rpz]
 enabled = true
+hot_cache_max = 300000
+hot_seed_top_n = 20000
 update_interval = 3600
 axfr_update_interval = 86400
 policies = [

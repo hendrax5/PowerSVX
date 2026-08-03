@@ -62,9 +62,20 @@ type Collector struct {
 }
 
 const (
-	maxBlockedNames = 200
+	maxBlockedNames = 5000 // retain enough names for hot-seed + cover analysis
 	recentCap       = 50
 )
+
+// default cover thresholds for dashboard "how many top names catch X% of blocks"
+var defaultCoverNs = []int{1000, 5000, 20000, 50000}
+
+// CoverStat is cumulative block-hit coverage if only the top-N blocked names are kept.
+type CoverStat struct {
+	N       int     `json:"n"`
+	Names   int     `json:"names"` // min(n, tracked)
+	Hits    uint64  `json:"hits"`
+	Percent float64 `json:"percent"`
+}
 
 // RecentQuery is a short live query for the dashboard (Pi-hole style).
 type RecentQuery struct {
@@ -249,6 +260,7 @@ type Snapshot struct {
 	TopClients       []Count           `json:"top_clients"`
 	TopSubnets       []Count           `json:"top_subnets"`
 	TopBlocked       []Count           `json:"top_blocked"`
+	BlockedCover     []CoverStat       `json:"blocked_cover"`
 	Latency          Latency           `json:"latency"`
 	Paths            []Count           `json:"paths"`
 	Errors           []Count           `json:"errors"`
@@ -272,6 +284,7 @@ func (c *Collector) Snapshot(allowCIDRs []string, activeBlocked []Count) Snapsho
 		TopClients:      []Count{},
 		TopSubnets:      []Count{},
 		TopBlocked:      []Count{},
+		BlockedCover:    []CoverStat{},
 		Paths:           []Count{},
 		Errors:          []Count{},
 		RateLimitTop:    []Count{},
@@ -315,7 +328,8 @@ func (c *Collector) Snapshot(allowCIDRs []string, activeBlocked []Count) Snapsho
 
 	out.TopClients = topN(c.clients, 15)
 	out.TopSubnets = topN(c.subnets, 15)
-	out.TopBlocked = topN(c.blocked, 15)
+	out.TopBlocked = topN(c.blocked, 50)
+	out.BlockedCover = blockedCoverLocked(c.blocked, defaultCoverNs)
 	out.Paths = topN(c.paths, 20)
 	out.Errors = topN(c.errors, 20)
 	out.ACLAllow = c.aclAllow
@@ -439,6 +453,47 @@ func topN(m map[string]uint64, n int) []Count {
 	})
 	if len(out) > n {
 		out = out[:n]
+	}
+	return out
+}
+
+// TopBlockedNames returns up to n most frequently blocked qnames (for RPZ hot-seed).
+func (c *Collector) TopBlockedNames(n int) []Count {
+	if c == nil || n <= 0 {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return topN(c.blocked, n)
+}
+
+func blockedCoverLocked(m map[string]uint64, ns []int) []CoverStat {
+	if len(m) == 0 || len(ns) == 0 {
+		return []CoverStat{}
+	}
+	ranked := topN(m, len(m))
+	var total uint64
+	for _, c := range ranked {
+		total += c.Count
+	}
+	out := make([]CoverStat, 0, len(ns))
+	for _, n := range ns {
+		if n <= 0 {
+			continue
+		}
+		take := n
+		if take > len(ranked) {
+			take = len(ranked)
+		}
+		var hits uint64
+		for i := 0; i < take; i++ {
+			hits += ranked[i].Count
+		}
+		pct := 0.0
+		if total > 0 {
+			pct = 100 * float64(hits) / float64(total)
+		}
+		out = append(out, CoverStat{N: n, Names: take, Hits: hits, Percent: pct})
 	}
 	return out
 }
