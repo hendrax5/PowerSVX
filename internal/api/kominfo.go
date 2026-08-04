@@ -86,7 +86,7 @@ func (a *API) saveRuntimeFromServer(cur server.RuntimeFlags) {
 		maxMB = a.cfg.Logging.QueryLogMaxSizeMB
 		sampleRate = a.cfg.Logging.QueryLogSampleRate
 	}
-	_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), config.RuntimeSettings{
+	_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), a.withPreservedTProxy(config.RuntimeSettings{
 		GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 		RateLimitQPS: &rlLive.QPS, RateLimitBurst: &rlLive.Burst, RateLimitBlockDur: &rlLive.BlockDuration,
 		RateLimitWhitelist: rlLive.Whitelist,
@@ -97,5 +97,5 @@ func (a *API) saveRuntimeFromServer(cur server.RuntimeFlags) {
 		AxfrSyncEnabled: &en,
 		AxfrSyncTargets: targets,
 		KominfoSyncEnabled: &en, // legacy alias
-	})
+	}))
 }

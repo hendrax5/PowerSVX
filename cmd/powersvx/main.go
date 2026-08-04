@@ -442,6 +442,12 @@ func main() {
 		}
 	}()
 
+	if err := api.SyncTProxyOnStartup(*dataDir); err != nil {
+		log.Warn("tproxy intercept apply on startup failed", "err", err)
+	} else {
+		log.Info("tproxy listen", "enabled", cfg.Server.TProxy)
+	}
+
 	log.Info("PowerSVX started",
 		"version", api.Version,
 		"udp", cfg.ListenAddr(cfg.Server.UDPPort),

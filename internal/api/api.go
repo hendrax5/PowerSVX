@@ -95,6 +95,10 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/zones", a.withAuth(a.handleZones))
 	mux.HandleFunc("/api/v1/zones/", a.withAuth(a.handleZoneSub))
 	mux.HandleFunc("/api/v1/settings", a.withAuth(a.handleSettings))
+	mux.HandleFunc("/api/v1/tproxy", a.withAuth(a.handleTProxy))
+	mux.HandleFunc("/api/v1/tproxy/apply", a.withAuth(a.handleTProxyApply))
+	mux.HandleFunc("/api/v1/tproxy/disable", a.withAuth(a.handleTProxyDisable))
+	mux.HandleFunc("/api/v1/tproxy/restart", a.withAuth(a.handleTProxyRestart))
 	mux.HandleFunc("/api/v1/secondary", a.withAuth(a.handleSecondary))
 	mux.HandleFunc("/api/v1/secondary/", a.withAuth(a.handleSecondarySub))
 	mux.HandleFunc("/api/v1/kominfo-sync", a.withAuth(a.handleAxfrSync)) // legacy alias
@@ -909,7 +913,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			maxMB = a.cfg.Logging.QueryLogMaxSizeMB
 			sampleRate = a.cfg.Logging.QueryLogSampleRate
 		}
-		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), config.RuntimeSettings{
+		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), a.withPreservedTProxy(config.RuntimeSettings{
 			GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 			RateLimitQPS: &rlLive.QPS, RateLimitBurst: &rlLive.Burst, RateLimitBlockDur: &rlLive.BlockDuration,
 			RateLimitWhitelist: rlLive.Whitelist,
@@ -919,7 +923,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			Forwarders: fwd, ForwardZones: fz, AllowQuery: allow, DenyQuery: deny,
 			AxfrSyncEnabled: &kominfoOn, AxfrSyncTargets: axfrTargets,
 			KominfoSyncEnabled: &kominfoOn,
-		})
+		}))
 		writeJSON(w, http.StatusOK, a.settingsPayload())
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

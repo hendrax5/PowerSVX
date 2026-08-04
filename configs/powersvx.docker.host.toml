@@ -11,7 +11,7 @@ dot_port = 853
 doh_port = 443
 doq_port = 784
 workers = 0
-tproxy = false
+tproxy = true
 
 [server.tls]
 enabled = true
@@ -31,17 +31,17 @@ max_connections = 20
 [cache]
 type = "badger"
 path = "/data/cache"
-# Larger L1 (entries ≈ max_size_mb * 1024) raises hit ratio under multi‑10k QPS.
-max_size_mb = 384
+# ~2M L1 entries (max_size_mb * 1024). Needed for ≥97% hit rate toward 40k QPS recursive.
+max_size_mb = 2048
 ttl_seconds = 300
-min_ttl = 120
-negative_ttl = 60
+min_ttl = 180
+negative_ttl = 180
 # Serve expired answers briefly (Unbound-like) while refreshing in background.
 serve_stale = true
-stale_ttl = 120
+stale_ttl = 300
 # Prefetch when remaining TTL below this percent of stored lifetime (0 = off).
-# Keep low under multi-k QPS — prefetch storms burn CPU for little hit-rate gain.
-prefetch_pct = 5
+# Keep off under multi-k QPS — prefetch storms burn CPU for little hit-rate gain.
+prefetch_pct = 0
 
 [resolver]
 # Forward-first: under multi-k QPS, recursive-to-root is the expensive path.
@@ -51,11 +51,11 @@ forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
 forward_on_fail = false
 dnssec_mode = "off"
 edns_buffer_size = 1232
-timeout_ms = 1500
+timeout_ms = 1200
 # Tight fallback budget unused in forward mode; kept for UI toggles back to recursive.
-fallback_timeout_ms = 250
+fallback_timeout_ms = 200
 # Hard admit cap (~Unbound reqlist). Full = fail-fast SERVFAIL, no queue pile-up.
-max_inflight = 1536
+max_inflight = 2048
 ecs_enabled = false
 ecs_prefix_v4 = 24
 ecs_prefix_v6 = 56

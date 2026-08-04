@@ -91,9 +91,11 @@ const (
 	maxRecursionDepth = 16
 	defaultHopTimeout = 300 * time.Millisecond
 	maxNSLookups      = 6
-	// raceParallel: more parallel NS probes cuts recursive latency under good RTT;
-	// 4 is a balance vs UDP amplification to roots/TLD.
-	raceParallel = 4
+	// raceParallel: 1 under multi-k QPS recursive — parallel NS races amplify
+	// UDP/goroutines far more than they cut latency when the box is saturated.
+	raceParallel = 1
+	// Cap concurrent glue-less NS A/AAAA walks (each is a nested recursive tree).
+	nsLookupParallel = 2
 )
 
 func (r *Resolver) resolveRecursive(ctx context.Context, qname string, qtype uint16) (*dns.Msg, error) {
@@ -206,9 +208,12 @@ func (r *Resolver) resolveNSAddrs(ctx context.Context, nsNames []string, depth i
 		addrs []string
 	}
 	ch := make(chan result, len(needLookup))
+	sem := make(chan struct{}, nsLookupParallel)
 	for _, ns := range needLookup {
 		ns := ns
+		sem <- struct{}{}
 		go func() {
+			defer func() { <-sem }()
 			defer func() {
 				if recover() != nil {
 					ch <- result{name: ns}
@@ -315,31 +320,16 @@ func (r *Resolver) exchange(ctx context.Context, req *dns.Msg, addr string) (*dn
 	ectx, cancel := context.WithTimeout(ctx, hop)
 	defer cancel()
 
-	type result struct {
-		resp *dns.Msg
-		err  error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		cli := &dns.Client{Net: "udp", Timeout: hop, UDPSize: r.BufSize}
-		resp, _, err := cli.Exchange(req.Copy(), addr)
-		if err == nil && resp != nil && resp.Truncated {
-			// TCP fallback on TC bit.
-			tcli := &dns.Client{Net: "tcp", Timeout: hop, UDPSize: r.BufSize}
-			resp2, _, err2 := tcli.Exchange(req.Copy(), addr)
-			if err2 == nil && resp2 != nil {
-				ch <- result{resp2, nil}
-				return
-			}
+	cli := &dns.Client{Net: "udp", Timeout: hop, UDPSize: r.BufSize}
+	resp, _, err := cli.ExchangeContext(ectx, req.Copy(), addr)
+	if err == nil && resp != nil && resp.Truncated {
+		tcli := &dns.Client{Net: "tcp", Timeout: hop, UDPSize: r.BufSize}
+		resp2, _, err2 := tcli.ExchangeContext(ectx, req.Copy(), addr)
+		if err2 == nil && resp2 != nil {
+			return resp2, nil
 		}
-		ch <- result{resp, err}
-	}()
-	select {
-	case <-ectx.Done():
-		return nil, ectx.Err()
-	case res := <-ch:
-		return res.resp, res.err
 	}
+	return resp, err
 }
 
 func hasAnswer(msg *dns.Msg, qname string, qtype uint16) bool {

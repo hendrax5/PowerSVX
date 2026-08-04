@@ -30,6 +30,13 @@ type RuntimeSettings struct {
 	KominfoSyncEnabled   *bool    `json:"kominfo_sync_enabled,omitempty"` // legacy
 	AxfrSyncEnabled      *bool    `json:"axfr_sync_enabled,omitempty"`
 	AxfrSyncTargets      []string `json:"axfr_sync_targets,omitempty"`
+	// TPROXY (Linux transparent intercept)
+	TProxyListen    *bool    `json:"tproxy_listen,omitempty"`    // IP_TRANSPARENT sockets (needs restart)
+	TProxyIntercept *bool    `json:"tproxy_intercept,omitempty"` // nftables + ip rule (live apply)
+	TProxyIface     string   `json:"tproxy_iface,omitempty"`
+	TProxyMode      string   `json:"tproxy_mode,omitempty"` // public | all | custom
+	TProxyResolvers []string `json:"tproxy_resolvers,omitempty"`
+	TProxyMark      *uint32  `json:"tproxy_mark,omitempty"`
 }
 
 func RuntimeSettingsPath(dir string) string {
@@ -128,5 +135,8 @@ func (c *Config) ApplyRuntimeSettings(s RuntimeSettings) {
 	}
 	if s.AxfrSyncTargets != nil {
 		c.KominfoSync.Targets = append([]string(nil), s.AxfrSyncTargets...)
+	}
+	if s.TProxyListen != nil {
+		c.Server.TProxy = *s.TProxyListen
 	}
 }

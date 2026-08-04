@@ -161,6 +161,12 @@ export const api = {
     }),
   runAxfrSync: () =>
     request('/api/v1/axfr-sync', { method: 'POST', body: '{}' }),
+  tproxy: () => request('/api/v1/tproxy'),
+  updateTProxy: (body) =>
+    request('/api/v1/tproxy', { method: 'PUT', body: JSON.stringify(body || {}) }),
+  applyTProxy: () => request('/api/v1/tproxy/apply', { method: 'POST', body: '{}' }),
+  disableTProxy: () => request('/api/v1/tproxy/disable', { method: 'POST', body: '{}' }),
+  restartTProxy: () => request('/api/v1/tproxy/restart', { method: 'POST', body: '{}' }),
   events: () => request('/api/v1/events'),
   eventsStreamURL() {
     const token = getToken()

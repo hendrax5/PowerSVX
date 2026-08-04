@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/dnssec"
 	"github.com/powersvx/powersvx/internal/ecs"
+	"golang.org/x/sync/singleflight"
 )
 
 // ErrAdmitRejected is returned when max_inflight is full (fail-fast, no queue wait).
@@ -38,8 +40,15 @@ type Resolver struct {
 	semCap          int
 	inflight        atomic.Int64
 	nsCache         *nsAddrCache
+	// coalesce identical in-flight recursive misses (qname+qtype) to one walk.
+	sf singleflight.Group
 	// OnForwarder is called after each forwarder attempt (addr, ok, latencyMS, errMsg).
 	OnForwarder func(addr string, ok bool, latencyMS int64, errMsg string)
+}
+
+type resolveResult struct {
+	msg  *dns.Msg
+	path string
 }
 
 func (r *Resolver) SetECSEnabled(on bool) {
@@ -146,17 +155,38 @@ func (r *Resolver) ResolveWithECS(ctx context.Context, req *dns.Msg, sub *ecs.Su
 	q := req.Question[0]
 	q.Name = config.NormalizeName(q.Name)
 
+	// Conditional / stub forwarders always win (longest-suffix match).
+	if addrs := r.matchForwardZone(q.Name); len(addrs) > 0 {
+		release, err := r.acquire(ctx)
+		if err != nil {
+			return nil, "", err
+		}
+		defer release()
+		msg, err := r.forwardTo(ctx, req, sub, addrs)
+		return msg, "conditional", err
+	}
+
+	// One recursive walk per identical qname+qtype in flight (cuts stampede under miss storms).
+	// Skip when ECS is active — answers are client-subnet specific.
+	if r.Mode == "recursive" && (sub == nil || !r.ECSEnabled) {
+		key := q.Name + "|" + strconv.FormatUint(uint64(q.Qtype), 10)
+		v, err, _ := r.sf.Do(key, func() (interface{}, error) {
+			msg, path, err := r.resolveAdmitted(ctx, req.Copy(), sub, q)
+			return resolveResult{msg: msg, path: path}, err
+		})
+		res, _ := v.(resolveResult)
+		return res.msg, res.path, err
+	}
+
+	return r.resolveAdmitted(ctx, req, sub, q)
+}
+
+func (r *Resolver) resolveAdmitted(ctx context.Context, req *dns.Msg, sub *ecs.Subnet, q dns.Question) (*dns.Msg, string, error) {
 	release, err := r.acquire(ctx)
 	if err != nil {
 		return nil, "", err
 	}
 	defer release()
-
-	// Conditional / stub forwarders always win (longest-suffix match).
-	if addrs := r.matchForwardZone(q.Name); len(addrs) > 0 {
-		msg, err := r.forwardTo(ctx, req, sub, addrs)
-		return msg, "conditional", err
-	}
 
 	switch r.Mode {
 	case "recursive":

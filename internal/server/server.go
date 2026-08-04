@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -79,6 +80,7 @@ type Server struct {
 	// refreshInflight dedupes background cache refresh/prefetch by cache key.
 	refreshInflight sync.Map // uint64 -> struct{}
 	udp     *dns.Server
+	udps    []*dns.Server // all UDP listeners (SO_REUSEPORT shard)
 	tcp     *dns.Server
 	dot     *dns.Server
 	dohHTTP  *http.Server
@@ -88,6 +90,8 @@ type Server struct {
 	doqCancel context.CancelFunc
 	queries  atomic.Uint64
 	blocked  atomic.Uint64
+	// resolveFailLogN samples WARN "resolve failed" under miss storms (1/128).
+	resolveFailLogN atomic.Uint64
 	started  time.Time
 	dotOn    bool
 	dohOn    bool
@@ -490,13 +494,20 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			}
 		}
 		cached := new(dns.Msg)
-		if err := cached.Unpack(entry.Wire); err != nil {
+		// Fast path: rewrite message ID in wire bytes (skip Unpack at multi‑10k QPS).
+		// Fall back to Unpack only when client sent EDNS COOKIE (must echo).
+		if opt := req.IsEdns0(); opt != nil && ednsHasCookie(opt) {
+			if err := cached.Unpack(entry.Wire); err != nil {
+				wire := resolver.RewriteID(entry.Wire, req.Id)
+				_, _ = w.Write(wire)
+			} else {
+				cached.Id = req.Id
+				resolver.PrepareClientResponse(req, cached)
+				_ = w.WriteMsg(cached)
+			}
+		} else {
 			wire := resolver.RewriteID(entry.Wire, req.Id)
 			_, _ = w.Write(wire)
-		} else {
-			cached.Id = req.Id
-			resolver.PrepareClientResponse(req, cached)
-			_ = w.WriteMsg(cached)
 		}
 		metrics.QueriesTotal.WithLabelValues(proto, pathLabel).Inc()
 		sec := time.Since(start).Seconds()
@@ -554,6 +565,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			m.SetReply(req)
 			m.RecursionAvailable = true
 			m.Rcode = dns.RcodeServerFailure
+			s.cacheResolveFailure(qname, qtype, ecsKey, viewName, geoTag, m)
 			_ = w.WriteMsg(m)
 			metrics.QueriesTotal.WithLabelValues(proto, "admit_rejected").Inc()
 			observe("SERVFAIL")
@@ -561,11 +573,16 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			note("admit_rejected", "SERVFAIL", false, false, false)
 			return
 		}
-		s.log.Warn("resolve failed", "kind", "resolve", "name", qname, "err", err)
+		// Sample logs — under multi-k QPS miss storms, WARN-per-fail burns CPU/disk.
+		if n := s.resolveFailLogN.Add(1); n&0x7f == 1 {
+			s.log.Warn("resolve failed", "kind", "resolve", "name", qname, "err", err, "sampled", n)
+		}
 		m := new(dns.Msg)
 		m.SetReply(req)
 		m.RecursionAvailable = true
 		m.Rcode = dns.RcodeServerFailure
+		// Negative-cache SERVFAIL so the same dead/slow name is not re-walked every query.
+		s.cacheResolveFailure(qname, qtype, ecsKey, viewName, geoTag, m)
 		_ = w.WriteMsg(m)
 		metrics.QueriesTotal.WithLabelValues(proto, "servfail").Inc()
 		observe("SERVFAIL")
@@ -628,6 +645,19 @@ func (s *Server) storeAndWrite(w dns.ResponseWriter, req, resp *dns.Msg) {
 	s.storeAndWriteScoped(w, req, resp, "", "", "")
 }
 
+// cacheResolveFailure stores SERVFAIL under NegativeTTL so repeated queries for
+// the same dead/slow name do not re-enter expensive recursive iteration.
+func (s *Server) cacheResolveFailure(qname string, qtype uint16, ecsKey, viewName, geoTag string, m *dns.Msg) {
+	if s == nil || s.cache == nil || m == nil {
+		return
+	}
+	wire, err := resolver.PackResponse(m)
+	if err != nil || len(wire) == 0 {
+		return
+	}
+	s.cache.SetScoped(config.NormalizeName(qname), qtype, ecsKey, viewName, geoTag, wire, dns.RcodeServerFailure, 0)
+}
+
 // scheduleRefresh runs at most one background resolve per cache key to refresh stale/prefetch entries.
 func (s *Server) scheduleRefresh(qname string, qtype uint16, ecsKey, viewName, geoTag string, sub *ecs.Subnet, orig *dns.Msg) {
 	if s == nil || s.res == nil || s.cache == nil || orig == nil || len(orig.Question) == 0 {
@@ -678,7 +708,7 @@ func (s *Server) ListenAndServe() error {
 	udpAddr := s.cfg.ListenAddr(s.cfg.Server.UDPPort)
 	tcpAddr := s.cfg.ListenAddr(s.cfg.Server.TCPPort)
 
-	errCh := make(chan error, 5)
+	errCh := make(chan error, 48)
 	s.doqCtx, s.doqCancel = context.WithCancel(context.Background())
 
 	accept := msgAcceptFunc
@@ -694,32 +724,75 @@ func (s *Server) ListenAndServe() error {
 	}
 
 	if s.cfg.Server.TProxy {
-		pc, err := tproxy.ListenUDP("udp", udpAddr)
-		if err != nil {
-			return fmt.Errorf("tproxy udp %s: %w", udpAddr, err)
+		nUDP := s.cfg.Server.Workers
+		if nUDP <= 0 {
+			nUDP = runtime.NumCPU()
+		}
+		if nUDP < 1 {
+			nUDP = 1
+		}
+		if nUDP > 32 {
+			nUDP = 32
+		}
+		for i := 0; i < nUDP; i++ {
+			pc, err := tproxy.ListenUDP("udp", udpAddr)
+			if err != nil {
+				return fmt.Errorf("tproxy udp %s shard %d: %w", udpAddr, i, err)
+			}
+			srv := &dns.Server{PacketConn: pc, Net: "udp", Handler: handler, UDPSize: 1232, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
+			if i == 0 {
+				s.udp = srv
+			}
+			s.udps = append(s.udps, srv)
+			idx := i
+			go func() {
+				s.log.Info("UDP listener starting", "addr", udpAddr, "tproxy", true, "shard", idx, "shards", nUDP)
+				errCh <- srv.ActivateAndServe()
+			}()
 		}
 		ln, err := tproxy.ListenTCP("tcp", tcpAddr)
 		if err != nil {
-			_ = pc.Close()
 			return fmt.Errorf("tproxy tcp %s: %w", tcpAddr, err)
 		}
-		s.udp = &dns.Server{PacketConn: pc, Net: "udp", Handler: handler, UDPSize: 1232, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
 		s.tcp = &dns.Server{Listener: ln, Net: "tcp", Handler: handler, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
-		go func() {
-			s.log.Info("UDP listener starting", "addr", udpAddr, "tproxy", true)
-			errCh <- s.udp.ActivateAndServe()
-		}()
 		go func() {
 			s.log.Info("TCP listener starting", "addr", tcpAddr, "tproxy", true)
 			errCh <- s.tcp.ActivateAndServe()
 		}()
 	} else {
-		s.udp = &dns.Server{Addr: udpAddr, Net: "udp", Handler: handler, UDPSize: 1232, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
+		nUDP := s.cfg.Server.Workers
+		if nUDP <= 0 {
+			nUDP = runtime.NumCPU()
+		}
+		if nUDP < 1 {
+			nUDP = 1
+		}
+		if nUDP > 32 {
+			nUDP = 32
+		}
+		reuse := nUDP > 1
+		for i := 0; i < nUDP; i++ {
+			srv := &dns.Server{
+				Addr:          udpAddr,
+				Net:           "udp",
+				Handler:       handler,
+				UDPSize:       1232,
+				ReusePort:     reuse,
+				MsgAcceptFunc: accept,
+				MsgInvalidFunc: invalid,
+				TsigSecret:    tsigMap,
+			}
+			if i == 0 {
+				s.udp = srv
+			}
+			s.udps = append(s.udps, srv)
+			idx := i
+			go func() {
+				s.log.Info("UDP listener starting", "addr", udpAddr, "shard", idx, "shards", nUDP, "reuseport", reuse)
+				errCh <- srv.ListenAndServe()
+			}()
+		}
 		s.tcp = &dns.Server{Addr: tcpAddr, Net: "tcp", Handler: handler, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
-		go func() {
-			s.log.Info("UDP listener starting", "addr", udpAddr)
-			errCh <- s.udp.ListenAndServe()
-		}()
 		go func() {
 			s.log.Info("TCP listener starting", "addr", tcpAddr)
 			errCh <- s.tcp.ListenAndServe()
@@ -782,7 +855,12 @@ func (s *Server) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var err error
-	for _, srv := range []*dns.Server{s.udp, s.tcp, s.dot} {
+	shutdownDNS := append([]*dns.Server{}, s.udps...)
+	shutdownDNS = append(shutdownDNS, s.tcp, s.dot)
+	if len(s.udps) == 0 && s.udp != nil {
+		shutdownDNS = append([]*dns.Server{s.udp}, s.tcp, s.dot)
+	}
+	for _, srv := range shutdownDNS {
 		if srv == nil {
 			continue
 		}
@@ -805,6 +883,18 @@ func (s *Server) Shutdown() error {
 
 func (s *Server) Stats() (queries uint64, uptime time.Duration) {
 	return s.queries.Load(), time.Since(s.started)
+}
+
+func ednsHasCookie(opt *dns.OPT) bool {
+	if opt == nil {
+		return false
+	}
+	for _, o := range opt.Option {
+		if _, ok := o.(*dns.EDNS0_COOKIE); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) Blocked() uint64 { return s.blocked.Load() }

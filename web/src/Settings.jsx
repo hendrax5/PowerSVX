@@ -6,6 +6,7 @@ import {
   GearSix,
   HardDrives,
   LockSimple,
+  Network,
   ShieldCheck,
   Stack,
 } from '@phosphor-icons/react'
@@ -70,6 +71,7 @@ function parseHash() {
   if (raw === 'tools') return { section: 'tools', tool: 'axfr' }
   if (raw === 'features' || raw === 'engines') return { section: 'engines', tool: 'axfr' }
   if (raw === 'rate_limit' || raw === 'ratelimit') return { section: 'rate-limit', tool: 'axfr' }
+  if (raw === 'transparent' || raw === 'intercept') return { section: 'tproxy', tool: 'axfr' }
   return { section: raw, tool: 'axfr' }
 }
 
@@ -98,6 +100,9 @@ export default function Settings({ tools = {} }) {
   const [fzEditIdx, setFzEditIdx] = useState(-1)
   const [rlWlInput, setRlWlInput] = useState('')
   const [rlWlEditIdx, setRlWlEditIdx] = useState(-1)
+  const [tproxy, setTproxy] = useState(null)
+  const [tpDraft, setTpDraft] = useState(null)
+  const [tpBusy, setTpBusy] = useState(false)
 
   const toDraft = (s) => ({
     geodns: !!s.geodns,
@@ -148,12 +153,24 @@ export default function Settings({ tools = {} }) {
     )
   }
 
+  const toTpDraft = (t) => ({
+    tproxy_listen: !!t.tproxy_listen,
+    tproxy_intercept: !!t.tproxy_intercept,
+    tproxy_iface: t.tproxy_iface || '',
+    tproxy_mode: t.tproxy_mode === 'all' || t.tproxy_mode === 'custom' ? t.tproxy_mode : 'public',
+    tproxy_resolvers: Array.isArray(t.tproxy_resolvers) ? t.tproxy_resolvers.join('\n') : '',
+  })
+
   const load = () =>
-    Promise.all([api.settings(), api.rpz()])
-      .then(([s, r]) => {
+    Promise.all([api.settings(), api.rpz(), api.tproxy().catch(() => null)])
+      .then(([s, r, t]) => {
         setSaved(s)
         setDraft(toDraft(s))
         setRpz(r)
+        if (t) {
+          setTproxy(t)
+          setTpDraft(toTpDraft(t))
+        }
       })
       .catch((e) => setErr(e.message))
 
@@ -429,6 +446,98 @@ export default function Settings({ tools = {} }) {
     }
   }
 
+  const tpDirty =
+    tproxy &&
+    tpDraft &&
+    (!!tpDraft.tproxy_listen !== !!tproxy.tproxy_listen ||
+      !!tpDraft.tproxy_intercept !== !!tproxy.tproxy_intercept ||
+      (tpDraft.tproxy_iface || '') !== (tproxy.tproxy_iface || '') ||
+      (tpDraft.tproxy_mode || 'public') !== (tproxy.tproxy_mode || 'public') ||
+      !sameList(tpDraft.tproxy_resolvers, tproxy.tproxy_resolvers || []))
+
+  const saveTProxy = async (extra = {}) => {
+    if (!tpDraft) return
+    setTpBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const body = {
+        tproxy_listen: !!tpDraft.tproxy_listen,
+        tproxy_intercept: !!tpDraft.tproxy_intercept,
+        tproxy_iface: (tpDraft.tproxy_iface || '').trim(),
+        tproxy_mode: tpDraft.tproxy_mode || 'public',
+        tproxy_resolvers: linesToList(tpDraft.tproxy_resolvers),
+        apply_now: true,
+        ...extra,
+      }
+      const t = await api.updateTProxy(body)
+      setTproxy(t)
+      setTpDraft(toTpDraft(t))
+      if (t.apply_error) {
+        setErr(t.apply_error)
+        setOk('Saved settings, but intercept apply failed')
+      } else {
+        setOk(
+          t.tproxy_listen_needs_restart
+            ? 'Saved — restart service to apply transparent sockets'
+            : 'Saved — intercept applied live',
+        )
+      }
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setTpBusy(false)
+    }
+  }
+
+  const applyTProxyNow = async () => {
+    setTpBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const t = await api.applyTProxy()
+      setTproxy(t)
+      setTpDraft(toTpDraft(t))
+      if (t.apply_error) setErr(t.apply_error)
+      else setOk('Intercept applied')
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setTpBusy(false)
+    }
+  }
+
+  const disableTProxyNow = async () => {
+    setTpBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const t = await api.disableTProxy()
+      setTproxy(t)
+      setTpDraft(toTpDraft(t))
+      if (t.apply_error) setErr(t.apply_error)
+      else setOk('Intercept disabled')
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setTpBusy(false)
+    }
+  }
+
+  const restartForTProxy = async () => {
+    if (!window.confirm('Restart PowerSVX to apply transparent socket (tproxy_listen)?')) return
+    setTpBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      await api.restartTProxy()
+      setOk('Restarting… reload this page in a few seconds')
+    } catch (ex) {
+      setErr(ex.message)
+      setTpBusy(false)
+    }
+  }
+
   const goSection = (id) => {
     setSection(id)
     setOk('')
@@ -443,6 +552,7 @@ export default function Settings({ tools = {} }) {
     { id: 'rate-limit', label: 'Rate limit', hint: 'Per-IP caps', Icon: Gauge, dirty: dirtyFlags['rate-limit'] },
     { id: 'engines', label: 'Engines', hint: 'Optional features', Icon: GearSix, dirty: dirtyFlags.engines },
     { id: 'logging', label: 'Logging', hint: 'Query history', Icon: ClipboardText, dirty: dirtyFlags.logging },
+    { id: 'tproxy', label: 'TPROXY', hint: 'Transparent DNS', Icon: Network, dirty: !!tpDirty },
     { id: 'status', label: 'Status', hint: 'Read-only', Icon: ChartLine, dirty: false },
     { id: 'tools', label: 'Tools', hint: 'AXFR, ACME…', Icon: HardDrives, dirty: false },
   ]
@@ -500,7 +610,36 @@ export default function Settings({ tools = {} }) {
             ? `Tools · ${toolMeta?.label || 'AXFR'}`
             : `${sectionMeta?.label || 'DNS'} · ${sectionMeta?.hint || ''}`
         }
-        actions={editableSection && isAdmin ? saveBar : null}
+        actions={
+          editableSection && isAdmin
+            ? saveBar
+            : section === 'tproxy' && isAdmin
+              ? (
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={!tpDirty || tpBusy}
+                      onClick={() => {
+                        if (tproxy) setTpDraft(toTpDraft(tproxy))
+                        setOk('')
+                        setErr('')
+                      }}
+                      className="btn btn-secondary min-h-[44px] disabled:opacity-40"
+                    >
+                      Discard
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!tpDirty || tpBusy}
+                      onClick={() => saveTProxy()}
+                      className="btn btn-primary min-h-[44px] disabled:opacity-40"
+                    >
+                      {tpBusy ? 'Saving…' : 'Save & apply'}
+                    </button>
+                  </div>
+                )
+              : null
+        }
       />
 
       {!isAdmin ? (
@@ -939,6 +1078,188 @@ export default function Settings({ tools = {} }) {
             </SettingSection>
           ) : null}
 
+          {section === 'tproxy' ? (
+            !tproxy || !tpDraft ? (
+              <SettingCallout tone="warn">TPROXY status unavailable (API not ready or not Linux).</SettingCallout>
+            ) : (
+              <>
+                {!tproxy.supported ? (
+                  <SettingCallout tone="warn">
+                    OS intercept control requires Linux (nftables + iproute2). Socket listen flag can still be saved for Linux hosts.
+                  </SettingCallout>
+                ) : null}
+                {tproxy.status?.warning ? <SettingCallout tone="warn">{tproxy.status.warning}</SettingCallout> : null}
+                {tpDraft.tproxy_mode === 'all' ? (
+                  <SettingCallout tone="warn">
+                    Mode <span className="mono">all</span> intercepts every DNS packet on the interface — dangerous on BGP/transit. Prefer{' '}
+                    <span className="mono">public</span>.
+                  </SettingCallout>
+                ) : null}
+                {tproxy.tproxy_listen_needs_restart ? (
+                  <SettingCallout tone="warn">
+                    Transparent socket setting differs from the running process — click Restart service after save.
+                  </SettingCallout>
+                ) : null}
+
+                <SettingSection
+                  id="settings-tproxy-socket-heading"
+                  title="Transparent sockets"
+                  hint="IP_TRANSPARENT + SO_REUSEPORT. Needs process restart (compose unless-stopped)."
+                >
+                  <SettingToggle
+                    label="tproxy_listen"
+                    hint={
+                      tproxy.tproxy_listen_active
+                        ? 'Active in this process'
+                        : 'Not active until restart'
+                    }
+                    pressed={!!tpDraft.tproxy_listen}
+                    disabled={tpBusy || !isAdmin}
+                    dirty={!!tpDraft.tproxy_listen !== !!tproxy.tproxy_listen}
+                    onToggle={() => {
+                      setOk('')
+                      setErr('')
+                      setTpDraft((d) => ({ ...d, tproxy_listen: !d.tproxy_listen }))
+                    }}
+                  />
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    <button
+                      type="button"
+                      disabled={tpBusy || !isAdmin || !tproxy.tproxy_listen_needs_restart}
+                      onClick={restartForTProxy}
+                      className="btn btn-secondary min-h-[40px] disabled:opacity-40"
+                    >
+                      Restart service
+                    </button>
+                  </div>
+                </SettingSection>
+
+                <SettingSection
+                  id="settings-tproxy-intercept-heading"
+                  title="Packet intercept"
+                  hint="nftables TPROXY + ip rule (live). Does not flush the host ruleset."
+                >
+                  <SettingToggle
+                    label="Intercept DNS"
+                    hint="Install/remove powersvx_tproxy nft table and fwmark routing"
+                    pressed={!!tpDraft.tproxy_intercept}
+                    disabled={tpBusy || !isAdmin}
+                    dirty={!!tpDraft.tproxy_intercept !== !!tproxy.tproxy_intercept}
+                    onToggle={() => {
+                      setOk('')
+                      setErr('')
+                      setTpDraft((d) => ({ ...d, tproxy_intercept: !d.tproxy_intercept }))
+                    }}
+                  />
+
+                  <div className="grid gap-3 sm:grid-cols-2 mt-4">
+                    <label className="block text-xs space-y-1">
+                      <span className="text-[var(--muted)]">Interface</span>
+                      <select
+                        className="input w-full"
+                        disabled={tpBusy || !isAdmin}
+                        value={tpDraft.tproxy_iface || ''}
+                        onChange={(e) => {
+                          setOk('')
+                          setErr('')
+                          setTpDraft((d) => ({ ...d, tproxy_iface: e.target.value }))
+                        }}
+                      >
+                        <option value="">Auto ({tproxy.tproxy_iface || 'detect'})</option>
+                        {(tproxy.ifaces || []).map((i) => (
+                          <option key={i.name} value={i.name}>
+                            {i.name}
+                            {i.up ? '' : ' (down)'}
+                            {i.addrs?.length ? ` · ${i.addrs[0]}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block text-xs space-y-1">
+                      <span className="text-[var(--muted)]">Mode</span>
+                      <select
+                        className="input w-full"
+                        disabled={tpBusy || !isAdmin}
+                        value={tpDraft.tproxy_mode || 'public'}
+                        onChange={(e) => {
+                          setOk('')
+                          setErr('')
+                          setTpDraft((d) => ({ ...d, tproxy_mode: e.target.value }))
+                        }}
+                      >
+                        <option value="public">public — known resolvers only</option>
+                        <option value="custom">custom — your resolver list</option>
+                        <option value="all">all — every DNS on iface (danger)</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  {tpDraft.tproxy_mode === 'custom' || tpDraft.tproxy_mode === 'public' ? (
+                    <label className="block text-xs space-y-1 mt-3">
+                      <span className="text-[var(--muted)]">
+                        Resolver IPs {tpDraft.tproxy_mode === 'public' ? '(optional override)' : '(required)'}
+                      </span>
+                      <textarea
+                        className="input mono w-full min-h-[96px]"
+                        disabled={tpBusy || !isAdmin}
+                        placeholder={(tproxy.default_resolvers || []).join('\n')}
+                        value={tpDraft.tproxy_resolvers}
+                        onChange={(e) => {
+                          setOk('')
+                          setErr('')
+                          setTpDraft((d) => ({ ...d, tproxy_resolvers: e.target.value }))
+                        }}
+                      />
+                    </label>
+                  ) : null}
+
+                  <div className="flex flex-wrap gap-2 mt-4">
+                    <button
+                      type="button"
+                      disabled={tpBusy || !isAdmin}
+                      onClick={applyTProxyNow}
+                      className="btn btn-primary min-h-[40px] disabled:opacity-40"
+                    >
+                      Apply intercept
+                    </button>
+                    <button
+                      type="button"
+                      disabled={tpBusy || !isAdmin}
+                      onClick={disableTProxyNow}
+                      className="btn btn-secondary min-h-[40px] disabled:opacity-40"
+                    >
+                      Disable intercept
+                    </button>
+                  </div>
+                </SettingSection>
+
+                <SettingSection id="settings-tproxy-status-heading" title="Live counters" hint="From nftables table inet powersvx_tproxy.">
+                  <dl className="settings-status-dl">
+                    {[
+                      ['Applied', tproxy.status?.applied ? 'yes' : 'no'],
+                      ['Route (fwmark→100)', tproxy.status?.route_ok ? 'yes' : 'no'],
+                      ['Iface', tproxy.status?.iface || '—'],
+                      ['Mode', tproxy.status?.mode || '—'],
+                      ['UDP packets', tproxy.status?.udp_packets ?? 0],
+                      ['TCP packets', tproxy.status?.tcp_packets ?? 0],
+                      ['UDP bytes', tproxy.status?.udp_bytes ?? 0],
+                      ['TCP bytes', tproxy.status?.tcp_bytes ?? 0],
+                      ['Last error', tproxy.status?.last_error || '—'],
+                    ].map(([k, v]) => (
+                      <div key={k} className="settings-status-row">
+                        <dt>{k}</dt>
+                        <dd className="mono">{String(v)}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <p className="text-[11px] text-[var(--muted)] mt-3 leading-relaxed">
+                    {tproxy.note}
+                  </p>
+                </SettingSection>
+              </>
+            )
+          ) : null}
+
           {section === 'status' ? (
             <SettingSection id="settings-status-heading" title="Server status" hint="Read-only. Change these in the config file if needed.">
               <dl className="settings-status-dl">
@@ -993,12 +1314,39 @@ export default function Settings({ tools = {} }) {
         </div>
       </div>
 
-      {dirty && isAdmin ? (
+      {((dirty && isAdmin) || (tpDirty && isAdmin && section === 'tproxy')) ? (
         <div className="settings-sticky-bar panel">
           <span className="text-sm text-[var(--warn)]">
-            Unsaved · {dirtyCount} section{dirtyCount === 1 ? '' : 's'}
+            {section === 'tproxy' && tpDirty
+              ? 'Unsaved TPROXY changes'
+              : `Unsaved · ${dirtyCount} section${dirtyCount === 1 ? '' : 's'}`}
           </span>
-          {saveBar}
+          {section === 'tproxy' ? (
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={!tpDirty || tpBusy}
+                onClick={() => {
+                  if (tproxy) setTpDraft(toTpDraft(tproxy))
+                  setOk('')
+                  setErr('')
+                }}
+                className="btn btn-secondary min-h-[44px] disabled:opacity-40"
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                disabled={!tpDirty || tpBusy}
+                onClick={() => saveTProxy()}
+                className="btn btn-primary min-h-[44px] disabled:opacity-40"
+              >
+                {tpBusy ? 'Saving…' : 'Save & apply'}
+              </button>
+            </div>
+          ) : (
+            saveBar
+          )}
         </div>
       ) : null}
     </div>

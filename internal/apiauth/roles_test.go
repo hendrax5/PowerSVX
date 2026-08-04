@@ -25,6 +25,12 @@ func TestResolveAndRBAC(t *testing.T) {
 	if AllowPath(RoleOperator, http.MethodPut, "/api/v1/settings") {
 		t.Fatal("operator must not change settings")
 	}
+	if AllowPath(RoleOperator, http.MethodPut, "/api/v1/tproxy") {
+		t.Fatal("operator must not change tproxy")
+	}
+	if !AllowPath(RoleOperator, http.MethodGet, "/api/v1/tproxy") {
+		t.Fatal("operator may read tproxy status")
+	}
 	if AllowPath(RoleOperator, http.MethodPost, "/api/v1/backup") {
 		t.Fatal("operator must not restore backup")
 	}
