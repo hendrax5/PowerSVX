@@ -447,6 +447,9 @@ func main() {
 	} else {
 		log.Info("tproxy listen", "enabled", cfg.Server.TProxy)
 	}
+	if err := api.SyncConntrackOnStartup(*dataDir); err != nil {
+		log.Warn("conntrack apply on startup failed", "err", err)
+	}
 
 	log.Info("PowerSVX started",
 		"version", api.Version,

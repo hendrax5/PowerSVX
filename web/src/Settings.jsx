@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   ChartLine,
   ClipboardText,
+  Cpu,
   Gauge,
   GearSix,
   HardDrives,
@@ -72,6 +73,7 @@ function parseHash() {
   if (raw === 'features' || raw === 'engines') return { section: 'engines', tool: 'axfr' }
   if (raw === 'rate_limit' || raw === 'ratelimit') return { section: 'rate-limit', tool: 'axfr' }
   if (raw === 'transparent' || raw === 'intercept') return { section: 'tproxy', tool: 'axfr' }
+  if (raw === 'os' || raw === 'kernel' || raw === 'conntrack') return { section: 'conntrack', tool: 'axfr' }
   return { section: raw, tool: 'axfr' }
 }
 
@@ -103,6 +105,9 @@ export default function Settings({ tools = {} }) {
   const [tproxy, setTproxy] = useState(null)
   const [tpDraft, setTpDraft] = useState(null)
   const [tpBusy, setTpBusy] = useState(false)
+  const [conntrack, setConntrack] = useState(null)
+  const [ctDraft, setCtDraft] = useState(null)
+  const [ctBusy, setCtBusy] = useState(false)
 
   const toDraft = (s) => ({
     geodns: !!s.geodns,
@@ -161,15 +166,31 @@ export default function Settings({ tools = {} }) {
     tproxy_resolvers: Array.isArray(t.tproxy_resolvers) ? t.tproxy_resolvers.join('\n') : '',
   })
 
+  const toCtDraft = (c) => ({
+    conntrack_managed: !!c.conntrack_managed,
+    conntrack_max: Number(c.conntrack_max) || Number(c.default_max) || 2097152,
+    conntrack_hashsize: Number(c.conntrack_hashsize) || 0,
+    conntrack_persist: c.conntrack_persist !== false,
+  })
+
   const load = () =>
-    Promise.all([api.settings(), api.rpz(), api.tproxy().catch(() => null)])
-      .then(([s, r, t]) => {
+    Promise.all([
+      api.settings(),
+      api.rpz(),
+      api.tproxy().catch(() => null),
+      api.conntrack().catch(() => null),
+    ])
+      .then(([s, r, t, ct]) => {
         setSaved(s)
         setDraft(toDraft(s))
         setRpz(r)
         if (t) {
           setTproxy(t)
           setTpDraft(toTpDraft(t))
+        }
+        if (ct) {
+          setConntrack(ct)
+          setCtDraft(toCtDraft(ct))
         }
       })
       .catch((e) => setErr(e.message))
@@ -538,6 +559,74 @@ export default function Settings({ tools = {} }) {
     }
   }
 
+  const ctDirty =
+    conntrack &&
+    ctDraft &&
+    (!!ctDraft.conntrack_managed !== !!conntrack.conntrack_managed ||
+      Number(ctDraft.conntrack_max) !== Number(conntrack.conntrack_max || 0) ||
+      Number(ctDraft.conntrack_hashsize) !== Number(conntrack.conntrack_hashsize || 0) ||
+      !!ctDraft.conntrack_persist !== (conntrack.conntrack_persist !== false))
+
+  const saveConntrack = async () => {
+    if (!ctDraft) return
+    setCtBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const body = {
+        conntrack_managed: !!ctDraft.conntrack_managed,
+        conntrack_max: Number(ctDraft.conntrack_max) || 0,
+        conntrack_hashsize: Number(ctDraft.conntrack_hashsize) || 0,
+        conntrack_persist: !!ctDraft.conntrack_persist,
+        apply_now: true,
+      }
+      const c = await api.updateConntrack(body)
+      setConntrack(c)
+      setCtDraft(toCtDraft(c))
+      if (c.apply_error) {
+        setErr(c.apply_error)
+        setOk('Saved settings, but live apply had issues')
+      } else {
+        setOk(ctDraft.conntrack_managed ? 'Saved — conntrack applied' : 'Saved — management off (kernel left as-is)')
+      }
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setCtBusy(false)
+    }
+  }
+
+  const applyConntrackNow = async () => {
+    setCtBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const c = await api.applyConntrack()
+      setConntrack(c)
+      setCtDraft(toCtDraft(c))
+      if (c.apply_error) setErr(c.apply_error)
+      else setOk('Conntrack limits applied')
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setCtBusy(false)
+    }
+  }
+
+  const refreshConntrack = async () => {
+    setCtBusy(true)
+    setErr('')
+    try {
+      const c = await api.conntrack()
+      setConntrack(c)
+      if (!ctDirty) setCtDraft(toCtDraft(c))
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setCtBusy(false)
+    }
+  }
+
   const goSection = (id) => {
     setSection(id)
     setOk('')
@@ -553,6 +642,7 @@ export default function Settings({ tools = {} }) {
     { id: 'engines', label: 'Engines', hint: 'Optional features', Icon: GearSix, dirty: dirtyFlags.engines },
     { id: 'logging', label: 'Logging', hint: 'Query history', Icon: ClipboardText, dirty: dirtyFlags.logging },
     { id: 'tproxy', label: 'TPROXY', hint: 'Transparent DNS', Icon: Network, dirty: !!tpDirty },
+    { id: 'conntrack', label: 'OS', hint: 'Conntrack / kernel', Icon: Cpu, dirty: !!ctDirty },
     { id: 'status', label: 'Status', hint: 'Read-only', Icon: ChartLine, dirty: false },
     { id: 'tools', label: 'Tools', hint: 'AXFR, ACME…', Icon: HardDrives, dirty: false },
   ]
@@ -638,7 +728,32 @@ export default function Settings({ tools = {} }) {
                     </button>
                   </div>
                 )
-              : null
+              : section === 'conntrack' && isAdmin
+                ? (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={!ctDirty || ctBusy}
+                        onClick={() => {
+                          if (conntrack) setCtDraft(toCtDraft(conntrack))
+                          setOk('')
+                          setErr('')
+                        }}
+                        className="btn btn-secondary min-h-[44px] disabled:opacity-40"
+                      >
+                        Discard
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!ctDirty || ctBusy}
+                        onClick={saveConntrack}
+                        className="btn btn-primary min-h-[44px] disabled:opacity-40"
+                      >
+                        {ctBusy ? 'Saving…' : 'Save & apply'}
+                      </button>
+                    </div>
+                  )
+                : null
         }
       />
 
@@ -1260,6 +1375,162 @@ export default function Settings({ tools = {} }) {
             )
           ) : null}
 
+          {section === 'conntrack' ? (
+            !conntrack || !ctDraft ? (
+              <SettingCallout tone="warn">Conntrack status unavailable.</SettingCallout>
+            ) : (
+              <>
+                {!conntrack.supported ? (
+                  <SettingCallout tone="warn">Kernel conntrack tuning requires Linux.</SettingCallout>
+                ) : null}
+                {conntrack.status && !conntrack.status.available ? (
+                  <SettingCallout tone="warn">
+                    {conntrack.status.warning || 'nf_conntrack not loaded on this host.'}
+                  </SettingCallout>
+                ) : null}
+                {conntrack.status?.warning && conntrack.status?.available ? (
+                  <SettingCallout tone="warn">{conntrack.status.warning}</SettingCallout>
+                ) : null}
+
+                <SettingSection
+                  id="settings-ct-live-heading"
+                  title="Live status"
+                  hint="Kernel nf_conntrack table — fills under high DNS/TPROXY churn."
+                >
+                  <dl className="settings-status-dl">
+                    {[
+                      ['Count', conntrack.status?.count ?? '—'],
+                      ['Max', conntrack.status?.max ?? '—'],
+                      ['Usage', conntrack.status?.usage_pct != null ? `${Number(conntrack.status.usage_pct).toFixed(1)}%` : '—'],
+                      ['Hashsize', conntrack.status?.hashsize ?? '—'],
+                      ['Writable', conntrack.status?.writable ? 'yes' : 'no'],
+                      ['Hash writable', conntrack.status?.hash_writable ? 'yes' : 'no'],
+                      ['Last error', conntrack.status?.last_error || '—'],
+                    ].map(([k, v]) => (
+                      <div key={k} className="settings-status-row">
+                        <dt>{k}</dt>
+                        <dd className="mono">{String(v)}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      disabled={ctBusy}
+                      onClick={refreshConntrack}
+                      className="btn btn-secondary min-h-[40px] disabled:opacity-40"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                </SettingSection>
+
+                <SettingSection
+                  id="settings-ct-tune-heading"
+                  title="Tuning"
+                  hint="Apply live (sysctl). Optional persist to /etc/sysctl.d + modprobe.d when the host FS is writable; also re-applied on PowerSVX startup."
+                >
+                  <SettingToggle
+                    label="Manage from PowerSVX"
+                    hint="When on, Save applies limits and re-applies them after restart"
+                    pressed={!!ctDraft.conntrack_managed}
+                    disabled={ctBusy || !isAdmin}
+                    dirty={!!ctDraft.conntrack_managed !== !!conntrack.conntrack_managed}
+                    onToggle={() => {
+                      setOk('')
+                      setErr('')
+                      setCtDraft((d) => ({ ...d, conntrack_managed: !d.conntrack_managed }))
+                    }}
+                  />
+                  <SettingToggle
+                    label="Persist drop-in files"
+                    hint="Write /etc/sysctl.d/99-powersvx-conntrack.conf and modprobe.d (may only affect the container FS unless host paths are mounted)"
+                    pressed={!!ctDraft.conntrack_persist}
+                    disabled={ctBusy || !isAdmin}
+                    dirty={!!ctDraft.conntrack_persist !== (conntrack.conntrack_persist !== false)}
+                    onToggle={() => {
+                      setOk('')
+                      setErr('')
+                      setCtDraft((d) => ({ ...d, conntrack_persist: !d.conntrack_persist }))
+                    }}
+                  />
+
+                  <div className="flex flex-wrap gap-2 mt-4">
+                    {(conntrack.presets || []).map((p) => (
+                      <button
+                        key={p.label}
+                        type="button"
+                        disabled={ctBusy || !isAdmin}
+                        className="btn btn-secondary min-h-[36px] text-xs disabled:opacity-40"
+                        onClick={() => {
+                          setOk('')
+                          setErr('')
+                          const max = Number(p.max) || 0
+                          setCtDraft((d) => ({
+                            ...d,
+                            conntrack_managed: true,
+                            conntrack_max: max,
+                            conntrack_hashsize: Math.max(16384, Math.floor(max / 4)),
+                          }))
+                        }}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2 mt-4">
+                    <label className="block text-xs space-y-1">
+                      <span className="text-[var(--muted)]">nf_conntrack_max</span>
+                      <input
+                        type="number"
+                        min={conntrack.min_max || 65536}
+                        max={conntrack.max_max || 16777216}
+                        step={65536}
+                        className="input mono w-full"
+                        disabled={ctBusy || !isAdmin}
+                        value={ctDraft.conntrack_max}
+                        onChange={(e) => {
+                          setOk('')
+                          setErr('')
+                          setCtDraft((d) => ({ ...d, conntrack_max: e.target.value }))
+                        }}
+                      />
+                    </label>
+                    <label className="block text-xs space-y-1">
+                      <span className="text-[var(--muted)]">hashsize (0 = auto max/4)</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={4096}
+                        className="input mono w-full"
+                        disabled={ctBusy || !isAdmin}
+                        value={ctDraft.conntrack_hashsize}
+                        onChange={(e) => {
+                          setOk('')
+                          setErr('')
+                          setCtDraft((d) => ({ ...d, conntrack_hashsize: e.target.value }))
+                        }}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 mt-4">
+                    <button
+                      type="button"
+                      disabled={ctBusy || !isAdmin}
+                      onClick={applyConntrackNow}
+                      className="btn btn-primary min-h-[40px] disabled:opacity-40"
+                    >
+                      Apply now
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-[var(--muted)] mt-3 leading-relaxed">{conntrack.note}</p>
+                </SettingSection>
+              </>
+            )
+          ) : null}
+
           {section === 'status' ? (
             <SettingSection id="settings-status-heading" title="Server status" hint="Read-only. Change these in the config file if needed.">
               <dl className="settings-status-dl">
@@ -1314,12 +1585,16 @@ export default function Settings({ tools = {} }) {
         </div>
       </div>
 
-      {((dirty && isAdmin) || (tpDirty && isAdmin && section === 'tproxy')) ? (
+      {((dirty && isAdmin) ||
+        (tpDirty && isAdmin && section === 'tproxy') ||
+        (ctDirty && isAdmin && section === 'conntrack')) ? (
         <div className="settings-sticky-bar panel">
           <span className="text-sm text-[var(--warn)]">
             {section === 'tproxy' && tpDirty
               ? 'Unsaved TPROXY changes'
-              : `Unsaved · ${dirtyCount} section${dirtyCount === 1 ? '' : 's'}`}
+              : section === 'conntrack' && ctDirty
+                ? 'Unsaved OS / conntrack changes'
+                : `Unsaved · ${dirtyCount} section${dirtyCount === 1 ? '' : 's'}`}
           </span>
           {section === 'tproxy' ? (
             <div className="flex gap-2">
@@ -1342,6 +1617,29 @@ export default function Settings({ tools = {} }) {
                 className="btn btn-primary min-h-[44px] disabled:opacity-40"
               >
                 {tpBusy ? 'Saving…' : 'Save & apply'}
+              </button>
+            </div>
+          ) : section === 'conntrack' ? (
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={!ctDirty || ctBusy}
+                onClick={() => {
+                  if (conntrack) setCtDraft(toCtDraft(conntrack))
+                  setOk('')
+                  setErr('')
+                }}
+                className="btn btn-secondary min-h-[44px] disabled:opacity-40"
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                disabled={!ctDirty || ctBusy}
+                onClick={saveConntrack}
+                className="btn btn-primary min-h-[44px] disabled:opacity-40"
+              >
+                {ctBusy ? 'Saving…' : 'Save & apply'}
               </button>
             </div>
           ) : (

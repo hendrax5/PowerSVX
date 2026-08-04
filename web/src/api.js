@@ -167,6 +167,10 @@ export const api = {
   applyTProxy: () => request('/api/v1/tproxy/apply', { method: 'POST', body: '{}' }),
   disableTProxy: () => request('/api/v1/tproxy/disable', { method: 'POST', body: '{}' }),
   restartTProxy: () => request('/api/v1/tproxy/restart', { method: 'POST', body: '{}' }),
+  conntrack: () => request('/api/v1/conntrack'),
+  updateConntrack: (body) =>
+    request('/api/v1/conntrack', { method: 'PUT', body: JSON.stringify(body || {}) }),
+  applyConntrack: () => request('/api/v1/conntrack/apply', { method: 'POST', body: '{}' }),
   events: () => request('/api/v1/events'),
   eventsStreamURL() {
     const token = getToken()

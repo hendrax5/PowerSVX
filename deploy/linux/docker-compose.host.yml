@@ -21,6 +21,8 @@ services:
     environment:
       - POWERSVX_MEM_PERCENT=${POWERSVX_MEM_PERCENT:-70}
       - GOGC=${GOGC:-50}
+      # Host sysctl bind-mounts (see volumes) — Docker /proc/sys is otherwise read-only.
+      - POWERSVX_CONNTRACK_SYS_DIR=/powersvx-sys
     # depends_on still works; host networking ignores compose networks
     cap_add:
       - NET_BIND_SERVICE
@@ -30,6 +32,10 @@ services:
       - powersvx-data:/data
       - ./configs/powersvx.docker.host.toml:/etc/PowerSVX/powersvx.toml:ro
       - ./configs/sample-blocklist.txt:/etc/PowerSVX/sample-blocklist.txt:ro
+      # Writable host kernel knobs (container /proc/sys is RO even as root).
+      - /proc/sys/net/netfilter/nf_conntrack_max:/powersvx-sys/nf_conntrack_max
+      - /proc/sys/net/netfilter/nf_conntrack_count:/powersvx-sys/nf_conntrack_count:ro
+      - /sys/module/nf_conntrack/parameters/hashsize:/powersvx-sys/hashsize
 
   postgres:
     ports: !override

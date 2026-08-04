@@ -37,6 +37,11 @@ type RuntimeSettings struct {
 	TProxyMode      string   `json:"tproxy_mode,omitempty"` // public | all | custom
 	TProxyResolvers []string `json:"tproxy_resolvers,omitempty"`
 	TProxyMark      *uint32  `json:"tproxy_mark,omitempty"`
+	// Conntrack (Linux nf_conntrack tuning)
+	ConntrackManaged  *bool   `json:"conntrack_managed,omitempty"`
+	ConntrackMax      *uint64 `json:"conntrack_max,omitempty"`
+	ConntrackHashsize *uint64 `json:"conntrack_hashsize,omitempty"`
+	ConntrackPersist  *bool   `json:"conntrack_persist,omitempty"` // write /etc/sysctl.d when possible
 }
 
 func RuntimeSettingsPath(dir string) string {

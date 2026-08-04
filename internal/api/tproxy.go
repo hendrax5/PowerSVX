@@ -133,7 +133,7 @@ func (a *API) loadRuntimeSettings() config.RuntimeSettings {
 	return rs
 }
 
-// withPreservedTProxy copies TPROXY fields from disk so other settings saves do not wipe them.
+// withPreservedTProxy copies TPROXY + conntrack fields from disk so other settings saves do not wipe them.
 func (a *API) withPreservedTProxy(rs config.RuntimeSettings) config.RuntimeSettings {
 	cur := a.loadRuntimeSettings()
 	rs.TProxyListen = cur.TProxyListen
@@ -142,6 +142,10 @@ func (a *API) withPreservedTProxy(rs config.RuntimeSettings) config.RuntimeSetti
 	rs.TProxyMode = cur.TProxyMode
 	rs.TProxyResolvers = cur.TProxyResolvers
 	rs.TProxyMark = cur.TProxyMark
+	rs.ConntrackManaged = cur.ConntrackManaged
+	rs.ConntrackMax = cur.ConntrackMax
+	rs.ConntrackHashsize = cur.ConntrackHashsize
+	rs.ConntrackPersist = cur.ConntrackPersist
 	return rs
 }
 
