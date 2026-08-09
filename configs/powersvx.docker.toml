@@ -41,14 +41,14 @@ stale_ttl = 60
 prefetch_pct = 5
 
 [resolver]
-# Forward-first keeps CPU predictable; switch to recursive in UI if needed.
-mode = "forward"
+# Default: recursive. Forward mode is optional via UI/runtime.
+mode = "recursive"
 forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
 forward_on_fail = false
-dnssec_mode = "off"
-edns_buffer_size = 1232
+dnssec_mode = "opportunistic"
+edns_buffer_size = 1472
 timeout_ms = 1500
-fallback_timeout_ms = 250
+fallback_timeout_ms = 400
 max_inflight = 1024
 ecs_enabled = false
 ecs_prefix_v4 = 24

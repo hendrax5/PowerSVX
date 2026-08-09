@@ -32,7 +32,7 @@
 - Updates: add (IN), delete RRset (ANY), delete exact RR (NONE). SOA serial bumps; secondaries are NOTIFYed.
 
 ## Conditional forwarders
-- Global `[resolver] forwarders` plus optional `[[resolver.forward_zones]]` (`zone` + `forwarders`) for longest-suffix routing (stub/conditional). Editable in Settings.
+- Default resolver mode is **recursive**. Global `[resolver] forwarders` plus optional `[[resolver.forward_zones]]` are used when `mode=forward` or `forward_on_fail=true`. Editable in Settings.
 - Outbound schemes: `host:53` (UDP), `tls://host:853` (DoT, optional `#sni`), `https://host/dns-query` (DoH).
 
 ## TLS (DoT / DoH / DoH3 / DoQ)

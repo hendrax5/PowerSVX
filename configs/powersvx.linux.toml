@@ -48,13 +48,14 @@ stale_ttl = 60
 prefetch_pct = 5
 
 [resolver]
-mode = "forward"
+# Default: recursive (Unbound-like). Forward is optional.
+mode = "recursive"
 forwarders = ["103.88.88.99:53", "203.119.13.77:53"]
-forward_on_fail = true
+forward_on_fail = false
 dnssec_mode = "opportunistic"
-edns_buffer_size = 1232
+edns_buffer_size = 1472
 timeout_ms = 1500
-fallback_timeout_ms = 250
+fallback_timeout_ms = 400
 max_inflight = 1536
 ecs_enabled = true
 ecs_prefix_v4 = 24

@@ -39,6 +39,7 @@ Also beat Unbound on **at least 3 of**: load, miss p95, inflight max, RSS, fallb
 
 ## Config knobs that must be live
 
+- **`resolver mode = recursive`** (forward is optional only)
 - `max_inflight = 1024` (fail-fast admit)
 - `global_qps ≈ 7500`
 - `min_ttl = 120`, `serve_stale = true`, `stale_ttl = 60`, `prefetch_pct = 10`

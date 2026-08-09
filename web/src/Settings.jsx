@@ -801,11 +801,11 @@ export default function Settings({ tools = {} }) {
                   No forwarders configured — add at least one for forward mode or recursive fallback.
                 </SettingCallout>
               ) : null}
-              <SettingSection id="settings-dns-heading" title="Lookup mode" hint="Pick one path. Save to apply.">
+              <SettingSection id="settings-dns-heading" title="Lookup mode" hint="Default is recursive (Unbound-like). Forward is optional.">
                 <div className="settings-mode-grid">
                   {[
-                    ['forward', 'Forward', 'Send queries to upstream resolvers only'],
-                    ['recursive', 'Recursive', 'Ask the DNS root servers directly'],
+                    ['recursive', 'Recursive', 'Ask the DNS root servers directly (default)'],
+                    ['forward', 'Forward (optional)', 'Send all queries to upstream resolvers only'],
                   ].map(([mode, title, desc]) => (
                     <button
                       key={mode}

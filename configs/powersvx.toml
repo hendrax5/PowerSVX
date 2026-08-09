@@ -26,9 +26,10 @@ ttl_seconds = 300
 negative_ttl = 60
 
 [resolver]
-mode = "forward"
+mode = "recursive"
 forwarders = ["103.88.88.99:53", "203.119.13.77:53"]
-dnssec_mode = "off"
+forward_on_fail = false
+dnssec_mode = "opportunistic"
 ecs_enabled = true
 ecs_prefix_v4 = 24
 ecs_prefix_v6 = 56
