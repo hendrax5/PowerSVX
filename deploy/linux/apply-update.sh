@@ -41,6 +41,9 @@ echo "POWERSVX_DIR=$ROOT" | sudo tee /etc/default/powersvx-disk-guard >/dev/null
 echo "15 * * * * root . /etc/default/powersvx-disk-guard 2>/dev/null; /usr/local/sbin/powersvx-disk-guard" | sudo tee /etc/cron.d/powersvx-disk-guard >/dev/null
 sudo POWERSVX_DIR="$ROOT" /usr/local/sbin/powersvx-disk-guard || true
 
+echo "==> generate Unbound conf from host RAM/CPU"
+bash "$ROOT/deploy/linux/gen-unbound-conf.sh" "$ROOT/configs/unbound/unbound.conf"
+
 echo "==> recreate stack (logging limits + retention)"
 # Percent-based Docker mem_limit (default 70% of host RAM).
 if [ -f "$ROOT/deploy/linux/calc-mem-env.sh" ]; then

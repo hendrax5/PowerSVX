@@ -124,7 +124,7 @@ export default function Settings({ tools = {} }) {
     query_log_retention_days: Number(s.query_log_retention_days) || 3,
     query_log_max_size_mb: Number(s.query_log_max_size_mb) || 5120,
     query_log_sample_rate: s.query_log_sample_rate == null ? 0.05 : Number(s.query_log_sample_rate),
-    resolver_mode: s.resolver_mode === 'forward' ? 'forward' : 'recursive',
+    resolver_mode: s.resolver_mode === 'recursive' ? 'recursive' : 'forward',
     forwarders: Array.isArray(s.forwarders) ? [...s.forwarders] : [],
     forward_zones: Array.isArray(s.forward_zones)
       ? s.forward_zones.map((z) => ({
@@ -177,8 +177,8 @@ export default function Settings({ tools = {} }) {
     Promise.all([
       api.settings(),
       api.rpz(),
-      api.tproxy().catch(() => null),
-      api.conntrack().catch(() => null),
+      typeof api.tproxy === 'function' ? api.tproxy().catch(() => null) : Promise.resolve(null),
+      typeof api.conntrack === 'function' ? api.conntrack().catch(() => null) : Promise.resolve(null),
     ])
       .then(([s, r, t, ct]) => {
         setSaved(s)
@@ -818,9 +818,9 @@ export default function Settings({ tools = {} }) {
               >
                 <div className="settings-mode-grid">
                   {[
-                    ['recursive', 'Recursive (Go)', 'Ask the DNS root directly from PowerSVX'],
+                    ['unbound', 'Unbound backend', 'Default — misses → local Unbound on 127.0.0.1:5353'],
                     ['forward', 'Forward', 'Send all misses to the forwarders list (any upstream)'],
-                    ['unbound', 'Unbound backend', 'Misses → local Unbound on 127.0.0.1:5353 (recommended hybrid)'],
+                    ['recursive', 'Recursive (Go)', 'Lab only — ask the DNS root from PowerSVX (higher CPU)'],
                   ].map(([mode, title, desc]) => {
                     const selected =
                       mode === 'unbound' ? isUnboundBackend : draft.resolver_mode === mode && !isUnboundBackend

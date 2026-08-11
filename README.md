@@ -55,7 +55,7 @@ docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up 
 
 This mounts `configs/powersvx.docker.host.toml` (Postgres via `127.0.0.1:5433`). Do **not** later run plain `docker compose up` alone — that drops `network_mode: host` and returns to bridge.
 
-**Hybrid recursive (recommended under multi‑k QPS):** host compose also starts **Unbound on `127.0.0.1:5353`**. In the UI choose **Settings → DNS → Unbound backend**. Conditional forward zones still override per domain. See **[docs/UNBOUND-HYBRID.md](docs/UNBOUND-HYBRID.md)**.
+**Hybrid recursive (default on host compose):** starts **Unbound on `127.0.0.1:5353`**; PowerSVX defaults to forward → that address. Conditional forward zones still override per domain. See **[docs/UNBOUND-HYBRID.md](docs/UNBOUND-HYBRID.md)**. Recursive (Go) remains optional in Settings for lab only.
 
 **Local / Windows-friendly bridge** (mapped ports, not for production DNS):
 

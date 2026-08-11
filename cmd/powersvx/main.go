@@ -66,6 +66,13 @@ func main() {
 		cfg.ApplyRuntimeSettings(rs)
 		log.Info("runtime settings loaded", "path", rsPath)
 	}
+	cacheMB, inflight, memMB, cpus := cfg.Autosize()
+	log.Info("autosize",
+		"cache_max_size_mb", cacheMB,
+		"max_inflight", inflight,
+		"host_mem_mb", memMB,
+		"cpus", cpus,
+	)
 
 	l1Max := cfg.Cache.MaxSizeMB * 1024
 	if l1Max <= 0 {

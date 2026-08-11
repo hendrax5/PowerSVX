@@ -6,10 +6,15 @@
 # Usage:
 #   docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --build
 #
-# Hybrid recursive (recommended under multi-k QPS):
-#   Unbound listens on 127.0.0.1:5353; set Settings → DNS → "Unbound backend"
-#   (forwarders = 127.0.0.1:5353). Conditional forward zones still override per domain.
+# Hybrid recursive (default):
+#   Unbound listens on 127.0.0.1:5353; PowerSVX defaults to forward → that address.
+#   Conditional forward zones still override per domain.
 #   See docs/UNBOUND-HYBRID.md.
+#
+# Capacity autosize (upgrade-friendly):
+#   - PowerSVX: cache.max_size_mb=0 and resolver.max_inflight=0 → sized from RAM/CPU at start
+#   - Unbound: run deploy/linux/gen-unbound-conf.sh before up (also in apply-update.sh)
+#   After RAM/CPU upgrade: recreate powersvx (+ unbound) — no TOML retune required.
 #
 # DB: with host network, PowerSVX must reach Postgres via the published host port:
 #   configs/powersvx.docker.host.toml → host = "127.0.0.1", port = 5433

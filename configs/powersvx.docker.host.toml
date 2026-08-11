@@ -31,8 +31,9 @@ max_connections = 20
 [cache]
 type = "badger"
 path = "/data/cache"
-# ~2M L1 entries (max_size_mb * 1024). Needed for ≥97% hit rate toward 40k QPS recursive.
-max_size_mb = 2048
+# 0 = autosize from host RAM (~12% MemTotal, capped by GOMEMLIMIT). Scales on RAM upgrade + restart.
+# Explicit MB freezes the value. L1 entries ≈ max_size_mb * 1024.
+max_size_mb = 0
 ttl_seconds = 300
 min_ttl = 180
 negative_ttl = 180
@@ -44,19 +45,18 @@ stale_ttl = 300
 prefetch_pct = 0
 
 [resolver]
-# Hybrid (recommended under multi-k QPS): mode=forward + forwarders=["127.0.0.1:5353"]
-# with Unbound from deploy/linux/docker-compose.host.yml (docs/UNBOUND-HYBRID.md).
-# Or keep recursive (Go) for lab. UI preset "Unbound backend" sets forward → localhost:5353.
+# Default: Unbound hybrid (docs/UNBOUND-HYBRID.md). PowerSVX edge + Unbound on 127.0.0.1:5353.
 # Conditional forward_zones always override for matching domains (longest suffix).
-mode = "recursive"
+# Recursive (Go) remains available in UI for lab only — not the production default.
+mode = "forward"
 forwarders = ["127.0.0.1:5353"]
 forward_on_fail = false
 dnssec_mode = "opportunistic"
 edns_buffer_size = 1472
 timeout_ms = 1500
 fallback_timeout_ms = 400
-# Hard admit cap (~Unbound reqlist). Full = fail-fast SERVFAIL, no queue pile-up.
-max_inflight = 2048
+# 0 = autosize from CPU (NumCPU*512, clamp 1024–16384). Scales on CPU upgrade + restart.
+max_inflight = 0
 ecs_enabled = false
 ecs_prefix_v4 = 24
 ecs_prefix_v6 = 56

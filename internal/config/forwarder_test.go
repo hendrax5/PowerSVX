@@ -2,9 +2,12 @@ package config
 
 import "testing"
 
-func TestNormalizeResolverModeDefaultRecursive(t *testing.T) {
-	if NormalizeResolverMode("") != "recursive" {
+func TestNormalizeResolverModeDefaultForward(t *testing.T) {
+	if NormalizeResolverMode("") != "forward" {
 		t.Fatal(NormalizeResolverMode(""))
+	}
+	if NormalizeResolverMode("RECURSIVE") != "recursive" {
+		t.Fatal(NormalizeResolverMode("RECURSIVE"))
 	}
 	if NormalizeResolverMode("FORWARD") != "forward" {
 		t.Fatal(NormalizeResolverMode("FORWARD"))
