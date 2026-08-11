@@ -44,10 +44,12 @@ stale_ttl = 300
 prefetch_pct = 0
 
 [resolver]
-# Default: recursive (Unbound-like). Forward mode is optional via UI/runtime.
-# Optional forwarders used only when forward_on_fail=true or mode=forward.
+# Hybrid (recommended under multi-k QPS): mode=forward + forwarders=["127.0.0.1:5353"]
+# with Unbound from deploy/linux/docker-compose.host.yml (docs/UNBOUND-HYBRID.md).
+# Or keep recursive (Go) for lab. UI preset "Unbound backend" sets forward → localhost:5353.
+# Conditional forward_zones always override for matching domains (longest suffix).
 mode = "recursive"
-forwarders = ["1.1.1.1:53", "8.8.8.8:53"]
+forwarders = ["127.0.0.1:5353"]
 forward_on_fail = false
 dnssec_mode = "opportunistic"
 edns_buffer_size = 1472

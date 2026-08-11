@@ -13,7 +13,7 @@ cd powersvx
 
 | Area | Capabilities |
 |------|----------------|
-| DNS | UDP/TCP, forward/recursive, **conditional forward zones**, L1+L2 cache, PostgreSQL zones, AXFR/NOTIFY, **secondary AXFR pull**, **RFC 2136 DDNS** |
+| DNS | UDP/TCP, forward/recursive, **Unbound hybrid backend**, **conditional forward zones**, L1+L2 cache, PostgreSQL zones, AXFR/NOTIFY, **secondary AXFR pull**, **RFC 2136 DDNS** |
 | Encrypted | DoT, DoH, DoH3, DoQ inbound; **outbound DoT/DoH forwarders**, DNSSEC modes, TSIG |
 | Policy | RPZ (`nxdomain` / `nodata` / `pass` / **redirect** / **cname**), query ACL, rate limit, ECS, GeoDNS, views |
 | Control | REST API, React UI, query logs, audit log, RBAC users, settings Save |
@@ -54,6 +54,8 @@ docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up 
 | 5433 | Postgres (published on loopback in host override) |
 
 This mounts `configs/powersvx.docker.host.toml` (Postgres via `127.0.0.1:5433`). Do **not** later run plain `docker compose up` alone — that drops `network_mode: host` and returns to bridge.
+
+**Hybrid recursive (recommended under multi‑k QPS):** host compose also starts **Unbound on `127.0.0.1:5353`**. In the UI choose **Settings → DNS → Unbound backend**. Conditional forward zones still override per domain. See **[docs/UNBOUND-HYBRID.md](docs/UNBOUND-HYBRID.md)**.
 
 **Local / Windows-friendly bridge** (mapped ports, not for production DNS):
 

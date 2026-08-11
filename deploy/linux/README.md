@@ -122,9 +122,12 @@ docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up 
 
 This override sets `network_mode: host` and mounts `configs/powersvx.docker.host.toml` (Postgres via `127.0.0.1:5433`). Prometheus is on host **9091** (container 9090). Restrict `[acl] allow_query` and firewall unused ports.
 
+It also starts **Unbound on `127.0.0.1:5353`** for the hybrid recursive backend. In the UI: **Settings → DNS → Unbound backend**. Conditional forward zones still override per domain. Details: [docs/UNBOUND-HYBRID.md](../../docs/UNBOUND-HYBRID.md).
+
 | Host port | Service |
 |-----------|---------|
-| 53 | DNS |
+| 53 | DNS (PowerSVX) |
+| 127.0.0.1:5353 | Unbound recursive (loopback only) |
 | 853 / 443 / 784 | DoT / DoH / DoQ |
 | 5380 | API + UI |
 | 9100 | App metrics |

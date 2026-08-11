@@ -661,6 +661,10 @@ export default function Settings({ tools = {} }) {
   const needsForwarders =
     draft.resolver_mode === 'forward' || (draft.resolver_mode === 'recursive' && draft.forward_on_fail)
   const noForwarders = (draft.forwarders || []).length === 0
+  const isUnboundBackend =
+    draft.resolver_mode === 'forward' &&
+    (draft.forwarders || []).length === 1 &&
+    ['127.0.0.1:5353', '127.0.0.1', '[::1]:5353', '::1'].includes(String(draft.forwarders[0] || '').trim())
 
   const saveBar = (
     <div className="flex gap-2">
@@ -798,42 +802,64 @@ export default function Settings({ tools = {} }) {
             <>
               {needsForwarders && noForwarders ? (
                 <SettingCallout tone="warn">
-                  No forwarders configured — add at least one for forward mode or recursive fallback.
+                  No forwarders configured — add at least one for forward mode, Unbound backend, or recursive fallback.
                 </SettingCallout>
               ) : null}
-              <SettingSection id="settings-dns-heading" title="Lookup mode" hint="Default is recursive (Unbound-like). Forward is optional.">
+              {isUnboundBackend ? (
+                <SettingCallout tone="muted">
+                  Unbound backend: cache misses go to <span className="mono">127.0.0.1:5353</span>. Conditional forward
+                  zones still win for matching domains (evaluated first).
+                </SettingCallout>
+              ) : null}
+              <SettingSection
+                id="settings-dns-heading"
+                title="Lookup mode"
+                hint="Pick how PowerSVX resolves cache misses. Conditional forward zones always override this for matching domains."
+              >
                 <div className="settings-mode-grid">
                   {[
-                    ['recursive', 'Recursive', 'Ask the DNS root servers directly (default)'],
-                    ['forward', 'Forward (optional)', 'Send all queries to upstream resolvers only'],
-                  ].map(([mode, title, desc]) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      disabled={busy || !isAdmin}
-                      onClick={() => {
-                        setOk('')
-                        setErr('')
-                        setDraft((d) => ({ ...d, resolver_mode: mode }))
-                      }}
-                      className={`settings-mode-card ${draft.resolver_mode === mode ? 'is-selected' : ''}`}
-                      aria-pressed={draft.resolver_mode === mode}
-                    >
-                      <div className="text-sm font-medium flex items-center gap-2">
-                        {title}
-                        {draft.resolver_mode === mode ? (
-                          <span className="settings-chip">selected</span>
-                        ) : null}
-                      </div>
-                      <div className="text-xs text-[var(--muted)] mt-1 leading-relaxed">{desc}</div>
-                    </button>
-                  ))}
+                    ['recursive', 'Recursive (Go)', 'Ask the DNS root directly from PowerSVX'],
+                    ['forward', 'Forward', 'Send all misses to the forwarders list (any upstream)'],
+                    ['unbound', 'Unbound backend', 'Misses → local Unbound on 127.0.0.1:5353 (recommended hybrid)'],
+                  ].map(([mode, title, desc]) => {
+                    const selected =
+                      mode === 'unbound' ? isUnboundBackend : draft.resolver_mode === mode && !isUnboundBackend
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        disabled={busy || !isAdmin}
+                        onClick={() => {
+                          setOk('')
+                          setErr('')
+                          if (mode === 'unbound') {
+                            setDraft((d) => ({
+                              ...d,
+                              resolver_mode: 'forward',
+                              forward_on_fail: false,
+                              forwarders: ['127.0.0.1:5353'],
+                            }))
+                            return
+                          }
+                          setDraft((d) => ({ ...d, resolver_mode: mode }))
+                        }}
+                        className={`settings-mode-card ${selected ? 'is-selected' : ''}`}
+                        aria-pressed={selected}
+                      >
+                        <div className="text-sm font-medium flex items-center gap-2">
+                          {title}
+                          {selected ? <span className="settings-chip">selected</span> : null}
+                        </div>
+                        <div className="text-xs text-[var(--muted)] mt-1 leading-relaxed">{desc}</div>
+                      </button>
+                    )
+                  })}
                 </div>
                 <SettingToggle
                   label="Fallback to forwarders"
                   hint={
                     draft.resolver_mode !== 'recursive'
-                      ? 'Only available in recursive mode'
+                      ? 'Only available in recursive (Go) mode'
                       : 'If recursive fails, try configured forwarders'
                   }
                   pressed={!!draft.forward_on_fail}
@@ -846,7 +872,11 @@ export default function Settings({ tools = {} }) {
               <SettingSection
                 id="settings-fwd-heading"
                 title="Forwarders"
-                hint="Upstream for forward mode and recursive fallback. UDP 1.1.1.1:53, DoT tls://…, or DoH https://…"
+                hint={
+                  isUnboundBackend
+                    ? 'Unbound backend uses 127.0.0.1:5353. Keep this loopback — do not point at public resolvers unless you intend to.'
+                    : 'Upstream for forward mode and recursive fallback. UDP 1.1.1.1:53, DoT tls://…, or DoH https://…'
+                }
               >
                 {(draft.forwarders || []).length === 0 ? (
                   <p className="text-xs text-[var(--warn)]">None yet.</p>
@@ -896,10 +926,10 @@ export default function Settings({ tools = {} }) {
               <SettingSection
                 id="settings-fzone-heading"
                 title="Conditional forward zones"
-                hint="Longest-suffix match routes a domain to specific upstreams before recursion / global forwarders."
+                hint="For specific sites/domains — longest-suffix match runs before Unbound, Go recursive, or global forwarders. Example: corp.local → internal AD DNS."
               >
                 {(draft.forward_zones || []).length === 0 ? (
-                  <p className="text-xs text-[var(--muted)]">None configured.</p>
+                  <p className="text-xs text-[var(--muted)]">None configured. Add a zone to stub-forward one domain tree without changing the default backend.</p>
                 ) : (
                   <ul className="settings-list">
                     {(draft.forward_zones || []).map((z, idx) => (
@@ -931,7 +961,7 @@ export default function Settings({ tools = {} }) {
                   </label>
                   <label className="min-w-[14rem] flex-[2] text-xs text-[var(--muted)] space-y-1">
                     Forwarders (comma or newline)
-                    <input value={fzFwd} disabled={busy || !isAdmin} onChange={(e) => setFzFwd(e.target.value)} placeholder="10.0.0.1:53, 10.0.0.2:53" className="input mono w-full min-h-[44px]" />
+                    <input value={fzFwd} disabled={busy || !isAdmin} onChange={(e) => setFzFwd(e.target.value)} placeholder="10.0.0.1:53" className="input mono w-full min-h-[44px]" />
                   </label>
                   <button type="submit" disabled={busy || !isAdmin || !fzZone.trim() || !fzFwd.trim()} className="btn btn-primary min-h-[44px] disabled:opacity-50">
                     {fzEditIdx >= 0 ? 'Update' : 'Add'}

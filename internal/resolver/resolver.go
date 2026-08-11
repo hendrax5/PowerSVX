@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -175,7 +176,12 @@ func (r *Resolver) ResolveWithECS(ctx context.Context, req *dns.Msg, sub *ecs.Su
 			return resolveResult{msg: msg, path: path}, err
 		})
 		res, _ := v.(resolveResult)
-		return res.msg, res.path, err
+		// Copy per waiter — sharing one *dns.Msg races PrepareClientResponse/Pack
+		// (Extra strip/SetEdns0) and panics in miekg IsEdns0 under multi-QPS.
+		if res.msg != nil {
+			return res.msg.Copy(), res.path, err
+		}
+		return nil, res.path, err
 	}
 
 	return r.resolveAdmitted(ctx, req, sub, q)
@@ -438,7 +444,10 @@ func stripOPT(msg *dns.Msg) {
 	}
 	kept := make([]dns.RR, 0, len(msg.Extra))
 	for _, rr := range msg.Extra {
-		if rr == nil || rr.Header().Rrtype == dns.TypeOPT {
+		if !rrOK(rr) {
+			continue
+		}
+		if rr.Header().Rrtype == dns.TypeOPT {
 			continue
 		}
 		kept = append(kept, rr)
@@ -481,10 +490,16 @@ func PrepareClientResponse(req, resp *dns.Msg) {
 }
 
 func MinTTL(msg *dns.Msg) uint32 {
+	if msg == nil {
+		return 60
+	}
 	var min uint32
 	first := true
 	scan := func(rrs []dns.RR) {
 		for _, rr := range rrs {
+			if !rrOK(rr) {
+				continue
+			}
 			ttl := rr.Header().Ttl
 			if first || ttl < min {
 				min = ttl
@@ -501,8 +516,37 @@ func MinTTL(msg *dns.Msg) uint32 {
 }
 
 func PackResponse(msg *dns.Msg) ([]byte, error) {
+	if msg == nil {
+		return nil, fmt.Errorf("nil message")
+	}
+	sanitizeRRSlice(&msg.Answer)
+	sanitizeRRSlice(&msg.Ns)
+	sanitizeRRSlice(&msg.Extra)
 	msg.Compress = true
 	return msg.Pack()
+}
+
+func sanitizeRRSlice(rrs *[]dns.RR) {
+	if rrs == nil || len(*rrs) == 0 {
+		return
+	}
+	dst := (*rrs)[:0]
+	for _, rr := range *rrs {
+		if !rrOK(rr) {
+			continue
+		}
+		dst = append(dst, rr)
+	}
+	*rrs = dst
+}
+
+// rrOK is false for nil interface or typed-nil RR pointers (Header() would panic).
+func rrOK(rr dns.RR) bool {
+	if rr == nil {
+		return false
+	}
+	v := reflect.ValueOf(rr)
+	return !(v.Kind() == reflect.Ptr && v.IsNil())
 }
 
 func RewriteID(wire []byte, id uint16) []byte {
