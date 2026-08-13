@@ -1,0 +1,35 @@
+# Copy to ops/inventory.local.yaml (gitignored) and fill secrets.
+# Hermes / Cursor reads inventory.local.yaml before any deploy or update.
+
+fleet: powersvx
+git_remote: http://x7q29vwl.servicex.id/network/powersvx.git
+default_branch: feat/enterprise-gaps-except-ha
+remote_dir: /home/hendra/powersvx
+ssh_user: hendra
+
+compose:
+  files:
+    - docker-compose.yml
+    - deploy/linux/docker-compose.host.yml
+  # Recreate these for a code/config update (short DNS blip). Do not recreate postgres.
+  recreate:
+    - unbound
+    - powersvx
+
+ui:
+  port: 5380
+  health: /api/v1/health
+  settings: /api/v1/settings
+
+hosts:
+  - name: example-prod
+    aliases: ["70.254"]
+    ip: 203.0.113.10
+    ssh_user: hendra
+    ssh_password: "CHANGE_ME"
+    ssh_port: 22
+    role: production
+    ui_url: http://203.0.113.10:5380
+    admin_user: admin
+    admin_password: "CHANGE_ME"
+    notes: "host-network + Unbound on 127.0.0.1:5353"

@@ -8,6 +8,10 @@ data/
 .vscode/
 *.log
 .env
+ops/inventory.local.yaml
+ops/inventory.local.yml
+ops/*.local.yaml
+ops/*.local.yml
 web/node_modules/
 node_modules/
 web/dist/
