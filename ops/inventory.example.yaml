@@ -3,7 +3,7 @@
 
 fleet: powersvx
 git_remote: http://x7q29vwl.servicex.id/network/powersvx.git
-default_branch: feat/enterprise-gaps-except-ha
+default_branch: main
 remote_dir: /home/hendra/powersvx
 ssh_user: hendra
 

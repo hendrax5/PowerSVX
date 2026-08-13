@@ -1565,6 +1565,9 @@ export default function Settings({ tools = {} }) {
             <SettingSection id="settings-status-heading" title="Server status" hint="Read-only. Change these in the config file if needed.">
               <dl className="settings-status-dl">
                 {[
+                  ['Version', saved.version || '—'],
+                  ['Git', saved.git || '—'],
+                  ['Build', saved.build_id || '—'],
                   ['DNSSEC mode', saved.dnssec_mode],
                   ['DNS listen', saved.udp_addr],
                   ['API auth', saved.auth_type],

@@ -29,8 +29,6 @@ import (
 	"github.com/powersvx/powersvx/internal/server"
 )
 
-const Version = "1.5.0"
-
 type API struct {
 	cfg      *config.Config
 	srv      *server.Server
@@ -375,15 +373,17 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 		authInfo["admin_password_from_env"] = a.users.EnvAdminPasswordSet()
 	}
 
-	return map[string]any{
+	out := map[string]any{
 		"status":         status,
 		"checks":         checks,
 		"auth":           authInfo,
 		"uptime_seconds": int(time.Since(a.start).Seconds()),
-		"version":        Version,
 		"started_at":     a.start.UTC().Format(time.RFC3339),
-		"build_id":       Version + "+" + strconv.FormatInt(a.start.Unix(), 10),
 	}
+	for k, v := range versionFields() {
+		out[k] = v
+	}
+	return out
 }
 
 func statusOrDisabled(on bool, addr string) map[string]any {
@@ -401,8 +401,8 @@ func (a *API) statusPayload() map[string]any {
 		zones = a.auth.ZoneCount()
 	}
 	flags := a.srv.RuntimeFlags()
-	return map[string]any{
-		"version": Version, "uptime_seconds": int(uptime.Seconds()),
+	out := map[string]any{
+		"uptime_seconds": int(uptime.Seconds()),
 		"mode": a.cfg.Resolver.Mode, "dnssec_mode": a.srv.DNSSECMode(),
 		"dot_enabled": a.srv.DoTEnabled(), "doh_enabled": a.srv.DoHEnabled(), "doh3_enabled": a.srv.DoH3Enabled(), "doq_enabled": a.srv.DoQEnabled(),
 		"dot_addr": a.srv.DoTAddr(), "doh_addr": a.srv.DoHAddr(), "doq_addr": a.srv.DoQAddr(),
@@ -414,6 +414,10 @@ func (a *API) statusPayload() map[string]any {
 		"geodns_enabled": flags.GeoDNS,
 		"split_horizon_enabled": flags.SplitHorizon,
 	}
+	for k, v := range versionFields() {
+		out[k] = v
+	}
+	return out
 }
 
 func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -961,7 +965,7 @@ func (a *API) settingsPayload() map[string]any {
 		forwardZones = a.cfg.Resolver.ForwardZones
 	}
 	rl := a.srv.RateLimitConfig()
-	return map[string]any{
+	out := map[string]any{
 		"resolver_mode":            f.ResolverMode,
 		"forward_on_fail":          f.ForwardOnFail,
 		"forwarders":               forwarders,
@@ -1006,6 +1010,10 @@ func (a *API) settingsPayload() map[string]any {
 		},
 		"note": "Edit toggles, rate limit, query ACL, forwarders, conditional forward zones, query log size/retention/sample rate, and resolver mode, then Save. Persisted to data/runtime-settings.json. Empty allow_query = allow all. AXFR ACL and IP masking are TOML-only. IXFR is answered as full AXFR.",
 	}
+	for k, v := range versionFields() {
+		out[k] = v
+	}
+	return out
 }
 
 func (a *API) authConfigured() bool {

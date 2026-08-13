@@ -35,6 +35,14 @@ const chartTip = {
   fontSize: 12,
 }
 
+function releaseLabel(h) {
+  const v = h?.version || ''
+  const g = String(h?.git || '').replace(/^unknown$/i, '')
+  if (v && g) return `v${v} · ${g}`
+  if (v) return `v${v}`
+  return ''
+}
+
 function EmptyState({ title, hint, action }) {
   return (
     <div className="px-1 py-8 text-left" role="status">
@@ -99,6 +107,21 @@ function Shell({ children }) {
   const { me, refresh } = useAuth()
   const nav = useNavigate()
   const loc = useLocation()
+  const [release, setRelease] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    api
+      .health()
+      .then((h) => {
+        if (alive) setRelease(releaseLabel(h))
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
+
   const navGroups = [
     {
       label: 'Operate',
@@ -176,6 +199,11 @@ function Shell({ children }) {
           ))}
         </nav>
         <div className="shell-user space-y-2 text-xs">
+          {release ? (
+            <div className="text-[var(--muted)] px-1 mono" title="Deployed DNS build">
+              {release}
+            </div>
+          ) : null}
           {me?.auth_required ? (
             <>
               <div className="text-[var(--muted)] px-1">
@@ -221,6 +249,21 @@ function LoginPage() {
   const [err, setErr] = useState('')
   const [errDetail, setErrDetail] = useState('')
   const [busy, setBusy] = useState(false)
+  const [release, setRelease] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    api
+      .health()
+      .then((h) => {
+        if (alive) setRelease(releaseLabel(h))
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
+
 
   useEffect(() => {
     if (me && !me.auth_required) nav('/', { replace: true })
@@ -258,7 +301,7 @@ function LoginPage() {
             DNS control plane for resolve, filter, zones, and live ops.
           </p>
         </div>
-        <p className="text-xs text-[var(--muted)] mono">recursive · rpz · axfr · observe</p>
+        <p className="text-xs text-[var(--muted)] mono">{release || 'recursive · rpz · axfr · observe'}</p>
       </div>
       <div className="login-form-pane">
         <form onSubmit={submit} className="login-card space-y-5 reveal">
@@ -400,7 +443,7 @@ function Dashboard() {
       <PageHeader
         eyebrow="Operate"
         title="Dashboard"
-        sub={`v${s.version} · uptime ${formatUptime(s.uptime_seconds)} · mode ${s.mode} · QPS ${Number(mon.qps_now || 0).toFixed(0)}`}
+        sub={`${releaseLabel(s) || `v${s.version || ''}`} · uptime ${formatUptime(s.uptime_seconds)} · mode ${s.mode} · QPS ${Number(mon.qps_now || 0).toFixed(0)}`}
         actions={
           <a href="/analytics" className="btn btn-secondary">
             Longer trends

@@ -6,6 +6,10 @@ services:
       # Host network during build avoids Docker-bridge DNS/NAT issues that
       # make Alpine/Debian package mirrors look "temporarily" unavailable.
       network: host
+      args:
+        VERSION: ${POWERSVX_VERSION:-1.6.0}
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: powersvx
     env_file:
       - path: .env

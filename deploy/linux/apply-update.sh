@@ -45,6 +45,10 @@ echo "==> generate Unbound conf from host RAM/CPU"
 bash "$ROOT/deploy/linux/gen-unbound-conf.sh" "$ROOT/configs/unbound/unbound.conf"
 
 echo "==> recreate stack (logging limits + retention)"
+export GIT_COMMIT="${GIT_COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export POWERSVX_VERSION="${POWERSVX_VERSION:-1.6.0}"
+echo "build stamp VERSION=$POWERSVX_VERSION GIT_COMMIT=$GIT_COMMIT"
 # Percent-based Docker mem_limit (default 70% of host RAM).
 if [ -f "$ROOT/deploy/linux/calc-mem-env.sh" ]; then
   # shellcheck disable=SC1091

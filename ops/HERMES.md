@@ -11,6 +11,10 @@ Default target if unspecified: **isehat2 / 103.172.70.254**.
 3. `chmod +x deploy/linux/*.sh`
 4. `bash deploy/linux/gen-unbound-conf.sh configs/unbound/unbound.conf` (sizes Unbound from RAM/CPU).
 5. `eval "$(deploy/linux/calc-mem-env.sh)"` then export `POWERSVX_MEM_LIMIT` `GOMEMLIMIT`.
+   Stamp the UI version from git (so Dashboard shows `v1.6.0 · <sha>`):
+   `export GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)`
+   `export BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)`
+   `export POWERSVX_VERSION=1.6.0`
 6. Build + recreate **only** `compose.recreate` (unbound then powersvx). Do **not** recreate postgres/grafana unless asked.
    ```bash
    docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \

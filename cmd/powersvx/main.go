@@ -460,6 +460,8 @@ func main() {
 
 	log.Info("PowerSVX started",
 		"version", api.Version,
+		"git", api.GitCommit,
+		"build_id", api.BuildID(),
 		"udp", cfg.ListenAddr(cfg.Server.UDPPort),
 		"mode", cfg.Resolver.Mode,
 		"dnssec", cfg.Resolver.DNSSECMode,
