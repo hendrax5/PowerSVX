@@ -28,6 +28,9 @@ type Metrics struct {
 	DNSSECSecure uint64
 	DNSSECBogus  uint64
 	AggrNSEC     uint64
+	DelegHits    uint64
+	DelegMisses  uint64
+	NSECQueries  uint64
 	LogsDropped uint64
 
 	enabled       bool
