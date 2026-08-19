@@ -15,6 +15,7 @@ ops/*.local.yml
 web/node_modules/
 node_modules/
 web/dist/
+/bin/
 .agents/
 skills-lock.json
 

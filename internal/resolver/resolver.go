@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,6 +46,7 @@ type Resolver struct {
 	sf singleflight.Group
 	// OnForwarder is called after each forwarder attempt (addr, ok, latencyMS, errMsg).
 	OnForwarder func(addr string, ok bool, latencyMS int64, errMsg string)
+	fwdHealth   sync.Map // string -> *fwdState
 }
 
 type resolveResult struct {
@@ -323,6 +325,7 @@ func (r *Resolver) forwardTo(ctx context.Context, req *dns.Msg, sub *ecs.Subnet,
 	if len(forwarders) == 0 {
 		return nil, fmt.Errorf("no forwarders configured")
 	}
+	forwarders = r.pickForwarders(forwarders)
 	// Single forwarder: keep simple path.
 	if len(forwarders) == 1 {
 		fwd := forwarders[0]
@@ -334,6 +337,7 @@ func (r *Resolver) forwardTo(ctx context.Context, req *dns.Msg, sub *ecs.Subnet,
 			label = t.Display
 		}
 		if err != nil {
+			r.noteFwd(fwd, false)
 			if r.OnForwarder != nil {
 				r.OnForwarder(label, false, ms, err.Error())
 			}
@@ -341,22 +345,25 @@ func (r *Resolver) forwardTo(ctx context.Context, req *dns.Msg, sub *ecs.Subnet,
 		}
 		if resp == nil {
 			err = fmt.Errorf("nil response from %s", label)
+			r.noteFwd(fwd, false)
 			if r.OnForwarder != nil {
 				r.OnForwarder(label, false, ms, err.Error())
 			}
 			return nil, err
 		}
+		r.noteFwd(fwd, true)
 		if r.OnForwarder != nil {
 			r.OnForwarder(label, true, ms, "")
 		}
 		return resp, nil
 	}
 
-	// Race all forwarders; first usable answer wins so a slow/dead #2
+	// Race healthy forwarders; first usable answer wins so a slow/dead #2
 	// does not wait behind a timed-out #1 (fixes 8.8.8.8 "100% fail" UI).
 	type result struct {
 		resp  *dns.Msg
 		err   error
+		fwd   string
 		label string
 		ms    int64
 	}
@@ -373,7 +380,7 @@ func (r *Resolver) forwardTo(ctx context.Context, req *dns.Msg, sub *ecs.Subnet,
 			if t, e := config.ParseForwardTarget(fwd); e == nil && t.Display != "" {
 				label = t.Display
 			}
-			ch <- result{resp: resp, err: err, label: label, ms: time.Since(started).Milliseconds()}
+			ch <- result{resp: resp, err: err, fwd: fwd, label: label, ms: time.Since(started).Milliseconds()}
 		}()
 	}
 
@@ -392,12 +399,14 @@ func (r *Resolver) forwardTo(ctx context.Context, req *dns.Msg, sub *ecs.Subnet,
 				} else {
 					lastErr = fmt.Errorf("nil response from %s", res.label)
 				}
+				r.noteFwd(res.fwd, false)
 				if r.OnForwarder != nil {
 					r.OnForwarder(res.label, false, res.ms, lastErr.Error())
 				}
 				continue
 			}
 			cancel()
+			r.noteFwd(res.fwd, true)
 			if r.OnForwarder != nil {
 				r.OnForwarder(res.label, true, res.ms, "")
 			}

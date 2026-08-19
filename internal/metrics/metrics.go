@@ -76,6 +76,11 @@ var (
 		Help: "ACL-denied client IPs autobanned (silent drop / nft)",
 	})
 
+	AggressiveNSEC = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "powersvx_aggressive_nsec_total",
+		Help: "NXDOMAIN answers synthesized from a cached NSEC gap (RFC 8198)",
+	})
+
 	ForwarderAttempts = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "powersvx_forwarder_attempts_total",
 		Help: "Outbound forwarder attempts",

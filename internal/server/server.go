@@ -15,17 +15,17 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/powersvx/powersvx/internal/acme"
 	"github.com/powersvx/powersvx/internal/acl"
 	"github.com/powersvx/powersvx/internal/aclban"
+	"github.com/powersvx/powersvx/internal/acme"
 	"github.com/powersvx/powersvx/internal/allowlist"
-	"github.com/powersvx/powersvx/internal/denylist"
 	"github.com/powersvx/powersvx/internal/analytics"
 	"github.com/powersvx/powersvx/internal/anomaly"
 	"github.com/powersvx/powersvx/internal/authoritative"
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/database"
+	"github.com/powersvx/powersvx/internal/denylist"
 	"github.com/powersvx/powersvx/internal/dnssec"
 	"github.com/powersvx/powersvx/internal/ecs"
 	"github.com/powersvx/powersvx/internal/eventlog"
@@ -48,55 +48,56 @@ import (
 
 // Server is the DNS request pipeline.
 type Server struct {
-	cfg     *config.Config
-	cache   *cache.Tier
-	res     *resolver.Resolver
-	auth    *authoritative.Store
-	dnssec  *dnssec.Validator
-	signer  *dnssec.Signer
-	limiter *ratelimit.Limiter
-	rpz     *rpz.Engine
-	allow   *allowlist.List
-	deny    *denylist.List
-	tsig    *tsig.Store
-	views   *view.Matcher
-	geo     *geo.Resolver
-	tlsCfg  *tls.Config
-	events  *eventlog.Bus
-	acme    *acme.ChallengeStore
-	stats   *analytics.Collector
-	anomaly *anomaly.Detector
-	mon     *monitor.Collector
+	cfg          *config.Config
+	cache        *cache.Tier
+	res          *resolver.Resolver
+	auth         *authoritative.Store
+	dnssec       *dnssec.Validator
+	signer       *dnssec.Signer
+	limiter      *ratelimit.Limiter
+	rpz          *rpz.Engine
+	allow        *allowlist.List
+	deny         *denylist.List
+	tsig         *tsig.Store
+	views        *view.Matcher
+	geo          *geo.Resolver
+	tlsCfg       *tls.Config
+	events       *eventlog.Bus
+	acme         *acme.ChallengeStore
+	stats        *analytics.Collector
+	anomaly      *anomaly.Detector
+	mon          *monitor.Collector
 	plugins      *plugin.Registry
 	qlog         *database.QueryLogger
 	secondaryMgr *secondary.Manager
 	kominfo      *kominfo.Manager
 	onRPZNotify  func(zone string) bool
 	log          *slog.Logger
-	queryACLMu sync.RWMutex
-	queryACL   *acl.List
-	aclBan     *aclban.Guard
-	aclDenyN   atomic.Uint64
+	queryACLMu   sync.RWMutex
+	queryACL     *acl.List
+	aclBan       *aclban.Guard
+	aclDenyN     atomic.Uint64
+	nsec         *dnssec.NSECCache
 	// refreshInflight dedupes background cache refresh/prefetch by cache key.
 	refreshInflight sync.Map // uint64 -> struct{}
-	udp     *dns.Server
-	udps    []*dns.Server // all UDP listeners (SO_REUSEPORT shard)
-	tcp     *dns.Server
-	dot     *dns.Server
-	dohHTTP  *http.Server
-	dohHTTP3 *http3.Server
-	doqLn    *quic.Listener
-	doqCtx   context.Context
-	doqCancel context.CancelFunc
-	queries  atomic.Uint64
-	blocked  atomic.Uint64
+	udp             *dns.Server
+	udps            []*dns.Server // all UDP listeners (SO_REUSEPORT shard)
+	tcp             *dns.Server
+	dot             *dns.Server
+	dohHTTP         *http.Server
+	dohHTTP3        *http3.Server
+	doqLn           *quic.Listener
+	doqCtx          context.Context
+	doqCancel       context.CancelFunc
+	queries         atomic.Uint64
+	blocked         atomic.Uint64
 	// resolveFailLogN samples WARN "resolve failed" under miss storms (1/128).
 	resolveFailLogN atomic.Uint64
-	started  time.Time
-	dotOn    bool
-	dohOn    bool
-	doh3On   bool
-	doqOn    bool
+	started         time.Time
+	dotOn           bool
+	dohOn           bool
+	doh3On          bool
+	doqOn           bool
 }
 
 type Deps struct {
@@ -168,6 +169,7 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 		mon:      d.Monitor,
 		plugins:  d.Plugins,
 		qlog:     d.QLog,
+		nsec:     dnssec.NewNSECCache(),
 		log:      log,
 		queryACL: qacl,
 		aclBan:   ban,
@@ -552,6 +554,21 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 
+	if viewName == "default" && geoTag == "default" {
+		if m := s.aggressiveNSEC(req, qname); m != nil {
+			metrics.AggressiveNSEC.Inc()
+			s.storeAndWriteScoped(w, req, m, ecsKey, viewName, geoTag)
+			metrics.QueriesTotal.WithLabelValues(proto, "aggressive_nsec").Inc()
+			sec := time.Since(start).Seconds()
+			metrics.QueryDuration.WithLabelValues(proto).Observe(sec)
+			metrics.QueryDurationByPath.WithLabelValues("aggressive_nsec").Observe(sec)
+			observe("NXDOMAIN")
+			logQuery(qname, qtypeStr, dns.RcodeNameError, false)
+			note("aggressive_nsec", "NXDOMAIN", false, false, false)
+			return
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), s.res.Timeout)
 	defer cancel()
 
@@ -616,6 +633,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 
+	s.rememberNSEC(resp)
 	s.storeAndWriteScoped(w, req, resp, ecsKey, viewName, geoTag)
 	metrics.QueriesTotal.WithLabelValues(proto, "ok").Inc()
 	sec := time.Since(start).Seconds()
@@ -627,6 +645,33 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	observe(dns.RcodeToString[resp.Rcode])
 	logQuery(qname, qtypeStr, resp.Rcode, false)
 	note(via, dns.RcodeToString[resp.Rcode], false, false, false)
+}
+
+func (s *Server) aggressiveNSEC(req *dns.Msg, qname string) *dns.Msg {
+	if s == nil || s.nsec == nil || req == nil || qname == "" {
+		return nil
+	}
+	n := s.nsec.Cover(qname)
+	if n == nil {
+		return nil
+	}
+	m := new(dns.Msg)
+	m.SetReply(req)
+	m.RecursionAvailable = true
+	m.AuthenticatedData = true
+	m.Rcode = dns.RcodeNameError
+	m.Ns = []dns.RR{n}
+	return m
+}
+
+func (s *Server) rememberNSEC(resp *dns.Msg) {
+	if s == nil || s.nsec == nil || resp == nil || !resp.AuthenticatedData {
+		return
+	}
+	if resp.Rcode != dns.RcodeNameError && !(resp.Rcode == dns.RcodeSuccess && len(resp.Answer) == 0) {
+		return
+	}
+	s.nsec.AddFrom(resp.Ns)
 }
 
 func protocolFromWriter(w dns.ResponseWriter) string {
@@ -773,14 +818,14 @@ func (s *Server) ListenAndServe() error {
 		reuse := nUDP > 1
 		for i := 0; i < nUDP; i++ {
 			srv := &dns.Server{
-				Addr:          udpAddr,
-				Net:           "udp",
-				Handler:       handler,
-				UDPSize:       1232,
-				ReusePort:     reuse,
-				MsgAcceptFunc: accept,
+				Addr:           udpAddr,
+				Net:            "udp",
+				Handler:        handler,
+				UDPSize:        1232,
+				ReusePort:      reuse,
+				MsgAcceptFunc:  accept,
 				MsgInvalidFunc: invalid,
-				TsigSecret:    tsigMap,
+				TsigSecret:     tsigMap,
 			}
 			if i == 0 {
 				s.udp = srv
@@ -922,10 +967,10 @@ func (s *Server) DoQAddr() string {
 	return s.cfg.ListenAddr(s.cfg.Server.DoQPort)
 }
 
-func (s *Server) DoTEnabled() bool { return s.dotOn }
-func (s *Server) DoHEnabled() bool { return s.dohOn }
+func (s *Server) DoTEnabled() bool  { return s.dotOn }
+func (s *Server) DoHEnabled() bool  { return s.dohOn }
 func (s *Server) DoH3Enabled() bool { return s.doh3On }
-func (s *Server) DoQEnabled() bool { return s.doqOn }
+func (s *Server) DoQEnabled() bool  { return s.doqOn }
 
 func (s *Server) DNSSECMode() string {
 	if s.dnssec == nil {
@@ -1008,15 +1053,15 @@ func (s *Server) RefreshRPZAXFR(policies []rpz.PolicyConfig, timeout time.Durati
 
 // RuntimeFlags are feature toggles editable via the API/UI.
 type RuntimeFlags struct {
-	GeoDNS        bool     `json:"geodns"`
-	RPZ           bool     `json:"rpz_enabled"`
-	RateLimit     bool     `json:"rate_limit"`
-	ECS           bool     `json:"ecs_enabled"`
-	SplitHorizon  bool     `json:"split_horizon"`
-	ResolverMode  string   `json:"resolver_mode"`
-	ForwardOnFail bool     `json:"forward_on_fail"`
-	QueryLog      bool     `json:"query_log_enabled"`
-	Forwarders    []string `json:"forwarders,omitempty"`
+	GeoDNS        bool                       `json:"geodns"`
+	RPZ           bool                       `json:"rpz_enabled"`
+	RateLimit     bool                       `json:"rate_limit"`
+	ECS           bool                       `json:"ecs_enabled"`
+	SplitHorizon  bool                       `json:"split_horizon"`
+	ResolverMode  string                     `json:"resolver_mode"`
+	ForwardOnFail bool                       `json:"forward_on_fail"`
+	QueryLog      bool                       `json:"query_log_enabled"`
+	Forwarders    []string                   `json:"forwarders,omitempty"`
 	ForwardZones  []config.ForwardZoneConfig `json:"forward_zones,omitempty"`
 	KominfoSync   bool                       `json:"kominfo_sync_enabled"`
 }
@@ -1148,7 +1193,7 @@ func (s *Server) QueryACL() (allow, deny []string) {
 	}
 	return s.queryACL.AllowCIDRs(), s.queryACL.DenyCIDRs()
 }
-func (s *Server) QueryLogger() *database.QueryLogger     { return s.qlog }
+func (s *Server) QueryLogger() *database.QueryLogger { return s.qlog }
 
 func (s *Server) Analytics() *analytics.Collector { return s.stats }
 func (s *Server) Monitor() *monitor.Collector     { return s.mon }
@@ -1205,8 +1250,8 @@ func (s *Server) RateLimitBlocked(limit int) []monitor.Count {
 	}
 	return out
 }
-func (s *Server) Anomaly() *anomaly.Detector       { return s.anomaly }
-func (s *Server) Signer() *dnssec.Signer           { return s.signer }
+func (s *Server) Anomaly() *anomaly.Detector { return s.anomaly }
+func (s *Server) Signer() *dnssec.Signer     { return s.signer }
 
 func (s *Server) ServeDNSMsg(req *dns.Msg) (*dns.Msg, []byte, error) {
 	return s.ServeDNSMsgFrom(req, "127.0.0.1")
