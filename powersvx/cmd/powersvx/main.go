@@ -67,9 +67,12 @@ func main() {
 	var pool *upstream.Pool
 	var rec *recursive.Recursive
 	if cfg.Recursion {
-		rec = recursive.New(3*time.Second, cfg.RecursionIPv6, m)
-		log.Printf("recursive engine enabled (ipv6=%v)", cfg.RecursionIPv6)
+		rec = recursive.New(3*time.Second, cfg.RecursionIPv6, m, cfg.DNSSECValidate)
+		log.Printf("recursive engine enabled (ipv6=%v dnssec_validate=%v)", cfg.RecursionIPv6, cfg.DNSSECValidate)
 	} else {
+		if cfg.DNSSECValidate {
+			log.Printf("WARNING: dnssec_validate requires recursion=true; ignoring in forward mode")
+		}
 		pool = upstream.New(cfg.Upstreams, 2*time.Second, cfg.Health.MaxFails,
 			time.Duration(cfg.Health.ProbeIntervalSeconds)*time.Second, m)
 		m.BindUpstreams(pool.Stats)
@@ -78,15 +81,21 @@ func main() {
 	}
 
 	res := resolver.New(resolver.Options{
-		Cache:     c,
-		RPZ:       matcher,
-		RPZOn:     cfg.RPZ.Enabled,
-		Pool:      pool,
-		Recursive: rec,
-		Metrics:   m,
-		Logger:    lg,
-		DNSSEC:    cfg.DNSSEC,
+		Cache:      c,
+		RPZ:        matcher,
+		RPZOn:      cfg.RPZ.Enabled,
+		Pool:       pool,
+		Recursive:  rec,
+		Metrics:    m,
+		Logger:     lg,
+		DNSSEC:     cfg.DNSSEC,
+		ServeStale: cfg.Cache.ServeStale,
 	})
+
+	if cfg.Cache.ServeStale {
+		c.EnableServeStale(cfg.Cache.ServeStaleMaxSeconds, cfg.Cache.ServeStaleTTL)
+		log.Printf("serve-stale enabled: max=%ds ttl=%ds", cfg.Cache.ServeStaleMaxSeconds, cfg.Cache.ServeStaleTTL)
+	}
 
 	if cfg.Cache.Prefetch {
 		c.EnablePrefetch(cfg.Cache.PrefetchWindow, cfg.Cache.PrefetchMinHits, cfg.Cache.PrefetchWorkers, res.Prefetch)

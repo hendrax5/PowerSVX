@@ -18,6 +18,7 @@ type Config struct {
 	Upstreams  []string        `yaml:"upstreams"`
 	Recursion  bool            `yaml:"recursion"`      // use built-in recursive engine instead of forwarding
 	RecursionIPv6 bool         `yaml:"recursion_ipv6"` // allow IPv6 glue/roots in recursive mode
+	DNSSECValidate bool        `yaml:"dnssec_validate"` // heavier mode: validate answers (recursive only)
 	Health     HealthConfig    `yaml:"health"`
 	Cache      CacheConfig     `yaml:"cache"`
 	RPZ        RPZConfig       `yaml:"rpz"`
@@ -37,6 +38,9 @@ type CacheConfig struct {
 	PrefetchWindow  int  `yaml:"prefetch_window"`   // seconds-before-expiry to refresh
 	PrefetchMinHits int  `yaml:"prefetch_min_hits"` // only prefetch "popular" entries
 	PrefetchWorkers int  `yaml:"prefetch_workers"`  // background refresh goroutines
+	ServeStale           bool `yaml:"serve_stale"`             // RFC 8767 serve-stale on upstream failure
+	ServeStaleMaxSeconds int  `yaml:"serve_stale_max_seconds"` // retain expired entries this long
+	ServeStaleTTL        int  `yaml:"serve_stale_ttl"`         // short TTL applied to stale answers
 }
 
 type HealthConfig struct {
@@ -133,6 +137,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Cache.PrefetchWorkers == 0 {
 		c.Cache.PrefetchWorkers = 2
+	}
+	if c.Cache.ServeStaleMaxSeconds == 0 {
+		c.Cache.ServeStaleMaxSeconds = 86400
+	}
+	if c.Cache.ServeStaleTTL == 0 {
+		c.Cache.ServeStaleTTL = 30
 	}
 	if c.RPZ.Action == "" {
 		c.RPZ.Action = "nxdomain"

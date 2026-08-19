@@ -62,6 +62,7 @@ Set in the YAML:
 ```yaml
 recursion: false        # false = forward to upstreams (default); true = built-in recursive
 recursion_ipv6: false   # allow IPv6 roots/glue when recursion is on
+dnssec_validate: false  # heavier mode: validate answers vs root anchor (recursive only)
 health:                 # forwarding-pool health checks (failover)
   max_fails: 3          # consecutive failures before an upstream is demoted
   probe_interval_seconds: 10  # cadence for reviving down upstreams
@@ -72,7 +73,20 @@ health:                 # forwarding-pool health checks (failover)
   skipped; a background prober revives it. Per-upstream health/RTT show up in
   `/metrics` as `powersvx_upstream_up{addr=...}` and `powersvx_upstream_rtt_seconds`.
 - Recursive: iterative resolution from embedded root hints (root -> TLD -> auth),
-  following referrals/glue and chasing CNAMEs. No DNSSEC validation (perf mode).
+  following referrals/glue and chasing CNAMEs. A **delegation cache** remembers
+  NS/glue per zone so cold misses don't re-walk from the root each time (DS
+  queries correctly start at the parent).
+- DNSSEC (`dnssec_validate: true`, recursive only): builds a chain of trust from
+  the root KSK anchor to the answer's signer zone. Secure answers get the AD bit;
+  cryptographically broken answers return SERVFAIL (`powersvx_dnssec_bogus_total`);
+  unsigned zones are Insecure. Denial-of-existence (NSEC/NSEC3) is not yet validated.
+
+## Serve-stale (RFC 8767)
+
+With `cache.serve_stale: true`, if live resolution fails the resolver answers
+from an expired-but-retained cache entry (short `serve_stale_ttl`, retained up to
+`serve_stale_max_seconds`) instead of SERVFAIL, so brief upstream blips don't
+break clients. Counted as `powersvx_served_stale_total`.
 
 ## Latency without the load tool
 

@@ -38,6 +38,21 @@ type Cache struct {
 	prefetchCh chan string
 	window     uint32 // seconds-before-expiry to trigger refresh
 	minHits    uint32
+
+	// Serve-stale (RFC 8767): keep expired entries for staleMax seconds and
+	// hand them out with a short staleTTL when the upstream can't be reached.
+	staleMax uint32
+	staleTTL uint32
+}
+
+// EnableServeStale turns on RFC 8767 serve-stale. maxSec is how long past expiry
+// an entry is retained; ttlSec is the short TTL applied to stale answers.
+func (c *Cache) EnableServeStale(maxSec, ttlSec int) {
+	c.staleMax = uint32(maxSec)
+	c.staleTTL = uint32(ttlSec)
+	if c.staleTTL == 0 {
+		c.staleTTL = 30
+	}
 }
 
 // New creates a cache with `shards` shards (rounded up to a power of two) and a
@@ -75,7 +90,42 @@ func (c *Cache) Get(key string, req *dns.Msg) *dns.Msg {
 	now := time.Now().Unix()
 	elapsed := now - e.storedAt
 	if elapsed >= int64(e.ttl) {
-		// Lazily drop expired entry.
+		// Fresh TTL expired. Keep the entry within the serve-stale window so
+		// GetStale can hand it out on upstream failure; only drop beyond it.
+		if c.staleMax == 0 || elapsed >= int64(e.ttl)+int64(c.staleMax) {
+			s.mu.Lock()
+			if cur, ok := s.m[key]; ok && cur == e {
+				delete(s.m, key)
+			}
+			s.mu.Unlock()
+		}
+		return nil
+	}
+	remaining := e.ttl - uint32(elapsed)
+	c.maybePrefetch(key, e, remaining)
+	return buildReply(req, e.msg, remaining)
+}
+
+// GetStale returns an expired-but-within-window entry with a short TTL, used as
+// a last resort when live resolution fails (RFC 8767). Returns nil if stale is
+// disabled or nothing usable is cached.
+func (c *Cache) GetStale(key string, req *dns.Msg) *dns.Msg {
+	if c.staleMax == 0 {
+		return nil
+	}
+	s := c.shardFor(key)
+	s.mu.RLock()
+	e, ok := s.m[key]
+	s.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	now := time.Now().Unix()
+	elapsed := now - e.storedAt
+	if elapsed < int64(e.ttl) {
+		return buildReply(req, e.msg, e.ttl-uint32(elapsed)) // still fresh
+	}
+	if elapsed >= int64(e.ttl)+int64(c.staleMax) {
 		s.mu.Lock()
 		if cur, ok := s.m[key]; ok && cur == e {
 			delete(s.m, key)
@@ -83,9 +133,7 @@ func (c *Cache) Get(key string, req *dns.Msg) *dns.Msg {
 		s.mu.Unlock()
 		return nil
 	}
-	remaining := e.ttl - uint32(elapsed)
-	c.maybePrefetch(key, e, remaining)
-	return buildReply(req, e.msg, remaining)
+	return buildReply(req, e.msg, c.staleTTL)
 }
 
 // EnablePrefetch starts background workers that refresh popular entries shortly

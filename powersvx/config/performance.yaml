@@ -14,6 +14,7 @@ upstreams:
 # Resolve backend: forwarding pool (default) or built-in recursive engine.
 recursion: false        # true => iterative resolution from root hints
 recursion_ipv6: false   # allow IPv6 roots/glue when recursion is on
+dnssec_validate: false  # heavier mode: validate answers against root anchor (recursion only)
 
 # Per-upstream health checks so a dead/slow resolver is skipped (forward mode).
 health:
@@ -33,6 +34,9 @@ cache:
   prefetch_window: 30  # seconds-before-expiry to trigger a refresh
   prefetch_min_hits: 5 # only prefetch entries seen at least this many times
   prefetch_workers: 2
+  serve_stale: true            # RFC 8767: answer from expired cache if upstream fails
+  serve_stale_max_seconds: 86400
+  serve_stale_ttl: 30
 
 rpz:
   enabled: true

@@ -24,6 +24,9 @@ type Metrics struct {
 	TCPQueries  uint64
 	Coalesced   uint64
 	Prefetches  uint64
+	ServedStale  uint64
+	DNSSECSecure uint64
+	DNSSECBogus  uint64
 	LogsDropped uint64
 
 	enabled       bool
@@ -52,6 +55,9 @@ func (m *Metrics) IncNXDomain()    { atomic.AddUint64(&m.NXDomain, 1) }
 func (m *Metrics) IncTCP()         { atomic.AddUint64(&m.TCPQueries, 1) }
 func (m *Metrics) IncCoalesced()   { atomic.AddUint64(&m.Coalesced, 1) }
 func (m *Metrics) IncPrefetch()    { atomic.AddUint64(&m.Prefetches, 1) }
+func (m *Metrics) IncServedStale()   { atomic.AddUint64(&m.ServedStale, 1) }
+func (m *Metrics) IncDNSSECSecure()  { atomic.AddUint64(&m.DNSSECSecure, 1) }
+func (m *Metrics) IncDNSSECBogus()   { atomic.AddUint64(&m.DNSSECBogus, 1) }
 
 // ObserveLatency records server-side handling time for the latency histogram.
 func (m *Metrics) ObserveLatency(d time.Duration) { m.lat.Observe(d) }
@@ -76,6 +82,9 @@ func (m *Metrics) Handler() http.Handler {
 		g("tcp_queries_total", "Queries served over TCP", atomic.LoadUint64(&m.TCPQueries))
 		g("coalesced_total", "Upstream lookups coalesced by singleflight", atomic.LoadUint64(&m.Coalesced))
 		g("prefetches_total", "Background cache refreshes performed", atomic.LoadUint64(&m.Prefetches))
+		g("served_stale_total", "Stale answers served during upstream failure (RFC 8767)", atomic.LoadUint64(&m.ServedStale))
+		g("dnssec_secure_total", "Answers validated Secure", atomic.LoadUint64(&m.DNSSECSecure))
+		g("dnssec_bogus_total", "Answers rejected Bogus (SERVFAIL)", atomic.LoadUint64(&m.DNSSECBogus))
 		if m.logsDroppedFn != nil {
 			g("logs_dropped_total", "Log lines dropped by backpressure", m.logsDroppedFn())
 		}
@@ -127,22 +136,30 @@ func (h *Histogram) Observe(d time.Duration) {
 	atomic.AddUint64(&h.sumNs, uint64(d.Nanoseconds()))
 }
 
-// Quantile returns the upper bound of the bucket containing the q-th percentile
-// (coarse but allocation-free and good for eyeballing tail latency).
+// Quantile estimates the q-th percentile using linear interpolation within the
+// bucket that contains it (Prometheus-style), giving a precise value instead of
+// a bucket edge.
 func (h *Histogram) Quantile(q float64) float64 {
 	total := atomic.LoadUint64(&h.count)
 	if total == 0 {
 		return 0
 	}
-	target := uint64(q * float64(total))
-	var cum uint64
-	for i, b := range h.bounds {
-		cum += atomic.LoadUint64(&h.counts[i])
-		if cum >= target {
-			return b
+	target := q * float64(total)
+	var cum float64
+	lower := 0.0
+	for i, upper := range h.bounds {
+		c := float64(atomic.LoadUint64(&h.counts[i]))
+		if cum+c >= target {
+			if c == 0 {
+				return upper
+			}
+			frac := (target - cum) / c
+			return lower + (upper-lower)*frac
 		}
+		cum += c
+		lower = upper
 	}
-	return h.bounds[len(h.bounds)-1] // in +Inf bucket
+	return h.bounds[len(h.bounds)-1] // in +Inf bucket: clamp to last finite bound
 }
 
 func (h *Histogram) render(w http.ResponseWriter) {

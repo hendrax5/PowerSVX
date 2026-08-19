@@ -13,6 +13,7 @@ upstreams:
 
 recursion: false
 recursion_ipv6: false
+dnssec_validate: false
 
 health:
   max_fails: 3
@@ -29,6 +30,9 @@ cache:
   prefetch_window: 30
   prefetch_min_hits: 3
   prefetch_workers: 2
+  serve_stale: true
+  serve_stale_max_seconds: 86400
+  serve_stale_ttl: 30
 
 rpz:
   enabled: true

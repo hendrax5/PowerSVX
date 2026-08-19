@@ -46,8 +46,14 @@ plan (Phases 1–4) was built from scratch. Language: Go 1.23.
 - IPv6 batch: server batchConn interface satisfied by both ipv4/ipv6 PacketConn (shared alias Message type); udpBatchWorker auto-selects family via isIPv6(localaddr). Compiled+family-selected (v4 batch validated live).
 - Recursive engine: internal/recursive iterative resolver with embedded root hints (v4+v6), referral/glue handling, glueless NS resolution, CNAME chase, depth/iter bounds. Config recursion:true. Validated: resolved example.com from roots, 0 servfail, then cache-served.
 
+## Iteration 4 (2026-08-19) — deleg-cache / serve-stale / dnssec / sharp-quantiles
+- Delegation cache (recursive): per-zone NS/glue cache with ancestor (longest-suffix) match so cold misses start at the closest known delegation instead of the root; DS queries correctly start at the PARENT (bug found+fixed via live DNSSEC). Unit tests for ancestor/most-specific/expiry.
+- Serve-stale (RFC 8767): cache retains expired entries for serve_stale_max_seconds; on resolve failure Handle serves them with short serve_stale_ttl instead of SERVFAIL. Metric served_stale_total. Unit-tested.
+- DNSSEC validation (internal/dnssec): chain of trust from root KSK anchor (tag 20326) -> signer zone; RRSIG/DNSKEY/DS verification, self-signed DNSKEY check, DS->parent recursion, validated-key cache. Recursive-only; sets DO bit. Secure=>AD, Bogus=>SERVFAIL, unsigned=>Insecure. NSEC/NSEC3 denial NOT yet validated. Offline crypto unit tests + LIVE (cloudflare/example.org Secure, dnssec-failed.org Bogus).
+- Sharper quantiles: Histogram.Quantile linear-interpolates within the bucket so p50/p95/p99 gauges report precise values. Unit-tested; live p50=0.0175 p99=0.02485.
+
 ## Backlog / next
-- P1: recursive delegation/NS cache to avoid re-walking from root each cold miss.
-- P2: DNSSEC validation path (separate, heavier; off in perf mode).
-- P2: linear interpolation within histogram buckets for finer quantiles.
-- P2: serve-stale on upstream failure (RFC 8767) to smooth outages.
+- P1: NSEC/NSEC3 denial-of-existence validation (secure NXDOMAIN/NODATA).
+- P2: aggressive NSEC caching (RFC 8198) to suppress random-subdomain floods.
+- P2: EDNS Client Subnet passthrough/control.
+- P2: config hot-reload (SIGHUP) beyond RPZ (upstreams, ttls).

@@ -26,33 +26,36 @@ type Resolver struct {
 	rpzOn  bool
 	pool   *upstream.Pool
 	rec    *recursive.Recursive
-	group  singleflight.Group
-	m      *metrics.Metrics
-	log    *logx.Logger
-	dnssec bool
+	group      singleflight.Group
+	m          *metrics.Metrics
+	log        *logx.Logger
+	dnssec     bool
+	serveStale bool
 }
 
 type Options struct {
-	Cache     *cache.Cache
-	RPZ       *rpz.Matcher
-	RPZOn     bool
-	Pool      *upstream.Pool      // forwarding mode
-	Recursive *recursive.Recursive // recursive mode (takes precedence if set)
-	Metrics   *metrics.Metrics
-	Logger    *logx.Logger
-	DNSSEC    bool
+	Cache      *cache.Cache
+	RPZ        *rpz.Matcher
+	RPZOn      bool
+	Pool       *upstream.Pool       // forwarding mode
+	Recursive  *recursive.Recursive // recursive mode (takes precedence if set)
+	Metrics    *metrics.Metrics
+	Logger     *logx.Logger
+	DNSSEC     bool
+	ServeStale bool
 }
 
 func New(o Options) *Resolver {
 	return &Resolver{
-		cache:  o.Cache,
-		rpz:    o.RPZ,
-		rpzOn:  o.RPZOn,
-		pool:   o.Pool,
-		rec:    o.Recursive,
-		m:      o.Metrics,
-		log:    o.Logger,
-		dnssec: o.DNSSEC,
+		cache:      o.Cache,
+		rpz:        o.RPZ,
+		rpzOn:      o.RPZOn,
+		pool:       o.Pool,
+		rec:        o.Recursive,
+		m:          o.Metrics,
+		log:        o.Logger,
+		dnssec:     o.DNSSEC,
+		serveStale: o.ServeStale,
 	}
 }
 
@@ -106,6 +109,16 @@ func (r *Resolver) Handle(req *dns.Msg) *dns.Msg {
 		r.m.IncCoalesced()
 	}
 	if v == nil {
+		// Live resolution failed: try serving a stale answer (RFC 8767) before
+		// giving up with SERVFAIL, so brief upstream blips don't break clients.
+		if r.serveStale {
+			if stale := r.cache.GetStale(key, req); stale != nil {
+				r.m.IncServedStale()
+				stale.RecursionAvailable = true
+				r.logSampled("served-stale", name)
+				return stale
+			}
+		}
 		r.m.IncServFail()
 		r.logSampled("servfail", name)
 		return errReply(req, dns.RcodeServerFailure)

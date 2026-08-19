@@ -96,6 +96,42 @@ func TestPrefetchSkipsColdEntries(t *testing.T) {
 	}
 }
 
+func TestServeStale(t *testing.T) {
+	c := New(16, 1000, 86400, 900)
+	c.EnableServeStale(3600, 30)
+	c.Store("k.|1|1", mkResp("k.", 300, true), false)
+
+	req := new(dns.Msg)
+	req.SetQuestion("k.", dns.TypeA)
+
+	// Force the entry past its fresh TTL but within the stale window.
+	s := c.shardFor("k.|1|1")
+	s.mu.Lock()
+	s.m["k.|1|1"].storedAt -= 1000
+	s.mu.Unlock()
+
+	if c.Get("k.|1|1", req) != nil {
+		t.Fatal("fresh Get must miss on an expired entry")
+	}
+	stale := c.GetStale("k.|1|1", req)
+	if stale == nil {
+		t.Fatal("GetStale should return the expired-but-in-window entry")
+	}
+	if len(stale.Answer) != 1 || stale.Answer[0].Header().Ttl != 30 {
+		t.Errorf("stale answer should carry the short stale TTL (30), got %v", stale.Answer)
+	}
+
+	// Push it beyond the stale window => dropped, no stale served.
+	s.mu.Lock()
+	if e, ok := s.m["k.|1|1"]; ok {
+		e.storedAt -= 4000
+	}
+	s.mu.Unlock()
+	if c.GetStale("k.|1|1", req) != nil {
+		t.Fatal("entry beyond stale window must not be served")
+	}
+}
+
 func BenchmarkCacheGet(b *testing.B) {
 	c := New(256, 20000, 86400, 900)
 	req := new(dns.Msg)
