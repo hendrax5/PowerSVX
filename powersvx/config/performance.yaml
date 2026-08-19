@@ -20,6 +20,10 @@ cache:
   per_shard_cap: 20000
   positive_ttl_max: 86400
   negative_ttl_max: 900
+  prefetch: true       # refresh popular records just before they expire
+  prefetch_window: 30  # seconds-before-expiry to trigger a refresh
+  prefetch_min_hits: 5 # only prefetch entries seen at least this many times
+  prefetch_workers: 2
 
 rpz:
   enabled: true
@@ -44,6 +48,8 @@ socket:
   reuseport: true
   rcvbuf: 4194304      # 4 MiB SO_RCVBUF
   sndbuf: 4194304      # 4 MiB SO_SNDBUF
+  batch: true          # recvmmsg/sendmmsg batch path (fewer syscalls at high QPS)
+  batch_size: 16       # datagrams processed per syscall
 
 # pprof for Phase 1 baseline (CPU/alloc/mutex/block). Keep OFF in production.
 profiling:

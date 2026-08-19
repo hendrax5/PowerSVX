@@ -67,6 +67,12 @@ func main() {
 		Timeout:   2 * time.Second,
 	})
 
+	if cfg.Cache.Prefetch {
+		c.EnablePrefetch(cfg.Cache.PrefetchWindow, cfg.Cache.PrefetchMinHits, cfg.Cache.PrefetchWorkers, res.Prefetch)
+		log.Printf("cache prefetch enabled: window=%ds min_hits=%d workers=%d",
+			cfg.Cache.PrefetchWindow, cfg.Cache.PrefetchMinHits, cfg.Cache.PrefetchWorkers)
+	}
+
 	// --- Observability endpoints (kept OFF the DNS hot path) ---
 	if cfg.Metrics.Enabled {
 		mux := http.NewServeMux()

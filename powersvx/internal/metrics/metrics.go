@@ -20,6 +20,7 @@ type Metrics struct {
 	NXDomain      uint64
 	TCPQueries    uint64
 	Coalesced     uint64 // singleflight-shared upstream lookups
+	Prefetches    uint64 // background cache refreshes performed
 	LogsDropped   uint64
 	enabled       bool
 	logsDroppedFn func() uint64
@@ -36,6 +37,7 @@ func (m *Metrics) IncServFail()    { atomic.AddUint64(&m.ServFail, 1) }
 func (m *Metrics) IncNXDomain()    { atomic.AddUint64(&m.NXDomain, 1) }
 func (m *Metrics) IncTCP()         { atomic.AddUint64(&m.TCPQueries, 1) }
 func (m *Metrics) IncCoalesced()   { atomic.AddUint64(&m.Coalesced, 1) }
+func (m *Metrics) IncPrefetch()    { atomic.AddUint64(&m.Prefetches, 1) }
 
 // BindLogsDropped wires a callback so the async logger's drop counter shows up
 // in /metrics without coupling packages.
@@ -57,6 +59,7 @@ func (m *Metrics) Handler() http.Handler {
 		g("nxdomain_total", "NXDOMAIN responses", atomic.LoadUint64(&m.NXDomain))
 		g("tcp_queries_total", "Queries served over TCP", atomic.LoadUint64(&m.TCPQueries))
 		g("coalesced_total", "Upstream lookups coalesced by singleflight", atomic.LoadUint64(&m.Coalesced))
+		g("prefetches_total", "Background cache refreshes performed", atomic.LoadUint64(&m.Prefetches))
 		if m.logsDroppedFn != nil {
 			g("logs_dropped_total", "Log lines dropped by backpressure", m.logsDroppedFn())
 		}

@@ -3,6 +3,7 @@ package cache
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 )
@@ -49,6 +50,49 @@ func TestMissOnEmptyKey(t *testing.T) {
 	req.SetQuestion("nope.com.", dns.TypeA)
 	if c.Get("nope.com.|1|1", req) != nil {
 		t.Error("expected miss")
+	}
+}
+
+func TestPrefetchTriggersRefresh(t *testing.T) {
+	c := New(16, 1000, 86400, 900)
+	got := make(chan string, 4)
+	// window huge so every near-hit qualifies; min 3 hits to be "popular".
+	c.EnablePrefetch(1_000_000, 3, 1, func(key string) { got <- key })
+
+	c.Store("hot.com.|1|1", mkResp("hot.com.", 3600, true), false)
+	req := new(dns.Msg)
+	req.SetQuestion("hot.com.", dns.TypeA)
+
+	for i := 0; i < 5; i++ {
+		if c.Get("hot.com.|1|1", req) == nil {
+			t.Fatalf("expected hit on iteration %d", i)
+		}
+	}
+
+	select {
+	case k := <-got:
+		if k != "hot.com.|1|1" {
+			t.Errorf("prefetched wrong key: %q", k)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected a prefetch to be enqueued for a popular near-expiry entry")
+	}
+}
+
+func TestPrefetchSkipsColdEntries(t *testing.T) {
+	c := New(16, 1000, 86400, 900)
+	fired := make(chan string, 4)
+	c.EnablePrefetch(1_000_000, 100, 1, func(key string) { fired <- key })
+	c.Store("cold.com.|1|1", mkResp("cold.com.", 3600, true), false)
+	req := new(dns.Msg)
+	req.SetQuestion("cold.com.", dns.TypeA)
+	for i := 0; i < 5; i++ { // well below min_hits=100
+		c.Get("cold.com.|1|1", req)
+	}
+	select {
+	case <-fired:
+		t.Fatal("cold entry should not be prefetched")
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 

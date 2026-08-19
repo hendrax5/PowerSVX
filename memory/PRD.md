@@ -34,9 +34,14 @@ plan (Phases 1–4) was built from scratch. Language: Go 1.23.
 - E2E cache hit + singleflight: 88,437 hits / 2 misses / 2 coalesced / 0 errors, p99 5.7ms.
 - Miss/forward path works (throttled by public upstream RTT in sandbox). pprof endpoints live. go vet clean.
 
+## Iteration 2 (2026-08-19) — batch/pool/prefetch/harness
+- Batch UDP: recvmmsg/sendmmsg path via x/net/ipv4 ReadBatch/WriteBatch, one worker per SO_REUSEPORT socket, socket.batch + batch_size config. Validated: 119k hits, RPZ-block 43k NXDOMAIN in batch mode.
+- Message pooling: internal/dnspool sync.Pool for *dns.Msg (request+response) and PackBuffer output buffers; wired into both classic and batch server paths.
+- Cache prefetch: popularity + near-expiry refresh via bounded queue + background workers + singleflight (resolver.Prefetch). Unit-tested (fires for hot near-expiry, skips cold). Metric powersvx_prefetches_total.
+- Competitor harness: scripts/compare.sh — one command, runs cmd/bench across scenarios x targets, samples /proc CPU+RSS, prints markdown table with QPS, p99, CPU-per-10k-queries, peak memory. Self-test: powersvx hit ~21k QPS, 0.097 cpu-s/10k, 70.7 MiB.
+
 ## Backlog / next
-- P1: recvmmsg/sendmmsg batch UDP path (x/net/ipv4 ReadBatch/WriteBatch) for syscall amortization.
-- P1: sync.Pool for dns.Msg / packing buffers to cut per-query allocs further.
-- P2: prefetch popular entries near TTL expiry to smooth cache-miss cliffs.
-- P2: per-upstream health/failover + EDNS client-subnet control.
-- P2: Phase 5 automated harness scripting vs PowerDNS/Technitium.
+- P1: per-upstream health/failover + EDNS client-subnet control.
+- P2: prometheus histogram (bounded buckets) for server-side latency.
+- P2: optional in-process recursive mode (root hints) vs forwarding-only.
+- P2: IPv6 batch path (x/net/ipv6) mirroring the ipv4 batch worker.

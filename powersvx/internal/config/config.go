@@ -26,10 +26,14 @@ type Config struct {
 }
 
 type CacheConfig struct {
-	Shards         int `yaml:"shards"`           // power of two recommended
-	PerShardCap    int `yaml:"per_shard_cap"`    // max entries per shard
-	PositiveTTLMax int `yaml:"positive_ttl_max"` // seconds, clamp
-	NegativeTTLMax int `yaml:"negative_ttl_max"` // seconds, clamp
+	Shards          int  `yaml:"shards"`            // power of two recommended
+	PerShardCap     int  `yaml:"per_shard_cap"`     // max entries per shard
+	PositiveTTLMax  int  `yaml:"positive_ttl_max"`  // seconds, clamp
+	NegativeTTLMax  int  `yaml:"negative_ttl_max"`  // seconds, clamp
+	Prefetch        bool `yaml:"prefetch"`          // refresh hot entries before expiry
+	PrefetchWindow  int  `yaml:"prefetch_window"`   // seconds-before-expiry to refresh
+	PrefetchMinHits int  `yaml:"prefetch_min_hits"` // only prefetch "popular" entries
+	PrefetchWorkers int  `yaml:"prefetch_workers"`  // background refresh goroutines
 }
 
 type RPZConfig struct {
@@ -51,8 +55,10 @@ type MetricsConfig struct {
 
 type SocketConfig struct {
 	ReusePort bool `yaml:"reuseport"`
-	RcvBuf    int  `yaml:"rcvbuf"` // SO_RCVBUF bytes, 0 => kernel default
-	SndBuf    int  `yaml:"sndbuf"` // SO_SNDBUF bytes
+	RcvBuf    int  `yaml:"rcvbuf"`     // SO_RCVBUF bytes, 0 => kernel default
+	SndBuf    int  `yaml:"sndbuf"`     // SO_SNDBUF bytes
+	Batch     bool `yaml:"batch"`      // use recvmmsg/sendmmsg batch UDP path
+	BatchSize int  `yaml:"batch_size"` // messages per syscall when batch=true
 }
 
 type ProfilingConfig struct {
@@ -87,6 +93,9 @@ func (c *Config) applyDefaults() {
 	if c.Workers == 0 {
 		c.Workers = 2
 	}
+	if c.Socket.BatchSize == 0 {
+		c.Socket.BatchSize = 16
+	}
 	if len(c.Upstreams) == 0 {
 		c.Upstreams = []string{"1.1.1.1:53", "8.8.8.8:53"}
 	}
@@ -101,6 +110,15 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Cache.NegativeTTLMax == 0 {
 		c.Cache.NegativeTTLMax = 900
+	}
+	if c.Cache.PrefetchWindow == 0 {
+		c.Cache.PrefetchWindow = 30
+	}
+	if c.Cache.PrefetchMinHits == 0 {
+		c.Cache.PrefetchMinHits = 5
+	}
+	if c.Cache.PrefetchWorkers == 0 {
+		c.Cache.PrefetchWorkers = 2
 	}
 	if c.RPZ.Action == "" {
 		c.RPZ.Action = "nxdomain"

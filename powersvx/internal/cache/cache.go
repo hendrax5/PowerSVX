@@ -6,16 +6,19 @@ package cache
 import (
 	"hash/fnv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
 )
 
 type entry struct {
-	msg      *dns.Msg
-	storedAt int64 // unix seconds
-	ttl      uint32
-	negative bool
+	msg        *dns.Msg
+	storedAt   int64 // unix seconds
+	ttl        uint32
+	negative   bool
+	hits       uint32 // atomic; popularity for prefetch
+	refreshing uint32 // atomic flag; 1 while a prefetch is queued/in-flight
 }
 
 type shard struct {
@@ -29,6 +32,12 @@ type Cache struct {
 	mask   uint32
 	posMax uint32
 	negMax uint32
+
+	// Prefetch (refresh hot entries just before expiry).
+	refresh    func(string) // set via EnablePrefetch
+	prefetchCh chan string
+	window     uint32 // seconds-before-expiry to trigger refresh
+	minHits    uint32
 }
 
 // New creates a cache with `shards` shards (rounded up to a power of two) and a
@@ -75,7 +84,56 @@ func (c *Cache) Get(key string, req *dns.Msg) *dns.Msg {
 		return nil
 	}
 	remaining := e.ttl - uint32(elapsed)
+	c.maybePrefetch(key, e, remaining)
 	return buildReply(req, e.msg, remaining)
+}
+
+// EnablePrefetch starts background workers that refresh popular entries shortly
+// before they expire, so bursts of look-alike traffic (or a re-query of a hot
+// name) hit warm cache instead of falling through to a cache-miss latency
+// cliff. refresh(key) should re-resolve and Store the entry.
+func (c *Cache) EnablePrefetch(window, minHits, workers int, refresh func(string)) {
+	if refresh == nil || window <= 0 {
+		return
+	}
+	c.window = uint32(window)
+	c.minHits = uint32(minHits)
+	c.refresh = refresh
+	c.prefetchCh = make(chan string, 8192)
+	if workers < 1 {
+		workers = 1
+	}
+	for i := 0; i < workers; i++ {
+		go c.prefetchLoop()
+	}
+}
+
+func (c *Cache) prefetchLoop() {
+	for key := range c.prefetchCh {
+		c.refresh(key)
+	}
+}
+
+// maybePrefetch enqueues a refresh at most once per entry lifetime, only for
+// entries within the refresh window and above the popularity threshold. The
+// enqueue is non-blocking; a full queue simply drops the hint (the entry still
+// gets refreshed naturally by the next real miss).
+func (c *Cache) maybePrefetch(key string, e *entry, remaining uint32) {
+	if c.refresh == nil {
+		return
+	}
+	h := atomic.AddUint32(&e.hits, 1)
+	if remaining > c.window || h < c.minHits {
+		return
+	}
+	if !atomic.CompareAndSwapUint32(&e.refreshing, 0, 1) {
+		return
+	}
+	select {
+	case c.prefetchCh <- key:
+	default:
+		atomic.StoreUint32(&e.refreshing, 0)
+	}
 }
 
 // Store caches resp under key. positive vs negative is decided by the caller.

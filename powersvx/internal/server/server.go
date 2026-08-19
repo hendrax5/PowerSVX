@@ -3,11 +3,14 @@
 //
 //   - UDP uses SO_REUSEPORT with one bound socket per worker so the kernel load
 //     balances datagrams across workers without a shared user-space queue. Each
-//     worker is a single goroutine running a recv->process->send loop (NO
-//     goroutine-per-request), with a per-worker reusable read buffer.
+//     worker is a single goroutine (NO goroutine-per-request) with reusable
+//     buffers and sync.Pool-backed message/packing reuse.
+//   - When socket.batch is set, each worker drains packets with recvmmsg and
+//     replies with sendmmsg (via golang.org/x/net/ipv4), amortizing syscalls
+//     across many packets per call.
 //   - SO_RCVBUF / SO_SNDBUF are raised per socket for burst tolerance.
-//   - TCP uses a bounded accept model (goroutine per connection, which is fine
-//     because TCP volume is a small fraction of UDP).
+//   - TCP uses a bounded accept model (goroutine per connection; TCP volume is a
+//     small fraction of UDP).
 package server
 
 import (
@@ -17,9 +20,11 @@ import (
 	"syscall"
 
 	"github.com/miekg/dns"
+	"golang.org/x/net/ipv4"
 	"golang.org/x/sys/unix"
 
 	"powersvx/internal/config"
+	"powersvx/internal/dnspool"
 	"powersvx/internal/logx"
 )
 
@@ -40,7 +45,6 @@ func New(cfg *config.Config, h Handler, log *logx.Logger) *Server {
 }
 
 func (s *Server) Start(ctx context.Context) error {
-	// UDP reuseport workers.
 	for i := 0; i < s.cfg.Workers; i++ {
 		pc, err := s.listenUDP()
 		if err != nil {
@@ -48,10 +52,13 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		s.conns = append(s.conns, pc)
 		s.wg.Add(1)
-		go s.udpWorker(pc)
+		if s.cfg.Socket.Batch {
+			go s.udpBatchWorker(pc)
+		} else {
+			go s.udpWorker(pc)
+		}
 	}
 
-	// Single TCP listener (also reuseport-capable) with per-conn handling.
 	ln, err := s.listenTCP()
 	if err != nil {
 		return err
@@ -78,7 +85,6 @@ func (s *Server) Close() {
 
 func (s *Server) Wait() { s.wg.Wait() }
 
-// controlFn applies SO_REUSEPORT + buffer sizes to each new socket.
 func (s *Server) controlFn(network, address string, c syscall.RawConn) error {
 	var serr error
 	err := c.Control(func(fd uintptr) {
@@ -113,37 +119,133 @@ func (s *Server) listenTCP() (net.Listener, error) {
 	return lc.Listen(context.Background(), "tcp", s.cfg.Addr())
 }
 
+// udpWorker is the classic one-packet-per-syscall loop with pooled msg/buffers.
 func (s *Server) udpWorker(pc net.PacketConn) {
 	defer s.wg.Done()
 	buf := make([]byte, 65535) // reused across iterations, single-threaded loop
 	for {
 		n, addr, err := pc.ReadFrom(buf)
 		if err != nil {
-			return // socket closed on shutdown
+			return
 		}
-		req := new(dns.Msg)
-		if err := req.Unpack(buf[:n]); err != nil {
+		out, ok := s.process(buf[:n])
+		if !ok {
 			continue
 		}
-		resp := s.handler(req)
-		if resp == nil {
-			continue // RPZ drop
-		}
-		// Respect the client's advertised UDP size; set TC to trigger TCP retry
-		// rather than sending a fragmented/oversized datagram.
-		udpsize := 512
-		if opt := req.IsEdns0(); opt != nil {
-			if sz := int(opt.UDPSize()); sz > udpsize {
-				udpsize = sz
-			}
-		}
-		resp.Truncate(udpsize)
-		out, err := resp.Pack()
-		if err != nil {
-			continue
-		}
-		pc.WriteTo(out, addr)
+		pc.WriteTo(*out, addr)
+		dnspool.PutBuf(out)
 	}
+}
+
+// udpBatchWorker drains multiple datagrams per recvmmsg and replies with a
+// single sendmmsg, amortizing syscall overhead at high QPS.
+func (s *Server) udpBatchWorker(pc net.PacketConn) {
+	defer s.wg.Done()
+	uc, ok := pc.(*net.UDPConn)
+	if !ok {
+		s.udpWorker(pc) // fallback
+		return
+	}
+	p := ipv4.NewPacketConn(uc)
+	bs := s.cfg.Socket.BatchSize
+	if bs < 1 {
+		bs = 1
+	}
+	rms := make([]ipv4.Message, bs)
+	for i := range rms {
+		rms[i].Buffers = [][]byte{make([]byte, 65535)}
+	}
+	wms := make([]ipv4.Message, bs)
+	wbufs := make([][]byte, bs)
+	for i := range wbufs {
+		wbufs[i] = make([]byte, 0, 1232)
+	}
+
+	for {
+		n, err := p.ReadBatch(rms, 0)
+		if err != nil {
+			return
+		}
+		w := 0
+		for i := 0; i < n; i++ {
+			data := rms[i].Buffers[0][:rms[i].N]
+			out := s.processInto(data, wbufs[w][:0])
+			if out == nil {
+				continue
+			}
+			wbufs[w] = out
+			wms[w].Buffers = [][]byte{out}
+			wms[w].Addr = rms[i].Addr
+			w++
+		}
+		for off := 0; off < w; {
+			nw, err := p.WriteBatch(wms[off:w], 0)
+			if err != nil || nw <= 0 {
+				break
+			}
+			off += nw
+		}
+	}
+}
+
+// process unpacks a query, runs the handler, and returns a pooled buffer holding
+// the packed reply (caller must PutBuf). ok=false means "nothing to send".
+func (s *Server) process(data []byte) (*[]byte, bool) {
+	req := dnspool.GetMsg()
+	if err := req.Unpack(data); err != nil {
+		dnspool.PutMsg(req)
+		return nil, false
+	}
+	udpsize := udpSize(req)
+	resp := s.handler(req)
+	dnspool.PutMsg(req)
+	if resp == nil {
+		return nil, false
+	}
+	resp.Truncate(udpsize)
+	bp := dnspool.GetBuf()
+	out, err := resp.PackBuffer(*bp)
+	dnspool.PutMsg(resp)
+	if err != nil {
+		dnspool.PutBuf(bp)
+		return nil, false
+	}
+	*bp = out
+	return bp, true
+}
+
+// processInto packs the reply into dst (a per-worker reusable buffer) and
+// returns the resulting slice, or nil if nothing to send. No pool involved so
+// the batch worker can retain buffer capacity across iterations.
+func (s *Server) processInto(data, dst []byte) []byte {
+	req := dnspool.GetMsg()
+	if err := req.Unpack(data); err != nil {
+		dnspool.PutMsg(req)
+		return nil
+	}
+	udpsize := udpSize(req)
+	resp := s.handler(req)
+	dnspool.PutMsg(req)
+	if resp == nil {
+		return nil
+	}
+	resp.Truncate(udpsize)
+	out, err := resp.PackBuffer(dst)
+	dnspool.PutMsg(resp)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+func udpSize(req *dns.Msg) int {
+	size := 512
+	if opt := req.IsEdns0(); opt != nil {
+		if sz := int(opt.UDPSize()); sz > size {
+			size = sz
+		}
+	}
+	return size
 }
 
 func (s *Server) tcpAccept(ln net.Listener) {

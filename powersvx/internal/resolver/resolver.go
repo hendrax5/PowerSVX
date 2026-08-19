@@ -190,3 +190,52 @@ func errReply(req *dns.Msg, rcode int) *dns.Msg {
 	resp.SetRcode(req, rcode)
 	return resp
 }
+
+// Prefetch re-resolves a cache key and re-stores the answer. Invoked by the
+// cache's background prefetch workers for popular, near-expiry entries. It
+// shares the singleflight group with live misses so a concurrent real miss and
+// a prefetch never double-hit the upstream.
+func (r *Resolver) Prefetch(key string) {
+	name, qtype, qclass, ok := parseKey(key)
+	if !ok {
+		return
+	}
+	req := new(dns.Msg)
+	req.SetQuestion(name, qtype)
+	req.Question[0].Qclass = qclass
+	req.RecursionDesired = true
+
+	_, _, _ = r.group.Do(key, func() (interface{}, error) {
+		resp, err := r.forward(req)
+		if err != nil {
+			return nil, err
+		}
+		r.storeResult(key, resp)
+		return resp, nil
+	})
+	if r.m != nil {
+		r.m.IncPrefetch()
+	}
+}
+
+// parseKey reverses cacheKey: "name|qtype|qclass".
+func parseKey(key string) (string, uint16, uint16, bool) {
+	i := strings.IndexByte(key, '|')
+	if i < 0 {
+		return "", 0, 0, false
+	}
+	rest := key[i+1:]
+	j := strings.IndexByte(rest, '|')
+	if j < 0 {
+		return "", 0, 0, false
+	}
+	qt, err := strconv.ParseUint(rest[:j], 10, 16)
+	if err != nil {
+		return "", 0, 0, false
+	}
+	qc, err := strconv.ParseUint(rest[j+1:], 10, 16)
+	if err != nil {
+		return "", 0, 0, false
+	}
+	return key[:i], uint16(qt), uint16(qc), true
+}
