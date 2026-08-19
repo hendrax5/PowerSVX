@@ -1,0 +1,51 @@
+# PowerSVX — PERFORMANCE MODE
+# Strict hot-path config: classic UDP/TCP + recursive/forwarding + cache + RPZ.
+# Heavy observability and modern features are intentionally OFF by default.
+mode: performance
+listen: "0.0.0.0"
+port: 5354            # use 53 in production (needs root / CAP_NET_BIND_SERVICE)
+workers: 2            # set to real core count; each gets its own SO_REUSEPORT socket
+gomaxprocs: 0         # 0 => Go default (real cores)
+
+upstreams:
+  - "1.1.1.1:53"
+  - "8.8.8.8:53"
+
+# DNSSEC validation is OFF in performance mode by design (changes the whole
+# perf profile). Flip to true only if validation is a hard requirement.
+dnssec: false
+
+cache:
+  shards: 256          # reduces lock contention across qnames
+  per_shard_cap: 20000
+  positive_ttl_max: 86400
+  negative_ttl_max: 900
+
+rpz:
+  enabled: true
+  action: nxdomain     # nxdomain | nodata | drop
+  files:
+    - "config/rpz.sample.list"
+
+# Query logging OFF on the hot path. When enabled it is sampled + async + bounded
+# (drops on backpressure), never an unbounded queue.
+logging:
+  enabled: false
+  sample_rate: 1000    # log 1 of every N queries
+  buffer_size: 8192
+
+# Low-cardinality counters only. No per-qname/per-client labels.
+metrics:
+  enabled: true
+  listen: "127.0.0.1:9153"
+
+# Kernel/socket tuning (Phase 4). Pair with scripts/tune.sh sysctls.
+socket:
+  reuseport: true
+  rcvbuf: 4194304      # 4 MiB SO_RCVBUF
+  sndbuf: 4194304      # 4 MiB SO_SNDBUF
+
+# pprof for Phase 1 baseline (CPU/alloc/mutex/block). Keep OFF in production.
+profiling:
+  enabled: true
+  listen: "127.0.0.1:6060"

@@ -1,0 +1,44 @@
+# PowerSVX — GENERAL MODE
+# Full-feature profile: verbose logging, richer metrics, DNSSEC optional.
+# Use this when observability/debugging matters more than peak QPS/resource.
+mode: general
+listen: "0.0.0.0"
+port: 5354
+workers: 2
+gomaxprocs: 0
+
+upstreams:
+  - "1.1.1.1:53"
+  - "8.8.8.8:53"
+
+dnssec: false
+
+cache:
+  shards: 128
+  per_shard_cap: 10000
+  positive_ttl_max: 86400
+  negative_ttl_max: 1800
+
+rpz:
+  enabled: true
+  action: nxdomain
+  files:
+    - "config/rpz.sample.list"
+
+logging:
+  enabled: true
+  sample_rate: 1        # log everything in general mode
+  buffer_size: 16384
+
+metrics:
+  enabled: true
+  listen: "127.0.0.1:9153"
+
+socket:
+  reuseport: true
+  rcvbuf: 2097152
+  sndbuf: 2097152
+
+profiling:
+  enabled: true
+  listen: "127.0.0.1:6060"

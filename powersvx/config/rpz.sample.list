@@ -1,0 +1,9 @@
+# Sample RPZ / blocklist. Supports hosts-format, plain domains, and rpz owner
+# names. One domain blocks the domain and all its subdomains.
+0.0.0.0 ads.example.com
+0.0.0.0 tracker.example.net
+doubleclick.net
+evil.com
+malware.test
+# comment lines and $ORIGIN / ; lines are ignored
+badsub.example.org CNAME .
