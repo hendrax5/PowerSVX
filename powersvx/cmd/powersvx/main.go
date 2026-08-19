@@ -10,6 +10,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -90,7 +91,13 @@ func main() {
 		Logger:     lg,
 		DNSSEC:     cfg.DNSSEC,
 		ServeStale: cfg.Cache.ServeStale,
+		ECSEnabled: cfg.ECS.Enabled,
+		ECSV4:      uint8(cfg.ECS.V4Prefix),
+		ECSV6:      uint8(cfg.ECS.V6Prefix),
 	})
+	if cfg.ECS.Enabled {
+		log.Printf("EDNS Client Subnet enabled: v4/%d v6/%d", cfg.ECS.V4Prefix, cfg.ECS.V6Prefix)
+	}
 
 	if cfg.Cache.ServeStale {
 		c.EnableServeStale(cfg.Cache.ServeStaleMaxSeconds, cfg.Cache.ServeStaleTTL)
@@ -108,9 +115,9 @@ func main() {
 	handler := res.Handle
 	if cfg.Metrics.Enabled {
 		inner := res.Handle
-		handler = func(req *dns.Msg) *dns.Msg {
+		handler = func(req *dns.Msg, ip net.IP) *dns.Msg {
 			t0 := time.Now()
-			resp := inner(req)
+			resp := inner(req, ip)
 			m.ObserveLatency(time.Since(t0))
 			return resp
 		}
@@ -141,11 +148,26 @@ func main() {
 	signal.Notify(hup, syscall.SIGHUP)
 	go func() {
 		for range hup {
-			log.Println("SIGHUP: rebuilding RPZ snapshot...")
+			log.Println("SIGHUP: reloading config + RPZ...")
 			if err := reloadRPZ(matcher, cfg, rpzAction); err != nil {
 				log.Printf("rpz reload failed (keeping old zone): %v", err)
 			} else {
 				log.Printf("rpz reloaded; rules=%d", matcher.Count())
+			}
+			// Hot-swap upstreams + TTL/serve-stale without a restart.
+			if nc, err := config.Load(*cfgPath); err != nil {
+				log.Printf("config reload failed: %v", err)
+			} else {
+				c.SetTTLCaps(nc.Cache.PositiveTTLMax, nc.Cache.NegativeTTLMax)
+				if nc.Cache.ServeStale {
+					c.EnableServeStale(nc.Cache.ServeStaleMaxSeconds, nc.Cache.ServeStaleTTL)
+				}
+				if pool != nil {
+					pool.SetServers(nc.Upstreams)
+					log.Printf("reloaded upstreams: %v", nc.Upstreams)
+				}
+				log.Printf("reloaded ttl caps: pos=%d neg=%d serve_stale=%v",
+					nc.Cache.PositiveTTLMax, nc.Cache.NegativeTTLMax, nc.Cache.ServeStale)
 			}
 		}
 	}()

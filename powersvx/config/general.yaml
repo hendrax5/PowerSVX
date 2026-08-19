@@ -15,6 +15,11 @@ recursion: false
 recursion_ipv6: false
 dnssec_validate: false
 
+ecs:
+  enabled: false
+  v4_prefix: 24
+  v6_prefix: 56
+
 health:
   max_fails: 3
   probe_interval_seconds: 10

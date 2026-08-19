@@ -52,8 +52,14 @@ plan (Phases 1–4) was built from scratch. Language: Go 1.23.
 - DNSSEC validation (internal/dnssec): chain of trust from root KSK anchor (tag 20326) -> signer zone; RRSIG/DNSKEY/DS verification, self-signed DNSKEY check, DS->parent recursion, validated-key cache. Recursive-only; sets DO bit. Secure=>AD, Bogus=>SERVFAIL, unsigned=>Insecure. NSEC/NSEC3 denial NOT yet validated. Offline crypto unit tests + LIVE (cloudflare/example.org Secure, dnssec-failed.org Bogus).
 - Sharper quantiles: Histogram.Quantile linear-interpolates within the bucket so p50/p95/p99 gauges report precise values. Unit-tested; live p50=0.0175 p99=0.02485.
 
+## Iteration 5 (2026-08-19) — secure-denial / aggressive-NSEC / ECS / live-reload
+- Secure denial (internal/dnssec/denial.go): NSEC (NODATA owner+bitmap, NXDOMAIN cover w/ canonical ordering) and NSEC3 (Match/Cover, closest-encloser + next-closer) proofs, with signature verification of the authority records. Wired into Validate. LIVE: cloudflare.com NXDOMAIN+NODATA => AD set, dnssec_secure_total=2, bogus=0. Unit tests for NSEC proofs/ordering/bitmap.
+- Aggressive NSEC (RFC 8198, internal/recursive/nseccache.go): validated NSEC gaps cached; qnames inside a proven gap get NXDOMAIN synthesized locally (no network). Metric aggressive_nsec_total. NSEC only (NSEC3 aggressive = backlog). Unit-tested cover/expiry.
+- EDNS Client Subnet (resolver): pass-through client ECS or synthesize from client IP (v4/24, v6/56); ECS scope folded into cache key; client IP threaded through server Handler (udp/batch/tcp). Unit tests (build/mask/passthrough/key). LIVE dig +subnet resolves.
+- Live reload (SIGHUP): reloads config + hot-swaps upstreams (pool.SetServers, mutex-guarded, race-tested), TTL caps (cache.SetTTLCaps, atomic), serve-stale. LIVE: swapped upstreams 1.1.1.1/8.8.8.8 -> 9.9.9.9/1.0.0.1 with no downtime.
+
 ## Backlog / next
-- P1: NSEC/NSEC3 denial-of-existence validation (secure NXDOMAIN/NODATA).
-- P2: aggressive NSEC caching (RFC 8198) to suppress random-subdomain floods.
-- P2: EDNS Client Subnet passthrough/control.
-- P2: config hot-reload (SIGHUP) beyond RPZ (upstreams, ttls).
+- P1: NSEC3 aggressive use (RFC 8198) — needs opt-out handling + hashed-gap cache.
+- P2: DNSSEC negative-TTL-aware NSEC cache eviction + wildcard-expansion proofs.
+- P2: ECS scope from upstream response (SCOPE PREFIX-LENGTH) to size cache entries.
+- P2: prometheus /metrics for delegation-cache hit ratio.

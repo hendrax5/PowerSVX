@@ -73,7 +73,8 @@ func RootAnchors() []*dns.DS {
 func (v *Validator) Validate(answer *dns.Msg, qname string, qtype uint16) (Status, error) {
 	rrset, sigs := splitRRSIG(answer.Answer, qtype)
 	if len(rrset) == 0 {
-		return Insecure, nil // e.g. CNAME-only / NODATA: not handled here
+		// No positive RRset for qtype: prove secure denial of existence.
+		return v.validateDenial(answer, qname, qtype)
 	}
 	if len(sigs) == 0 {
 		return Insecure, nil // unsigned

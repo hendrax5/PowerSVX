@@ -19,6 +19,7 @@ type Config struct {
 	Recursion  bool            `yaml:"recursion"`      // use built-in recursive engine instead of forwarding
 	RecursionIPv6 bool         `yaml:"recursion_ipv6"` // allow IPv6 glue/roots in recursive mode
 	DNSSECValidate bool        `yaml:"dnssec_validate"` // heavier mode: validate answers (recursive only)
+	ECS        ECSConfig       `yaml:"ecs"`
 	Health     HealthConfig    `yaml:"health"`
 	Cache      CacheConfig     `yaml:"cache"`
 	RPZ        RPZConfig       `yaml:"rpz"`
@@ -41,6 +42,12 @@ type CacheConfig struct {
 	ServeStale           bool `yaml:"serve_stale"`             // RFC 8767 serve-stale on upstream failure
 	ServeStaleMaxSeconds int  `yaml:"serve_stale_max_seconds"` // retain expired entries this long
 	ServeStaleTTL        int  `yaml:"serve_stale_ttl"`         // short TTL applied to stale answers
+}
+
+type ECSConfig struct {
+	Enabled  bool `yaml:"enabled"`   // pass through / synthesize EDNS Client Subnet
+	V4Prefix int  `yaml:"v4_prefix"` // source netmask for IPv4 clients (e.g. 24)
+	V6Prefix int  `yaml:"v6_prefix"` // source netmask for IPv6 clients (e.g. 56)
 }
 
 type HealthConfig struct {
@@ -116,6 +123,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Health.ProbeIntervalSeconds == 0 {
 		c.Health.ProbeIntervalSeconds = 10
+	}
+	if c.ECS.V4Prefix == 0 {
+		c.ECS.V4Prefix = 24
+	}
+	if c.ECS.V6Prefix == 0 {
+		c.ECS.V6Prefix = 56
 	}
 	if c.Cache.Shards == 0 {
 		c.Cache.Shards = 256

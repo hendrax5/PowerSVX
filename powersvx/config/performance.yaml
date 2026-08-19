@@ -16,6 +16,12 @@ recursion: false        # true => iterative resolution from root hints
 recursion_ipv6: false   # allow IPv6 roots/glue when recursion is on
 dnssec_validate: false  # heavier mode: validate answers against root anchor (recursion only)
 
+# EDNS Client Subnet: pass client subnet to upstreams so CDNs geo-target answers.
+ecs:
+  enabled: false
+  v4_prefix: 24
+  v6_prefix: 56
+
 # Per-upstream health checks so a dead/slow resolver is skipped (forward mode).
 health:
   max_fails: 3

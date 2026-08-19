@@ -27,6 +27,7 @@ type Metrics struct {
 	ServedStale  uint64
 	DNSSECSecure uint64
 	DNSSECBogus  uint64
+	AggrNSEC     uint64
 	LogsDropped uint64
 
 	enabled       bool
@@ -58,6 +59,7 @@ func (m *Metrics) IncPrefetch()    { atomic.AddUint64(&m.Prefetches, 1) }
 func (m *Metrics) IncServedStale()   { atomic.AddUint64(&m.ServedStale, 1) }
 func (m *Metrics) IncDNSSECSecure()  { atomic.AddUint64(&m.DNSSECSecure, 1) }
 func (m *Metrics) IncDNSSECBogus()   { atomic.AddUint64(&m.DNSSECBogus, 1) }
+func (m *Metrics) IncAggressiveNSEC() { atomic.AddUint64(&m.AggrNSEC, 1) }
 
 // ObserveLatency records server-side handling time for the latency histogram.
 func (m *Metrics) ObserveLatency(d time.Duration) { m.lat.Observe(d) }
@@ -85,6 +87,7 @@ func (m *Metrics) Handler() http.Handler {
 		g("served_stale_total", "Stale answers served during upstream failure (RFC 8767)", atomic.LoadUint64(&m.ServedStale))
 		g("dnssec_secure_total", "Answers validated Secure", atomic.LoadUint64(&m.DNSSECSecure))
 		g("dnssec_bogus_total", "Answers rejected Bogus (SERVFAIL)", atomic.LoadUint64(&m.DNSSECBogus))
+		g("aggressive_nsec_total", "NXDOMAIN synthesized from cached NSEC (RFC 8198)", atomic.LoadUint64(&m.AggrNSEC))
 		if m.logsDroppedFn != nil {
 			g("logs_dropped_total", "Log lines dropped by backpressure", m.logsDroppedFn())
 		}

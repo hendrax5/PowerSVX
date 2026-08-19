@@ -71,6 +71,12 @@ func New(shards, perShardCap, posMax, negMax int) *Cache {
 	return c
 }
 
+// SetTTLCaps updates the positive/negative TTL clamps (SIGHUP reload).
+func (c *Cache) SetTTLCaps(posMax, negMax int) {
+	atomic.StoreUint32(&c.posMax, uint32(posMax))
+	atomic.StoreUint32(&c.negMax, uint32(negMax))
+}
+
 func (c *Cache) shardFor(key string) *shard {
 	h := fnv.New32a()
 	h.Write([]byte(key))
@@ -186,20 +192,22 @@ func (c *Cache) maybePrefetch(key string, e *entry, remaining uint32) {
 
 // Store caches resp under key. positive vs negative is decided by the caller.
 func (c *Cache) Store(key string, resp *dns.Msg, negative bool) {
+	posMax := atomic.LoadUint32(&c.posMax)
+	negMax := atomic.LoadUint32(&c.negMax)
 	ttl := minTTL(resp)
 	if negative {
 		if ttl == 0 {
 			ttl = 60
 		}
-		if ttl > c.negMax {
-			ttl = c.negMax
+		if ttl > negMax {
+			ttl = negMax
 		}
 	} else {
 		if ttl == 0 {
 			return // uncacheable
 		}
-		if ttl > c.posMax {
-			ttl = c.posMax
+		if ttl > posMax {
+			ttl = posMax
 		}
 	}
 

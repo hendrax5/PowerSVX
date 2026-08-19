@@ -8,6 +8,7 @@ package upstream
 import (
 	"errors"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,6 +46,7 @@ func (s *Server) markFail(maxFails uint32) {
 
 type Pool struct {
 	servers  []*Server
+	serversMu sync.Mutex
 	ranked   atomic.Pointer[[]*Server]
 	udp, tcp *dns.Client
 	maxFails uint32
@@ -77,6 +79,29 @@ func New(addrs []string, timeout time.Duration, maxFails int, probeInterval time
 }
 
 func (p *Pool) Close() { close(p.quit) }
+
+// SetServers atomically replaces the upstream list (used by SIGHUP reload).
+// Existing servers keep their health/latency state; new ones start healthy.
+func (p *Pool) SetServers(addrs []string) {
+	p.serversMu.Lock()
+	old := make(map[string]*Server, len(p.servers))
+	for _, s := range p.servers {
+		old[s.Addr] = s
+	}
+	next := make([]*Server, 0, len(addrs))
+	for _, a := range addrs {
+		if s, ok := old[a]; ok {
+			next = append(next, s)
+			continue
+		}
+		s := &Server{Addr: a}
+		s.up.Store(true)
+		next = append(next, s)
+	}
+	p.servers = next
+	p.serversMu.Unlock()
+	p.rerank()
+}
 
 // Exchange sends req to the best available upstream, failing over on error or
 // truncation. The ranked snapshot is loaded lock-free.
@@ -122,8 +147,10 @@ func (p *Pool) Exchange(req *dns.Msg) (*dns.Msg, error) {
 // ascending EWMA latency. Unhealthy servers stay at the tail so the pool still
 // tries them when everything is down.
 func (p *Pool) rerank() {
+	p.serversMu.Lock()
 	ss := make([]*Server, len(p.servers))
 	copy(ss, p.servers)
+	p.serversMu.Unlock()
 	sort.SliceStable(ss, func(i, j int) bool {
 		ui, uj := ss[i].up.Load(), ss[j].up.Load()
 		if ui != uj {
@@ -150,7 +177,11 @@ func (p *Pool) prober(interval time.Duration) {
 			return
 		case <-t.C:
 		}
-		for _, s := range p.servers {
+		p.serversMu.Lock()
+		snapshot := make([]*Server, len(p.servers))
+		copy(snapshot, p.servers)
+		p.serversMu.Unlock()
+		for _, s := range snapshot {
 			if s.up.Load() {
 				continue // only probe down servers to revive them
 			}
@@ -168,8 +199,12 @@ func (p *Pool) prober(interval time.Duration) {
 // Stats returns a per-upstream snapshot for low-cardinality metrics (few
 // upstreams => safe to label by address).
 func (p *Pool) Stats() []metrics.UpstreamStat {
-	out := make([]metrics.UpstreamStat, 0, len(p.servers))
-	for _, s := range p.servers {
+	p.serversMu.Lock()
+	servers := make([]*Server, len(p.servers))
+	copy(servers, p.servers)
+	p.serversMu.Unlock()
+	out := make([]metrics.UpstreamStat, 0, len(servers))
+	for _, s := range servers {
 		out = append(out, metrics.UpstreamStat{
 			Addr:       s.Addr,
 			Up:         s.up.Load(),

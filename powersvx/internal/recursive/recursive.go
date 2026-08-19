@@ -46,6 +46,7 @@ type Recursive struct {
 	maxIter   int
 	m         *metrics.Metrics
 	deleg     *delegCache
+	nsec      *nsecCache
 	validator *dnssec.Validator
 }
 
@@ -63,19 +64,39 @@ func New(timeout time.Duration, useV6 bool, m *metrics.Metrics, validate bool) *
 		maxIter:  24,
 		m:        m,
 		deleg:    newDelegCache(),
+		nsec:     newNSECCache(),
 	}
 	if validate {
 		r.do = true
 		r.validator = dnssec.NewValidator(func(name string, qtype uint16) (*dns.Msg, error) {
-			return r.resolve(dns.Fqdn(name), qtype, dns.ClassINET, 0)
+			return r.resolve(dns.Fqdn(name), qtype, dns.ClassINET, 0, nil)
 		})
 	}
 	return r
 }
 
-func (r *Recursive) Resolve(q dns.Question) (*dns.Msg, error) {
+func (r *Recursive) Resolve(q dns.Question, ecs *dns.EDNS0_SUBNET) (*dns.Msg, error) {
 	name := dns.Fqdn(q.Name)
-	resp, err := r.resolve(name, q.Qtype, q.Qclass, 0)
+
+	// Aggressive use of validated NSEC (RFC 8198): if a cached, still-valid NSEC
+	// proves this name can't exist, synthesize the NXDOMAIN locally without any
+	// upstream traffic. This absorbs random-subdomain / NX floods.
+	if r.validator != nil {
+		if e := r.nsec.cover(name); e != nil {
+			if r.m != nil {
+				r.m.IncAggressiveNSEC()
+			}
+			synth := new(dns.Msg)
+			synth.Question = []dns.Question{q}
+			synth.Response = true
+			synth.Rcode = dns.RcodeNameError
+			synth.AuthenticatedData = true
+			synth.Ns = []dns.RR{dns.Copy(e.rr)}
+			return synth, nil
+		}
+	}
+
+	resp, err := r.resolve(name, q.Qtype, q.Qclass, 0, ecs)
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +107,10 @@ func (r *Recursive) Resolve(q dns.Question) (*dns.Msg, error) {
 			resp.AuthenticatedData = true
 			if r.m != nil {
 				r.m.IncDNSSECSecure()
+			}
+			// Cache validated NSEC records for aggressive reuse.
+			if resp.Rcode == dns.RcodeNameError || len(resp.Answer) == 0 {
+				r.nsec.addFrom(resp.Ns)
 			}
 		case dnssec.Bogus:
 			if r.m != nil {
@@ -103,7 +128,7 @@ func (r *Recursive) Resolve(q dns.Question) (*dns.Msg, error) {
 	return resp, nil
 }
 
-func (r *Recursive) resolve(name string, qtype, qclass uint16, depth int) (*dns.Msg, error) {
+func (r *Recursive) resolve(name string, qtype, qclass uint16, depth int, ecs *dns.EDNS0_SUBNET) (*dns.Msg, error) {
 	if depth > r.maxDepth {
 		return nil, errors.New("recursive: max depth exceeded")
 	}
@@ -123,7 +148,7 @@ func (r *Recursive) resolve(name string, qtype, qclass uint16, depth int) (*dns.
 	}
 
 	for iter := 0; iter < r.maxIter; iter++ {
-		resp, err := r.query(name, qtype, qclass, servers)
+		resp, err := r.query(name, qtype, qclass, servers, ecs)
 		if err != nil {
 			if fromCache {
 				// Stale/broken cached delegation: fall back to roots once.
@@ -139,7 +164,7 @@ func (r *Recursive) resolve(name string, qtype, qclass uint16, depth int) (*dns.
 				return resp, nil
 			}
 			if target := cnameTarget(resp.Answer); target != "" && target != name {
-				sub, err := r.resolve(target, qtype, qclass, depth+1)
+				sub, err := r.resolve(target, qtype, qclass, depth+1, ecs)
 				if err != nil {
 					return resp, nil
 				}
@@ -178,12 +203,18 @@ func (r *Recursive) resolve(name string, qtype, qclass uint16, depth int) (*dns.
 	return nil, errors.New("recursive: max iterations exceeded")
 }
 
-func (r *Recursive) query(name string, qtype, qclass uint16, servers []string) (*dns.Msg, error) {
+func (r *Recursive) query(name string, qtype, qclass uint16, servers []string, ecs *dns.EDNS0_SUBNET) (*dns.Msg, error) {
 	m := new(dns.Msg)
 	m.SetQuestion(name, qtype)
 	m.Question[0].Qclass = qclass
 	m.RecursionDesired = false
-	m.SetEdns0(4096, r.do)
+	opt := &dns.OPT{Hdr: dns.RR_Header{Name: ".", Rrtype: dns.TypeOPT}}
+	opt.SetUDPSize(4096)
+	opt.SetDo(r.do)
+	if ecs != nil {
+		opt.Option = append(opt.Option, ecs)
+	}
+	m.Extra = append(m.Extra, opt)
 
 	var lastErr error = errors.New("recursive: no servers")
 	for _, idx := range rand.Perm(len(servers)) {
@@ -216,7 +247,7 @@ func (r *Recursive) resolveNSAddrs(nsNames []string, depth int) []string {
 		if i >= limit {
 			break
 		}
-		if resp, err := r.resolve(ns, dns.TypeA, dns.ClassINET, depth); err == nil {
+		if resp, err := r.resolve(ns, dns.TypeA, dns.ClassINET, depth, nil); err == nil {
 			for _, rr := range resp.Answer {
 				if a, ok := rr.(*dns.A); ok {
 					out = append(out, a.A.String()+":53")
@@ -224,7 +255,7 @@ func (r *Recursive) resolveNSAddrs(nsNames []string, depth int) []string {
 			}
 		}
 		if r.useV6 {
-			if resp, err := r.resolve(ns, dns.TypeAAAA, dns.ClassINET, depth); err == nil {
+			if resp, err := r.resolve(ns, dns.TypeAAAA, dns.ClassINET, depth, nil); err == nil {
 				for _, rr := range resp.Answer {
 					if a, ok := rr.(*dns.AAAA); ok {
 						out = append(out, "["+a.AAAA.String()+"]:53")

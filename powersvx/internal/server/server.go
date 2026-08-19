@@ -29,8 +29,9 @@ import (
 	"powersvx/internal/logx"
 )
 
-// Handler turns a parsed query into a reply. nil => drop.
-type Handler func(*dns.Msg) *dns.Msg
+// Handler turns a parsed query (with the client's IP, for ECS) into a reply.
+// A nil reply means "drop".
+type Handler func(*dns.Msg, net.IP) *dns.Msg
 
 type Server struct {
 	cfg     *config.Config
@@ -129,7 +130,7 @@ func (s *Server) udpWorker(pc net.PacketConn) {
 		if err != nil {
 			return
 		}
-		out, ok := s.process(buf[:n])
+		out, ok := s.process(buf[:n], ipOf(addr))
 		if !ok {
 			continue
 		}
@@ -185,7 +186,7 @@ func (s *Server) udpBatchWorker(pc net.PacketConn) {
 		w := 0
 		for i := 0; i < n; i++ {
 			data := rms[i].Buffers[0][:rms[i].N]
-			out := s.processInto(data, wbufs[w][:0])
+			out := s.processInto(data, wbufs[w][:0], ipOf(rms[i].Addr))
 			if out == nil {
 				continue
 			}
@@ -214,14 +215,14 @@ func isIPv6(uc *net.UDPConn) bool {
 
 // process unpacks a query, runs the handler, and returns a pooled buffer holding
 // the packed reply (caller must PutBuf). ok=false means "nothing to send".
-func (s *Server) process(data []byte) (*[]byte, bool) {
+func (s *Server) process(data []byte, clientIP net.IP) (*[]byte, bool) {
 	req := dnspool.GetMsg()
 	if err := req.Unpack(data); err != nil {
 		dnspool.PutMsg(req)
 		return nil, false
 	}
 	udpsize := udpSize(req)
-	resp := s.handler(req)
+	resp := s.handler(req, clientIP)
 	dnspool.PutMsg(req)
 	if resp == nil {
 		return nil, false
@@ -238,17 +239,15 @@ func (s *Server) process(data []byte) (*[]byte, bool) {
 	return bp, true
 }
 
-// processInto packs the reply into dst (a per-worker reusable buffer) and
-// returns the resulting slice, or nil if nothing to send. No pool involved so
-// the batch worker can retain buffer capacity across iterations.
-func (s *Server) processInto(data, dst []byte) []byte {
+// processInto packs the reply into dst (a per-worker reusable buffer).
+func (s *Server) processInto(data, dst []byte, clientIP net.IP) []byte {
 	req := dnspool.GetMsg()
 	if err := req.Unpack(data); err != nil {
 		dnspool.PutMsg(req)
 		return nil
 	}
 	udpsize := udpSize(req)
-	resp := s.handler(req)
+	resp := s.handler(req, clientIP)
 	dnspool.PutMsg(req)
 	if resp == nil {
 		return nil
@@ -260,6 +259,16 @@ func (s *Server) processInto(data, dst []byte) []byte {
 		return nil
 	}
 	return out
+}
+
+func ipOf(addr net.Addr) net.IP {
+	if u, ok := addr.(*net.UDPAddr); ok {
+		return u.IP
+	}
+	if t, ok := addr.(*net.TCPAddr); ok {
+		return t.IP
+	}
+	return nil
 }
 
 func udpSize(req *dns.Msg) int {
@@ -285,13 +294,14 @@ func (s *Server) tcpAccept(ln net.Listener) {
 
 func (s *Server) handleTCPConn(conn net.Conn) {
 	defer conn.Close()
+	clientIP := ipOf(conn.RemoteAddr())
 	c := &dns.Conn{Conn: conn}
 	for {
 		req, err := c.ReadMsg()
 		if err != nil {
 			return
 		}
-		resp := s.handler(req)
+		resp := s.handler(req, clientIP)
 		if resp == nil {
 			return
 		}

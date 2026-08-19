@@ -77,9 +77,24 @@ health:                 # forwarding-pool health checks (failover)
   NS/glue per zone so cold misses don't re-walk from the root each time (DS
   queries correctly start at the parent).
 - DNSSEC (`dnssec_validate: true`, recursive only): builds a chain of trust from
-  the root KSK anchor to the answer's signer zone. Secure answers get the AD bit;
-  cryptographically broken answers return SERVFAIL (`powersvx_dnssec_bogus_total`);
-  unsigned zones are Insecure. Denial-of-existence (NSEC/NSEC3) is not yet validated.
+  the root KSK anchor to the answer's signer zone. Positive answers and **secure
+  denial of existence** (NSEC and NSEC3, incl. NSEC3 closest-encloser) are
+  validated: Secure ⇒ AD bit, cryptographically broken ⇒ SERVFAIL
+  (`powersvx_dnssec_bogus_total`), unsigned ⇒ Insecure.
+- Aggressive NSEC (RFC 8198): validated NSEC gaps are cached and used to
+  synthesize NXDOMAIN locally for any name inside a proven gap, absorbing
+  random-subdomain floods (`powersvx_aggressive_nsec_total`). NSEC only.
+
+## EDNS Client Subnet (ECS)
+
+With `ecs.enabled: true`, the resolver passes a client-provided ECS through to
+upstreams, or synthesizes one from the client IP masked to `v4_prefix`/`v6_prefix`,
+so CDNs return geo-correct answers. ECS-scoped answers are cached per subnet.
+
+## Live reload (SIGHUP)
+
+`kill -HUP` reloads the config and hot-swaps, without a restart: RPZ zone,
+upstream list (`pool.SetServers`), TTL clamps, and serve-stale settings.
 
 ## Serve-stale (RFC 8767)
 
