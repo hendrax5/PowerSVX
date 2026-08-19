@@ -16,6 +16,9 @@ type Config struct {
 	Workers    int             `yaml:"workers"`     // UDP reuseport worker sockets
 	GOMAXPROCS int             `yaml:"gomaxprocs"`  // 0 => runtime default (real cores)
 	Upstreams  []string        `yaml:"upstreams"`
+	Recursion  bool            `yaml:"recursion"`      // use built-in recursive engine instead of forwarding
+	RecursionIPv6 bool         `yaml:"recursion_ipv6"` // allow IPv6 glue/roots in recursive mode
+	Health     HealthConfig    `yaml:"health"`
 	Cache      CacheConfig     `yaml:"cache"`
 	RPZ        RPZConfig       `yaml:"rpz"`
 	Logging    LoggingConfig   `yaml:"logging"`
@@ -34,6 +37,11 @@ type CacheConfig struct {
 	PrefetchWindow  int  `yaml:"prefetch_window"`   // seconds-before-expiry to refresh
 	PrefetchMinHits int  `yaml:"prefetch_min_hits"` // only prefetch "popular" entries
 	PrefetchWorkers int  `yaml:"prefetch_workers"`  // background refresh goroutines
+}
+
+type HealthConfig struct {
+	MaxFails             int `yaml:"max_fails"`              // consecutive fails before marking an upstream down
+	ProbeIntervalSeconds int `yaml:"probe_interval_seconds"` // background health-probe cadence
 }
 
 type RPZConfig struct {
@@ -98,6 +106,12 @@ func (c *Config) applyDefaults() {
 	}
 	if len(c.Upstreams) == 0 {
 		c.Upstreams = []string{"1.1.1.1:53", "8.8.8.8:53"}
+	}
+	if c.Health.MaxFails == 0 {
+		c.Health.MaxFails = 3
+	}
+	if c.Health.ProbeIntervalSeconds == 0 {
+		c.Health.ProbeIntervalSeconds = 10
 	}
 	if c.Cache.Shards == 0 {
 		c.Cache.Shards = 256

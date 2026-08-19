@@ -11,6 +11,15 @@ upstreams:
   - "1.1.1.1:53"
   - "8.8.8.8:53"
 
+# Resolve backend: forwarding pool (default) or built-in recursive engine.
+recursion: false        # true => iterative resolution from root hints
+recursion_ipv6: false   # allow IPv6 roots/glue when recursion is on
+
+# Per-upstream health checks so a dead/slow resolver is skipped (forward mode).
+health:
+  max_fails: 3
+  probe_interval_seconds: 10
+
 # DNSSEC validation is OFF in performance mode by design (changes the whole
 # perf profile). Flip to true only if validation is a hard requirement.
 dnssec: false

@@ -11,6 +11,13 @@ upstreams:
   - "1.1.1.1:53"
   - "8.8.8.8:53"
 
+recursion: false
+recursion_ipv6: false
+
+health:
+  max_fails: 3
+  probe_interval_seconds: 10
+
 dnssec: false
 
 cache:

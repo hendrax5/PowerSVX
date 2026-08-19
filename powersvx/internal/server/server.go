@@ -21,6 +21,7 @@ import (
 
 	"github.com/miekg/dns"
 	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
 
 	"powersvx/internal/config"
@@ -137,8 +138,17 @@ func (s *Server) udpWorker(pc net.PacketConn) {
 	}
 }
 
+// batchConn abstracts the recvmmsg/sendmmsg batch API shared by ipv4 and ipv6
+// PacketConns. ipv4.Message and ipv6.Message are aliases for the same underlying
+// type, so a single []ipv4.Message works for both.
+type batchConn interface {
+	ReadBatch(ms []ipv4.Message, flags int) (int, error)
+	WriteBatch(ms []ipv4.Message, flags int) (int, error)
+}
+
 // udpBatchWorker drains multiple datagrams per recvmmsg and replies with a
-// single sendmmsg, amortizing syscall overhead at high QPS.
+// single sendmmsg. It auto-selects the IPv4 or IPv6 batch path based on the
+// listening socket's address family so v6 traffic gets the same syscall savings.
 func (s *Server) udpBatchWorker(pc net.PacketConn) {
 	defer s.wg.Done()
 	uc, ok := pc.(*net.UDPConn)
@@ -146,7 +156,13 @@ func (s *Server) udpBatchWorker(pc net.PacketConn) {
 		s.udpWorker(pc) // fallback
 		return
 	}
-	p := ipv4.NewPacketConn(uc)
+	var bc batchConn
+	if isIPv6(uc) {
+		bc = ipv6.NewPacketConn(uc)
+	} else {
+		bc = ipv4.NewPacketConn(uc)
+	}
+
 	bs := s.cfg.Socket.BatchSize
 	if bs < 1 {
 		bs = 1
@@ -162,7 +178,7 @@ func (s *Server) udpBatchWorker(pc net.PacketConn) {
 	}
 
 	for {
-		n, err := p.ReadBatch(rms, 0)
+		n, err := bc.ReadBatch(rms, 0)
 		if err != nil {
 			return
 		}
@@ -179,13 +195,21 @@ func (s *Server) udpBatchWorker(pc net.PacketConn) {
 			w++
 		}
 		for off := 0; off < w; {
-			nw, err := p.WriteBatch(wms[off:w], 0)
+			nw, err := bc.WriteBatch(wms[off:w], 0)
 			if err != nil || nw <= 0 {
 				break
 			}
 			off += nw
 		}
 	}
+}
+
+func isIPv6(uc *net.UDPConn) bool {
+	la, ok := uc.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return false
+	}
+	return la.IP.To4() == nil && la.IP.To16() != nil
 }
 
 // process unpacks a query, runs the handler, and returns a pooled buffer holding

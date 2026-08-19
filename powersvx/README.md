@@ -25,10 +25,13 @@ path and treats observability as a CPU budget.
 cmd/powersvx   resolver server entrypoint
 cmd/bench      Phase-1 UDP load generator (QPS + p50/p95/p99 + rcodes)
 internal/rpz       immutable suffix/exact matcher + atomic swap
-internal/cache     sharded positive/negative answer cache
-internal/resolver  hot path: rpz -> cache -> singleflight -> forward
-internal/server    SO_REUSEPORT UDP workers + TCP
-internal/metrics   low-cardinality Prometheus counters
+internal/cache     sharded positive/negative answer cache (+ hot-entry prefetch)
+internal/resolver  hot path: rpz -> cache -> singleflight -> resolve
+internal/upstream  health-checked, latency-ranked forwarding pool (failover)
+internal/recursive optional iterative resolver from root hints
+internal/server    SO_REUSEPORT UDP workers + recvmmsg/sendmmsg batch (v4/v6) + TCP
+internal/dnspool   sync.Pool reuse for dns.Msg + packing buffers
+internal/metrics   low-cardinality counters + latency histogram (p50/p95/p99)
 internal/logx      async sampled bounded logger
 config/            performance.yaml, general.yaml, rpz.sample.list
 scripts/tune.sh    Phase-4 kernel/sysctl tuning
@@ -50,6 +53,38 @@ Test a query:
 
 ```bash
 dig @127.0.0.1 -p 5354 example.com A
+```
+
+## Backend modes
+
+Set in the YAML:
+
+```yaml
+recursion: false        # false = forward to upstreams (default); true = built-in recursive
+recursion_ipv6: false   # allow IPv6 roots/glue when recursion is on
+health:                 # forwarding-pool health checks (failover)
+  max_fails: 3          # consecutive failures before an upstream is demoted
+  probe_interval_seconds: 10  # cadence for reviving down upstreams
+```
+
+- Forwarding pool: queries hit a lock-free ranked snapshot (healthy first, lowest
+  EWMA latency first). A dead/slow upstream is demoted after `max_fails` and
+  skipped; a background prober revives it. Per-upstream health/RTT show up in
+  `/metrics` as `powersvx_upstream_up{addr=...}` and `powersvx_upstream_rtt_seconds`.
+- Recursive: iterative resolution from embedded root hints (root -> TLD -> auth),
+  following referrals/glue and chasing CNAMEs. No DNSSEC validation (perf mode).
+
+## Latency without the load tool
+
+`/metrics` exposes a bounded-bucket histogram plus convenience gauges so you can
+watch tail latency directly:
+
+```
+powersvx_query_duration_seconds_bucket{le="..."}  # cumulative buckets
+powersvx_query_duration_seconds_sum / _count
+powersvx_query_duration_p50_seconds
+powersvx_query_duration_p95_seconds
+powersvx_query_duration_p99_seconds
 ```
 
 ## Phase 1 — baseline & isolate the bottleneck

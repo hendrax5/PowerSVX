@@ -40,8 +40,14 @@ plan (Phases 1–4) was built from scratch. Language: Go 1.23.
 - Cache prefetch: popularity + near-expiry refresh via bounded queue + background workers + singleflight (resolver.Prefetch). Unit-tested (fires for hot near-expiry, skips cold). Metric powersvx_prefetches_total.
 - Competitor harness: scripts/compare.sh — one command, runs cmd/bench across scenarios x targets, samples /proc CPU+RSS, prints markdown table with QPS, p99, CPU-per-10k-queries, peak memory. Self-test: powersvx hit ~21k QPS, 0.097 cpu-s/10k, 70.7 MiB.
 
+## Iteration 3 (2026-08-19) — failover / histogram / ipv6-batch / recursive
+- Upstream failover: internal/upstream Pool with per-server health + EWMA latency, lock-free ranked snapshot (healthy+fastest first), demote after max_fails, background prober revives DOWN servers only (avoids false-negatives on healthy but rate-limited resolvers). Metrics: powersvx_upstream_up / _rtt_seconds. Config: recursion/health block. Validated: dead 192.0.2.1 demoted, 1.1.1.1 stayed up w/ 15ms EWMA. Unit tests for rank + demote/revive.
+- Latency histogram: metrics.Histogram fixed buckets + atomic counts; /metrics exposes _bucket/_sum/_count and p50/p95/p99 gauges. Wired via a timing wrapper around Handle in main. Validated live.
+- IPv6 batch: server batchConn interface satisfied by both ipv4/ipv6 PacketConn (shared alias Message type); udpBatchWorker auto-selects family via isIPv6(localaddr). Compiled+family-selected (v4 batch validated live).
+- Recursive engine: internal/recursive iterative resolver with embedded root hints (v4+v6), referral/glue handling, glueless NS resolution, CNAME chase, depth/iter bounds. Config recursion:true. Validated: resolved example.com from roots, 0 servfail, then cache-served.
+
 ## Backlog / next
-- P1: per-upstream health/failover + EDNS client-subnet control.
-- P2: prometheus histogram (bounded buckets) for server-side latency.
-- P2: optional in-process recursive mode (root hints) vs forwarding-only.
-- P2: IPv6 batch path (x/net/ipv6) mirroring the ipv4 batch worker.
+- P1: recursive delegation/NS cache to avoid re-walking from root each cold miss.
+- P2: DNSSEC validation path (separate, heavier; off in perf mode).
+- P2: linear interpolation within histogram buckets for finer quantiles.
+- P2: serve-stale on upstream failure (RFC 8767) to smooth outages.

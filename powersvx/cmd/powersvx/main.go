@@ -1,9 +1,9 @@
 // Command powersvx is the hardened DNS resolver entrypoint.
 //
-// Performance Mode wires: SO_REUSEPORT UDP workers -> RPZ (immutable) -> sharded
-// cache -> singleflight upstream forwarding, with low-cardinality metrics and
-// async sampled logging. pprof (CPU/alloc/mutex/block) is available when
-// profiling is enabled (Phase 1 baseline/isolation).
+// Performance Mode wires: SO_REUSEPORT UDP workers (recvmmsg/sendmmsg batch,
+// IPv4+IPv6) -> RPZ (immutable) -> sharded cache (+prefetch) -> resolve via a
+// health-checked upstream pool OR the built-in recursive engine, with
+// low-cardinality metrics + latency histogram and async sampled logging.
 package main
 
 import (
@@ -18,13 +18,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/miekg/dns"
+
 	"powersvx/internal/cache"
 	"powersvx/internal/config"
 	"powersvx/internal/logx"
 	"powersvx/internal/metrics"
+	"powersvx/internal/recursive"
 	"powersvx/internal/resolver"
 	"powersvx/internal/rpz"
 	"powersvx/internal/server"
+	"powersvx/internal/upstream"
 )
 
 func main() {
@@ -39,10 +43,13 @@ func main() {
 	if cfg.GOMAXPROCS > 0 {
 		runtime.GOMAXPROCS(cfg.GOMAXPROCS)
 	}
-	log.Printf("powersvx starting mode=%s addr=%s workers=%d gomaxprocs=%d dnssec=%v",
-		cfg.Mode, cfg.Addr(), cfg.Workers, runtime.GOMAXPROCS(0), cfg.DNSSEC)
+	backend := "forward"
+	if cfg.Recursion {
+		backend = "recursive"
+	}
+	log.Printf("powersvx starting mode=%s addr=%s workers=%d gomaxprocs=%d backend=%s dnssec=%v",
+		cfg.Mode, cfg.Addr(), cfg.Workers, runtime.GOMAXPROCS(0), backend, cfg.DNSSEC)
 
-	// --- RPZ matcher (immutable + atomic swap on SIGHUP) ---
 	matcher := rpz.NewMatcher()
 	rpzAction := rpz.ParseAction(cfg.RPZ.Action)
 	if cfg.RPZ.Enabled && len(cfg.RPZ.Files) > 0 {
@@ -56,15 +63,29 @@ func main() {
 	lg := logx.New(cfg.Logging.Enabled, cfg.Logging.SampleRate, cfg.Logging.BufferSize)
 	m.BindLogsDropped(lg.Dropped)
 
+	// Resolve backend: recursive (root hints) OR health-checked forwarding pool.
+	var pool *upstream.Pool
+	var rec *recursive.Recursive
+	if cfg.Recursion {
+		rec = recursive.New(3*time.Second, cfg.RecursionIPv6, m)
+		log.Printf("recursive engine enabled (ipv6=%v)", cfg.RecursionIPv6)
+	} else {
+		pool = upstream.New(cfg.Upstreams, 2*time.Second, cfg.Health.MaxFails,
+			time.Duration(cfg.Health.ProbeIntervalSeconds)*time.Second, m)
+		m.BindUpstreams(pool.Stats)
+		log.Printf("forwarding pool: %v (max_fails=%d probe=%ds)",
+			cfg.Upstreams, cfg.Health.MaxFails, cfg.Health.ProbeIntervalSeconds)
+	}
+
 	res := resolver.New(resolver.Options{
 		Cache:     c,
 		RPZ:       matcher,
 		RPZOn:     cfg.RPZ.Enabled,
-		Upstreams: cfg.Upstreams,
+		Pool:      pool,
+		Recursive: rec,
 		Metrics:   m,
 		Logger:    lg,
 		DNSSEC:    cfg.DNSSEC,
-		Timeout:   2 * time.Second,
 	})
 
 	if cfg.Cache.Prefetch {
@@ -73,16 +94,27 @@ func main() {
 			cfg.Cache.PrefetchWindow, cfg.Cache.PrefetchMinHits, cfg.Cache.PrefetchWorkers)
 	}
 
-	// --- Observability endpoints (kept OFF the DNS hot path) ---
+	// Handler with optional latency observation (off the DNS wire path itself,
+	// just a timestamp diff around the resolve).
+	handler := res.Handle
+	if cfg.Metrics.Enabled {
+		inner := res.Handle
+		handler = func(req *dns.Msg) *dns.Msg {
+			t0 := time.Now()
+			resp := inner(req)
+			m.ObserveLatency(time.Since(t0))
+			return resp
+		}
+	}
+
 	if cfg.Metrics.Enabled {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", m.Handler())
 		go func() { log.Println("metrics:", http.ListenAndServe(cfg.Metrics.Listen, mux)) }()
 	}
 	if cfg.Profiling.Enabled {
-		// Enable mutex/block profiling so Phase 1 can attribute contention.
 		runtime.SetMutexProfileFraction(5)
-		runtime.SetBlockProfileRate(1000000) // ~1 sample/ms of blocking
+		runtime.SetBlockProfileRate(1000000)
 		go func() { log.Println("pprof:", http.ListenAndServe(cfg.Profiling.Listen, nil)) }()
 		log.Printf("pprof enabled at http://%s/debug/pprof/", cfg.Profiling.Listen)
 	}
@@ -90,13 +122,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	srv := server.New(cfg, res.Handle, lg)
+	srv := server.New(cfg, handler, lg)
 	if err := srv.Start(ctx); err != nil {
 		log.Fatalf("server start: %v", err)
 	}
-	log.Printf("powersvx ready; rpz_rules=%d cache_shards=%d", matcher.Count(), cfg.Cache.Shards)
+	log.Printf("powersvx ready; rpz_rules=%d cache_shards=%d batch=%v", matcher.Count(), cfg.Cache.Shards, cfg.Socket.Batch)
 
-	// SIGHUP => rebuild RPZ off-path and atomic-swap.
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	go func() {
@@ -113,12 +144,12 @@ func main() {
 	<-ctx.Done()
 	log.Println("shutting down...")
 	srv.Close()
+	if pool != nil {
+		pool.Close()
+	}
 	lg.Close()
 }
 
-// reloadRPZ builds a fresh immutable Zone and atomically swaps it in. The active
-// zone keeps serving until the swap completes, so daily updates never mutate a
-// structure that is in use (Phase 3 design decision).
 func reloadRPZ(m *rpz.Matcher, cfg *config.Config, action rpz.Action) error {
 	start := time.Now()
 	z, err := rpz.LoadFiles(cfg.RPZ.Files, action)
