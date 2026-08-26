@@ -163,7 +163,14 @@ func main() {
 
 	rpzPath := config.RPZPoliciesPath(*dataDir)
 	if file, err := config.LoadRPZPoliciesFile(rpzPath); err == nil {
-		cfg.RPZ.Policies = file.Policies
+		// Empty policies in the JSON overlay must not silently wipe TOML feeds
+		// (that caused fleet hosts to run with rpz_enabled=true and 0 entries).
+		if len(file.Policies) == 0 && len(cfg.RPZ.Policies) > 0 {
+			log.Warn("rpz-policies.json has empty policies; keeping TOML policies",
+				"path", rpzPath, "toml_count", len(cfg.RPZ.Policies))
+		} else {
+			cfg.RPZ.Policies = file.Policies
+		}
 		if file.UpdateInterval > 0 {
 			cfg.RPZ.UpdateInterval = file.UpdateInterval
 		}
@@ -175,7 +182,7 @@ func main() {
 		} else if cfg.RPZ.AxfrUpdateInterval <= 0 {
 			cfg.RPZ.AxfrUpdateInterval = config.DefaultAxfrUpdateInterval
 		}
-		log.Info("rpz policies loaded", "path", rpzPath, "count", len(file.Policies),
+		log.Info("rpz policies loaded", "path", rpzPath, "count", len(cfg.RPZ.Policies),
 			"update_interval", cfg.RPZ.UpdateInterval, "update_at", cfg.RPZ.UpdateAt,
 			"axfr_update_interval", cfg.RPZ.AxfrUpdateInterval)
 	}

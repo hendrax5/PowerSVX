@@ -94,10 +94,7 @@ func New(cfg config.ResolverConfig) *Resolver {
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
-	buf := cfg.EDNSBufferSize
-	if buf == 0 {
-		buf = 1232
-	}
+	buf := config.NormalizeEDNSBufferSize(cfg.EDNSBufferSize)
 	mode := config.NormalizeResolverMode(cfg.Mode)
 	secMode := dnssec.ParseMode(cfg.DNSSECMode, cfg.DNSSECValidation)
 	v4, v6 := cfg.ECSPrefixV4, cfg.ECSPrefixV6
@@ -467,7 +464,11 @@ func stripOPT(msg *dns.Msg) {
 // PrepareClientResponse strips upstream OPT and attaches client-facing EDNS
 // (UDP size, DO bit, echoed COOKIE) so dig does not report cookie mismatch
 // or a second mangled OPT record.
-func PrepareClientResponse(req, resp *dns.Msg) {
+//
+// maxUDP is the server listen / pack budget (typically NormalizeEDNSBufferSize).
+// Client-advertised sizes above maxUDP are clamped so packing into the UDP
+// socket buffer does not fail with "dns: buffer size too small".
+func PrepareClientResponse(req, resp *dns.Msg, maxUDP uint16) {
 	if resp == nil {
 		return
 	}
@@ -479,9 +480,12 @@ func PrepareClientResponse(req, resp *dns.Msg) {
 	if opt == nil {
 		return
 	}
+	if maxUDP == 0 {
+		maxUDP = config.EDNSBufferMin
+	}
 	size := opt.UDPSize()
-	if size == 0 {
-		size = 1232
+	if size == 0 || size > maxUDP {
+		size = maxUDP
 	}
 	resp.SetEdns0(size, opt.Do())
 	ropt := resp.IsEdns0()

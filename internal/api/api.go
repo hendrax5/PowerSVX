@@ -274,7 +274,34 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 		ratio = float64(hits) / float64(hits+misses)
 	}
 	checks["cache"] = map[string]any{"status": "pass", "hit_ratio": ratio, "l1_size": size}
-	checks["rpz"] = map[string]any{"status": "pass", "entries": a.srv.RPZCount()}
+	rpzDetail := map[string]any{"status": "pass", "entries": a.srv.RPZCount(), "policies": len(a.cfg.RPZ.Policies)}
+	if a.cfg.RPZ.Enabled {
+		if len(a.cfg.RPZ.Policies) == 0 {
+			rpzDetail["status"] = "degraded"
+			rpzDetail["reason"] = "enabled but no policies configured"
+			if status == "healthy" {
+				status = "degraded"
+			}
+		} else if a.srv.RPZCount() == 0 {
+			loading := false
+			if eng := a.srv.RPZ(); eng != nil {
+				loading = eng.LoadStatus().Loading
+			}
+			if loading {
+				rpzDetail["status"] = "pass"
+				rpzDetail["reason"] = "loading"
+			} else {
+				rpzDetail["status"] = "degraded"
+				rpzDetail["reason"] = "enabled with policies but 0 entries"
+				if status == "healthy" {
+					status = "degraded"
+				}
+			}
+		}
+	} else {
+		rpzDetail["status"] = "disabled"
+	}
+	checks["rpz"] = rpzDetail
 
 	// Forwarder / resource health from monitor.
 	// Important: a few early OKs must NOT hide a high fail ratio (that caused a silent outage).
@@ -285,18 +312,22 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 		snap := mon.Snapshot(allow, nil)
 		res := snap.Resources
 		resStatus := "pass"
+		gomemMB := config.GoMemLimitMB()
+		rssDegradeMB := config.RSSDegradeThresholdMB()
 		resDetail := map[string]any{
-			"status":     resStatus,
-			"goroutines": res.Goroutines,
-			"rss_mb":     res.RSSMB,
-			"cpu_percent": res.CPUPercent,
+			"status":         resStatus,
+			"goroutines":     res.Goroutines,
+			"rss_mb":         res.RSSMB,
+			"cpu_percent":    res.CPUPercent,
+			"gomemlimit_mb":  gomemMB,
+			"rss_degrade_mb": rssDegradeMB,
 		}
 		if res.Goroutines >= 10000 {
 			resStatus = "fail"
 			status = "degraded"
 			resDetail["status"] = resStatus
 			resDetail["reason"] = "goroutine storm (>=10000)"
-		} else if res.Goroutines >= 2000 || res.RSSMB >= 4096 {
+		} else if res.Goroutines >= 2000 || res.RSSMB >= rssDegradeMB {
 			resStatus = "degraded"
 			if status == "healthy" {
 				status = "degraded"
@@ -1048,6 +1079,10 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 		pols, err := normalizeRPZPolicies(body.Policies)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if a.cfg.RPZ.Enabled && len(pols) == 0 {
+			http.Error(w, "refusing empty RPZ policies while rpz is enabled; disable rpz first or keep at least one policy", http.StatusBadRequest)
 			return
 		}
 		interval := a.cfg.RPZ.UpdateInterval

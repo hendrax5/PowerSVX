@@ -59,7 +59,7 @@ func TestPrepareClientResponseEchoesCookie(t *testing.T) {
 		Cookie: "upstream",
 	})
 
-	PrepareClientResponse(req, resp)
+	PrepareClientResponse(req, resp, 1232)
 
 	var opts int
 	for _, rr := range resp.Extra {
@@ -85,5 +85,19 @@ func TestPrepareClientResponseEchoesCookie(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected echoed client COOKIE")
+	}
+}
+
+func TestPrepareClientResponseClampsUDPSize(t *testing.T) {
+	req := new(dns.Msg)
+	req.SetQuestion("google.com.", dns.TypeA)
+	req.SetEdns0(4096, false) // client advertises larger than listen budget
+
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	PrepareClientResponse(req, resp, 1232)
+	opt := resp.IsEdns0()
+	if opt == nil || opt.UDPSize() != 1232 {
+		t.Fatalf("want clamped 1232, got %v", opt)
 	}
 }

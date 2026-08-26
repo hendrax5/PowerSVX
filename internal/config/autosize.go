@@ -83,6 +83,25 @@ func hostMemMB() int {
 	return 2048
 }
 
+// GoMemLimitMB parses GOMEMLIMIT (e.g. "6442450944B", "6GiB", "6144MiB").
+// Returns 0 when unset / unparsable.
+func GoMemLimitMB() int {
+	return goMemLimitMB()
+}
+
+// RSSDegradeThresholdMB is the RSS level at which /health reports degraded.
+// When GOMEMLIMIT is set, use 95% of that soft heap (floor 1024MB); otherwise 4096MB.
+func RSSDegradeThresholdMB() float64 {
+	if g := GoMemLimitMB(); g > 0 {
+		v := float64(g) * 0.95
+		if v < 1024 {
+			return 1024
+		}
+		return v
+	}
+	return 4096
+}
+
 // goMemLimitMB parses GOMEMLIMIT (e.g. "6442450944B", "6GiB", "6144MiB").
 func goMemLimitMB() int {
 	s := strings.TrimSpace(os.Getenv("GOMEMLIMIT"))

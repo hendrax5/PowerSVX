@@ -49,20 +49,22 @@ export GIT_COMMIT="${GIT_COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/
 export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 export POWERSVX_VERSION="${POWERSVX_VERSION:-1.6.0}"
 echo "build stamp VERSION=$POWERSVX_VERSION GIT_COMMIT=$GIT_COMMIT"
-# Percent-based Docker mem_limit (default 70% of host RAM).
+# Percent-based Docker mem_limit (default 40% of host RAM ≈ 4GiB soft on 11GB).
 if [ -f "$ROOT/deploy/linux/calc-mem-env.sh" ]; then
   # shellcheck disable=SC1091
   eval "$("$ROOT/deploy/linux/calc-mem-env.sh")"
   export POWERSVX_MEM_LIMIT GOMEMLIMIT POWERSVX_MEM_PERCENT
 fi
+# Prefer short blip: rebuild powersvx + recreate unbound/powersvx only (not postgres).
+COMPOSE=(docker compose -f docker-compose.yml)
 if docker inspect powersvx --format '{{.HostConfig.NetworkMode}}' 2>/dev/null | grep -q host; then
   echo "detected host networking"
-  docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --build
+  COMPOSE+=(-f deploy/linux/docker-compose.host.yml)
 elif [ -f "$ROOT/deploy/linux/docker-compose.linux.yml" ]; then
-  docker compose -f docker-compose.yml -f deploy/linux/docker-compose.linux.yml up -d --build
-else
-  docker compose up -d --build
+  COMPOSE+=(-f deploy/linux/docker-compose.linux.yml)
 fi
+"${COMPOSE[@]}" build powersvx
+"${COMPOSE[@]}" up -d --no-deps --force-recreate unbound powersvx
 
 echo "==> status"
 docker ps --format 'table {{.Names}}\t{{.Status}}' | head -20

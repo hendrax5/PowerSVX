@@ -20,7 +20,8 @@ services:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
       - TZ=Asia/Jakarta
       - GOGC=${GOGC:-50}
-      - POWERSVX_MEM_PERCENT=${POWERSVX_MEM_PERCENT:-70}
+      # 40% host RAM → ~4GiB soft GOMEMLIMIT on 11GB VPS (room for Unbound/Postgres).
+      - POWERSVX_MEM_PERCENT=${POWERSVX_MEM_PERCENT:-40}
     logging: &powersvx-log
       driver: json-file
       options:

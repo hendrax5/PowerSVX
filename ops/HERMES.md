@@ -11,6 +11,8 @@ Default target if unspecified: **isehat2 / 103.172.70.254**.
 3. `chmod +x deploy/linux/*.sh`
 4. `bash deploy/linux/gen-unbound-conf.sh configs/unbound/unbound.conf` (sizes Unbound from RAM/CPU).
 5. `eval "$(deploy/linux/calc-mem-env.sh)"` then export `POWERSVX_MEM_LIMIT` `GOMEMLIMIT`.
+   Default soft heap ≈ **40% × 90%** of host RAM (~4GiB on 11GB). Do not trust
+   `docker exec printenv GOMEMLIMIT` (compose Env only) — check `/proc/1/environ`.
    Stamp the UI version from git (so Dashboard shows `v1.6.0 · <sha>`):
    `export GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)`
    `export BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)`

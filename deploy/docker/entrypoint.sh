@@ -4,18 +4,25 @@
 set -e
 mkdir -p /data/cache /var/log/PowerSVX /etc/PowerSVX/certs
 
-# Soft heap limit: POWERSVX_MEM_PERCENT of host (or cgroup) RAM. Default 70%.
+# Soft heap limit from host/cgroup RAM.
 # Skipped when POWERSVX_GOMEMLIMIT_FIXED=1 (keep compose/env GOMEMLIMIT as-is).
+# Note: `docker exec printenv GOMEMLIMIT` shows compose Env only — check PID1:
+#   tr '\0' '\n' < /proc/1/environ | grep GOMEMLIMIT
+# When Docker mem_limit is set (calc-mem-env), soft = 90% of that cgroup.
+# When unlimited, soft = POWERSVX_MEM_PERCENT (default 40) of host × 90%.
 apply_gomemlimit_percent() {
   if [ "${POWERSVX_GOMEMLIMIT_FIXED:-0}" = "1" ]; then
+    if [ -n "${GOMEMLIMIT:-}" ]; then
+      echo "gomem: fixed GOMEMLIMIT=$GOMEMLIMIT" >&2
+    fi
     return 0
   fi
-  percent=${POWERSVX_MEM_PERCENT:-70}
+  percent=${POWERSVX_MEM_PERCENT:-40}
   case $percent in
-    ''|*[!0-9]*) percent=70 ;;
+    ''|*[!0-9]*) percent=40 ;;
   esac
   if [ "$percent" -lt 1 ] || [ "$percent" -gt 95 ]; then
-    percent=70
+    percent=40
   fi
 
   host_bytes=$(awk '/MemTotal:/ {printf "%.0f", $2*1024}' /proc/meminfo 2>/dev/null || echo 0)
@@ -33,22 +40,26 @@ apply_gomemlimit_percent() {
     fi
   fi
 
-  base=$host_bytes
+  # Soft = 90% of Docker mem_limit when set (calc-mem-env already applied MEM_PERCENT).
+  # When unlimited (host network often used mem_limit=0), soft = MEM_PERCENT of host × 90%.
   if [ -n "$cgroup_bytes" ] && [ "$cgroup_bytes" -gt 0 ]; then
-    if [ -z "$base" ] || [ "$base" -le 0 ] || [ "$cgroup_bytes" -lt "$base" ]; then
-      base=$cgroup_bytes
-    fi
+    base=$cgroup_bytes
+    soft=$(( base * 90 / 100 ))
+    export GOMEMLIMIT="${soft}B"
+    echo "gomem: GOMEMLIMIT=$GOMEMLIMIT (90% of cgroup/mem_limit $base bytes)" >&2
+    return 0
   fi
+
+  base=$host_bytes
   if [ -z "$base" ] || [ "$base" -lt 268435456 ]; then
     echo "gomem: skip percent calc (base=${base:-0})" >&2
     return 0
   fi
 
-  # Soft limit = percent of base; leave a little headroom under hard cgroup for native allocs.
   limit=$(( base * percent / 100 ))
   soft=$(( limit * 90 / 100 ))
   export GOMEMLIMIT="${soft}B"
-  echo "gomem: GOMEMLIMIT=$GOMEMLIMIT (${percent}% of $base bytes, 90% soft)" >&2
+  echo "gomem: GOMEMLIMIT=$GOMEMLIMIT (${percent}% of host $base bytes, 90% soft)" >&2
 }
 
 apply_gomemlimit_percent || true

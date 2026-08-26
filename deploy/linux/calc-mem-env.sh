@@ -6,10 +6,10 @@
 #   deploy/linux/calc-mem-env.sh > .env.mem && set -a && . ./.env.mem && set +a
 #
 # Env:
-#   POWERSVX_MEM_PERCENT   default 70  (hard Docker cgroup limit)
+#   POWERSVX_MEM_PERCENT   default 40  (hard Docker cgroup limit; ~4GiB soft on 11GB)
 #   POWERSVX_GOMEM_RATIO   default 90  (% of that limit for GOMEMLIMIT)
 set -e
-PERCENT=${POWERSVX_MEM_PERCENT:-70}
+PERCENT=${POWERSVX_MEM_PERCENT:-40}
 GORATIO=${POWERSVX_GOMEM_RATIO:-90}
 case $PERCENT in
   ''|*[!0-9]*) echo "POWERSVX_MEM_PERCENT must be integer 1-95" >&2; exit 1 ;;

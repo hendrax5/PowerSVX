@@ -367,6 +367,7 @@ func Default() *Config {
 func Load(path string) (*Config, error) {
 	cfg := Default()
 	if path == "" {
+		normalizeResolverBuffers(cfg)
 		return cfg, nil
 	}
 	if _, err := toml.DecodeFile(path, cfg); err != nil {
@@ -374,7 +375,34 @@ func Load(path string) (*Config, error) {
 	}
 	expandEnv(cfg)
 	normalizeDNSSEC(cfg)
+	normalizeResolverBuffers(cfg)
 	return cfg, nil
+}
+
+// EDNSBufferMin/Max follow RFC 6891 practice: 1232 is the IPv6-safe path MTU
+// advertisement; 4096 is an upper bound for large DNSSEC replies before TCP.
+const (
+	EDNSBufferMin uint16 = 1232
+	EDNSBufferMax uint16 = 4096
+)
+
+// NormalizeEDNSBufferSize clamps to [1232, 4096]. Zero → 1232.
+// 1232 is the RFC 6891 IPv6-safe path size; 4096 allows larger DNSSEC replies.
+func NormalizeEDNSBufferSize(size uint16) uint16 {
+	if size == 0 || size < EDNSBufferMin {
+		return EDNSBufferMin
+	}
+	if size > EDNSBufferMax {
+		return EDNSBufferMax
+	}
+	return size
+}
+
+func normalizeResolverBuffers(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	cfg.Resolver.EDNSBufferSize = NormalizeEDNSBufferSize(cfg.Resolver.EDNSBufferSize)
 }
 
 func expandEnv(cfg *Config) {

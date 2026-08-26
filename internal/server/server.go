@@ -504,7 +504,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 				_, _ = w.Write(wire)
 			} else {
 				cached.Id = req.Id
-				resolver.PrepareClientResponse(req, cached)
+				resolver.PrepareClientResponse(req, cached, s.udpBufSize())
 				_ = w.WriteMsg(cached)
 			}
 		} else {
@@ -732,7 +732,7 @@ func (s *Server) scheduleRefresh(qname string, qtype uint16, ecsKey, viewName, g
 }
 
 func (s *Server) storeAndWriteScoped(w dns.ResponseWriter, req, resp *dns.Msg, ecsSubnet, viewName, geoTag string) {
-	resolver.PrepareClientResponse(req, resp)
+	resolver.PrepareClientResponse(req, resp, s.udpBufSize())
 	wire, err := resolver.PackResponse(resp)
 	if err != nil {
 		_ = w.WriteMsg(resp)
@@ -784,7 +784,7 @@ func (s *Server) ListenAndServe() error {
 			if err != nil {
 				return fmt.Errorf("tproxy udp %s shard %d: %w", udpAddr, i, err)
 			}
-			srv := &dns.Server{PacketConn: pc, Net: "udp", Handler: handler, UDPSize: 1232, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
+			srv := &dns.Server{PacketConn: pc, Net: "udp", Handler: handler, UDPSize: int(s.udpBufSize()), MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
 			if i == 0 {
 				s.udp = srv
 			}
@@ -821,7 +821,7 @@ func (s *Server) ListenAndServe() error {
 				Addr:           udpAddr,
 				Net:            "udp",
 				Handler:        handler,
-				UDPSize:        1232,
+				UDPSize:        int(s.udpBufSize()),
 				ReusePort:      reuse,
 				MsgAcceptFunc:  accept,
 				MsgInvalidFunc: invalid,
@@ -984,6 +984,14 @@ func (s *Server) RPZCount() int64 {
 		return 0
 	}
 	return s.rpz.Count()
+}
+
+// udpBufSize is the EDNS/UDP pack budget from config (clamped 1232–4096).
+func (s *Server) udpBufSize() uint16 {
+	if s == nil || s.cfg == nil {
+		return config.EDNSBufferMin
+	}
+	return config.NormalizeEDNSBufferSize(s.cfg.Resolver.EDNSBufferSize)
 }
 
 func (s *Server) RPZ() *rpz.Engine { return s.rpz }

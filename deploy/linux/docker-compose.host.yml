@@ -25,11 +25,14 @@ services:
   powersvx:
     network_mode: host
     ports: !override []
-    # Memory: percent of host RAM (default 70%). calc-mem-env.sh sets POWERSVX_MEM_LIMIT;
-    # entrypoint sets GOMEMLIMIT to ~90% of that slice. Compose cannot do % natively.
+    # Memory: percent of host RAM (default 40% ≈ 4GiB soft on 11GB). calc-mem-env.sh
+    # sets POWERSVX_MEM_LIMIT; entrypoint sets GOMEMLIMIT to ~90% of that slice.
+    # Override with POWERSVX_GOMEMLIMIT_FIXED=1 + GOMEMLIMIT=… in .env if needed.
     mem_limit: ${POWERSVX_MEM_LIMIT:-0}
     environment:
-      - POWERSVX_MEM_PERCENT=${POWERSVX_MEM_PERCENT:-70}
+      - POWERSVX_MEM_PERCENT=${POWERSVX_MEM_PERCENT:-40}
+      - POWERSVX_GOMEMLIMIT_FIXED=${POWERSVX_GOMEMLIMIT_FIXED:-0}
+      - GOMEMLIMIT=${GOMEMLIMIT:-}
       - GOGC=${GOGC:-50}
       # Host sysctl bind-mounts (see volumes) — Docker /proc/sys is otherwise read-only.
       - POWERSVX_CONNTRACK_SYS_DIR=/powersvx-sys
