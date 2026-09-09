@@ -92,6 +92,11 @@ func canonKey(name string) string {
 }
 
 func nsecGapCovers(owner, next, qname string) bool {
+	// RFC 8198 only proves gaps between owner names in one zone.
+	// A TLD-apex NSEC (com. → commbank.) must not NXDOMAIN google.com.
+	if parentName(owner) != parentName(qname) || parentName(next) != parentName(owner) {
+		return false
+	}
 	o, n, q := canonKey(owner), canonKey(next), canonKey(qname)
 	if q == o {
 		return false
@@ -100,4 +105,16 @@ func nsecGapCovers(owner, next, qname string) bool {
 		return o < q && q < n
 	}
 	return q > o || q < n
+}
+
+func parentName(name string) string {
+	name = strings.ToLower(dns.Fqdn(name))
+	if name == "." {
+		return "."
+	}
+	labels := dns.SplitDomainName(name)
+	if len(labels) <= 1 {
+		return "."
+	}
+	return strings.Join(labels[1:], ".") + "."
 }

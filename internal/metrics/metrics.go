@@ -95,6 +95,89 @@ var (
 		Name: "powersvx_process_rss_bytes",
 		Help: "Process resident set size in bytes",
 	})
+
+	UnboundQueries = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_unbound_queries_total",
+		Help: "Unbound total.num.queries (dataplane cumulative)",
+	})
+	UnboundCacheHits = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_unbound_cache_hits",
+		Help: "Unbound total.num.cachehits (dataplane cumulative)",
+	})
+	UnboundCacheMisses = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_unbound_cache_misses",
+		Help: "Unbound total.num.cachemiss (dataplane cumulative)",
+	})
+	UnboundRPZActions = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_unbound_rpz_actions",
+		Help: "Sum of Unbound num.rpz.action.* excluding passthru",
+	})
+	UnboundRecursionAvg = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_unbound_recursion_time_avg_seconds",
+		Help: "Unbound total.recursion.time.avg",
+	})
+	UnboundRecursionMedian = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_unbound_recursion_time_median_seconds",
+		Help: "Unbound total.recursion.time.median",
+	})
+	UnboundRequestlistAvg = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_unbound_requestlist_avg",
+		Help: "Unbound total.requestlist.avg",
+	})
+	UnboundMemCacheRRset = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_unbound_mem_cache_rrset_bytes",
+		Help: "Unbound mem.cache.rrset",
+	})
+	UnboundMemCacheMsg = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_unbound_mem_cache_message_bytes",
+		Help: "Unbound mem.cache.message",
+	})
+	UnboundUp = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_unbound_up",
+		Help: "1 when unbound-control stats succeeded",
+	})
+
+	HostMemAvailableBytes = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_host_mem_available_bytes",
+		Help: "Host MemAvailable from /proc/meminfo",
+	})
+	HostMemTotalBytes = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_host_mem_total_bytes",
+		Help: "Host MemTotal from /proc/meminfo",
+	})
+	HostDiskUsedPercent = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_host_disk_used_percent",
+		Help: "Host root filesystem used percent",
+	})
+	HostLoad1 = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_host_load1",
+		Help: "Host load average 1m",
+	})
+
+	DNSDistUp = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_dnsdist_up",
+		Help: "1 when dnsdist web /jsonstat succeeded",
+	})
+	DNSDistQueries = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_dnsdist_queries",
+		Help: "dnsdist cumulative queries",
+	})
+	DNSDistCacheHits = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_dnsdist_cache_hits",
+		Help: "dnsdist cumulative packet-cache hits",
+	})
+	DNSDistCacheMisses = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_dnsdist_cache_misses",
+		Help: "dnsdist cumulative packet-cache misses",
+	})
+	DNSDistSelfAnswered = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_dnsdist_self_answered",
+		Help: "dnsdist cumulative self-answered (includes CDB spoof)",
+	})
+	DNSDistLatencyAvg100 = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "powersvx_dnsdist_latency_avg100_seconds",
+		Help: "dnsdist latency-avg100 (converted to seconds)",
+	})
 )
 
 func Handler() http.Handler {

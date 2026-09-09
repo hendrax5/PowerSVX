@@ -93,7 +93,11 @@ func normalize(d string) string {
 }
 
 // Allows reports whether qname (or a parent / wildcard entry) is whitelisted.
+// Official Indonesian bank hosts always pass (nil-safe), even with an empty user list.
 func (l *List) Allows(qname string) bool {
+	if OfficialBankName(qname) {
+		return true
+	}
 	if l == nil {
 		return false
 	}

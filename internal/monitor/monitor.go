@@ -198,6 +198,39 @@ func (c *Collector) Observe(s Sample) {
 	}
 }
 
+// RecordBulk adds n queries to the current second (external dataplane sampler).
+// path is recorded once per query (e.g. "unbound_cache", "unbound_recurse", "rpz").
+func (c *Collector) RecordBulk(path string, n uint64) {
+	if c == nil || n == 0 {
+		return
+	}
+	if path == "" {
+		path = "unbound"
+	}
+	now := time.Now().Unix()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.advanceQPSLocked(now)
+	idx := int(now - c.qpsEpoch)
+	if idx >= 0 && idx < qpsWindowSec {
+		c.qpsRing[idx] += n
+	}
+	c.paths[path] += n
+	c.queries += n
+	c.aclAllow += n
+}
+
+// RecordPathOnly increments a path counter without adding QPS/queries (e.g. RPZ actions
+// that are already included in Unbound total.num.queries).
+func (c *Collector) RecordPathOnly(path string, n uint64) {
+	if c == nil || n == 0 || path == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.paths[path] += n
+}
+
 // RecordForwarder tracks upstream forwarder health.
 func (c *Collector) RecordForwarder(addr string, ok bool, latencyMS int64, errMsg string) {
 	if c == nil || addr == "" {
@@ -252,6 +285,14 @@ type Resources struct {
 	CPUPercent float64 `json:"cpu_percent"`
 	RSSMB      float64 `json:"rss_mb"`
 	NumCPU     int     `json:"num_cpu"`
+	// Host-wide (dataplane machine), not just the Go process.
+	HostMemTotalMB     float64 `json:"host_mem_total_mb,omitempty"`
+	HostMemAvailableMB float64 `json:"host_mem_available_mb,omitempty"`
+	HostMemUsedPct     float64 `json:"host_mem_used_pct,omitempty"`
+	DiskTotalGB        float64 `json:"disk_total_gb,omitempty"`
+	DiskUsedGB         float64 `json:"disk_used_gb,omitempty"`
+	DiskUsedPct        float64 `json:"disk_used_pct,omitempty"`
+	Load1              float64 `json:"load1,omitempty"`
 }
 
 type Snapshot struct {

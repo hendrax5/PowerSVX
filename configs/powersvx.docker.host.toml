@@ -1,20 +1,22 @@
-# PowerSVX — Docker Compose host-network production
+# PowerSVX — host-network CONTROL PLANE (Unbound owns public :53)
 #
-# Same as the normal Docker config, but Postgres is reached through the host's
-# loopback publish because the PowerSVX container shares the host network.
+# DNS dataplane: Unbound (POWERSVX_DNS_DATAPLANE=unbound).
+# This process serves UI/API :5380, RPZ sync → Unbound zonefiles, optional
+# auth/AXFR on :5354 for Kominfo secondaries (not customer recurse).
 
 [server]
 bind_address = "0.0.0.0"
-udp_port = 53
-tcp_port = 53
-dot_port = 853
-doh_port = 443
-doq_port = 784
-workers = 0
-tproxy = true
+# Customer DNS is Unbound :53. Keep a side port for AXFR/NOTIFY only.
+udp_port = 5354
+tcp_port = 5354
+dot_port = 0
+doh_port = 0
+doq_port = 0
+workers = 2
+tproxy = false
 
 [server.tls]
-enabled = true
+enabled = false
 cert_file = "/etc/PowerSVX/certs/fullchain.pem"
 key_file = "/etc/PowerSVX/certs/privkey.pem"
 
@@ -31,54 +33,38 @@ max_connections = 20
 [cache]
 type = "badger"
 path = "/data/cache"
-# 0 = autosize from host RAM (~12% MemTotal, capped by GOMEMLIMIT). Scales on RAM upgrade + restart.
-# Explicit MB freezes the value. L1 entries ≈ max_size_mb * 1024.
-max_size_mb = 0
+max_size_mb = 64
 ttl_seconds = 300
-min_ttl = 180
-negative_ttl = 180
-# Serve expired answers briefly (Unbound-like) while refreshing in background.
-serve_stale = true
-stale_ttl = 300
-# Prefetch when remaining TTL below this percent of stored lifetime (0 = off).
-# Keep off under multi-k QPS — prefetch storms burn CPU for little hit-rate gain.
+min_ttl = 60
+negative_ttl = 60
+serve_stale = false
+stale_ttl = 0
 prefetch_pct = 0
 
 [resolver]
-# Default: Unbound hybrid (docs/UNBOUND-HYBRID.md). PowerSVX edge + Unbound on 127.0.0.1:5353.
-# Conditional forward_zones always override for matching domains (longest suffix).
-# Recursive (Go) remains available in UI for lab only — not the production default.
 mode = "forward"
-forwarders = ["127.0.0.1:5353"]
+forwarders = ["127.0.0.1:53"]
 forward_on_fail = false
-dnssec_mode = "opportunistic"
+dnssec_mode = "off"
 edns_buffer_size = 1232
-timeout_ms = 1500
+timeout_ms = 700
 fallback_timeout_ms = 400
-# 0 = autosize from CPU (NumCPU*512, clamp 1024–16384). Scales on CPU upgrade + restart.
-max_inflight = 0
+max_inflight = 256
 ecs_enabled = false
-ecs_prefix_v4 = 24
-ecs_prefix_v6 = 56
 
 [rate_limit]
 enabled = true
-# Per-client. Keep whitelist tiny — copying ACL here disables protection for those nets.
-default_qps = 2000
-default_burst = 400
+default_qps = 50
+default_burst = 20
 block_duration = 60
 whitelist = ["127.0.0.1/32", "::1/128"]
-# 0 = disable global cap (whitelist /23 still bypasses per-IP only).
 global_qps = 0
 global_burst = 0
 
 [rpz]
 enabled = true
-# Exact-hit LRU in cold/disk mode. 300k covers hot blockers without multi-GB RSS.
-hot_cache_max = 300000
-# Seed hot cache from top blocked qnames every 5m (+ persist under data-dir).
-hot_seed_top_n = 20000
-# Hosts HTTP feeds: daily at 04:00 local (TZ=Asia/Jakarta in compose). 0 interval disables.
+hot_cache_max = 10000
+hot_seed_top_n = 0
 update_interval = 86400
 update_at = "04:00"
 axfr_update_interval = 86400
@@ -93,9 +79,6 @@ default_tag = "default"
 
 [split_horizon]
 enabled = false
-views = [
-  { name = "internal", networks = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] }
-]
 
 [metrics]
 prometheus_enabled = true
@@ -105,12 +88,6 @@ prometheus_bind = "0.0.0.0:9100"
 enabled = false
 
 [acl]
-# Empty allow_query = any client may query. Non-empty = only listed CIDRs/IPs.
-# deny_query always wins over allow.
-# Mirror Unbound: list only customer/resolver nets to cut non-customer flood.
-# allow_query = ["10.0.0.0/8", "192.168.0.0/16", "127.0.0.1", "::1"]
-# deny_query = []
-# Non-ACL spam: reply REFUSED up to threshold, then silent-drop + nft DROP.
 deny_autoban_threshold = 64
 deny_autoban_window_sec = 30
 deny_autoban_ttl_sec = 300
@@ -124,11 +101,8 @@ require_tsig = true
 enabled = false
 require_tsig = true
 
-# AXFR sync to secondary sources (NOTIFY + allow pull). Default off; enable in Tools → AXFR.
-# Default targets are Kominfo secondaries and are editable in the UI.
 [kominfo_sync]
 enabled = false
-# targets = ["182.23.79.202:53", "139.255.196.202:53"]
 
 [api]
 rest_enabled = true
@@ -139,11 +113,10 @@ api_token = "${API_TOKEN}"
 [logging]
 level = "warn"
 format = "json"
-query_log_enabled = false
+# Unbound dataplane: UI toggle enables logfile sampler → Postgres (not Go :53).
+query_log_enabled = true
 query_log_destination = "postgresql"
 query_log_retention_days = 3
-# Hard cap table+indexes (5 GB default). Editable in Settings → Features.
 query_log_max_size_mb = 5120
 query_log_mask_ip = false
-# Under load, sample query logs (1.0 = all, 0.05 = 5%). Caps Postgres CPU.
 query_log_sample_rate = 0.05

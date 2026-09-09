@@ -101,3 +101,16 @@ func TestPrepareClientResponseClampsUDPSize(t *testing.T) {
 		t.Fatalf("want clamped 1232, got %v", opt)
 	}
 }
+
+func TestPrepareClientResponseClampsTinyUDPSize(t *testing.T) {
+	req := new(dns.Msg)
+	req.SetQuestion("google.com.", dns.TypeA)
+	req.SetEdns0(0, false)
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	PrepareClientResponse(req, resp, 1232)
+	opt := resp.IsEdns0()
+	if opt == nil || opt.UDPSize() != 1232 {
+		t.Fatalf("want 1232 for advertised 0, got %v", opt)
+	}
+}

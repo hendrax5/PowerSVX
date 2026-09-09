@@ -13,3 +13,10 @@ scrape_configs:
   - job_name: powersvx-host
     static_configs:
       - targets: ["host.docker.internal:9100"]
+  # node-exporter (CPU / MemAvailable / disk) — listen :9101
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9101"]
+  - job_name: node-host
+    static_configs:
+      - targets: ["host.docker.internal:9101"]

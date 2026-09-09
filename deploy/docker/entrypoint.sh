@@ -17,12 +17,12 @@ apply_gomemlimit_percent() {
     fi
     return 0
   fi
-  percent=${POWERSVX_MEM_PERCENT:-40}
+  percent=${POWERSVX_MEM_PERCENT:-55}
   case $percent in
     ''|*[!0-9]*) percent=40 ;;
   esac
   if [ "$percent" -lt 1 ] || [ "$percent" -gt 95 ]; then
-    percent=40
+    percent=55
   fi
 
   host_bytes=$(awk '/MemTotal:/ {printf "%.0f", $2*1024}' /proc/meminfo 2>/dev/null || echo 0)
@@ -64,10 +64,17 @@ apply_gomemlimit_percent() {
 
 apply_gomemlimit_percent || true
 
-# Prefer steadier GC under multi-GB heaps unless the operator set GOGC explicitly.
-if [ -z "${GOGC:-}" ]; then
-  export GOGC=50
+# GOGC>50 grew the heap to ~7GiB and stalled :53 (JLA 2026-09-04).
+# POWERSVX_GOGC_UNSAFE=1 keeps a higher operator-set GOGC.
+gogc=${GOGC:-50}
+case $gogc in
+  ''|*[!0-9]*) gogc=50 ;;
+esac
+if [ "${POWERSVX_GOGC_UNSAFE:-0}" != "1" ] && [ "$gogc" -gt 50 ]; then
+  echo "gomem: clamping GOGC $gogc -> 50 (POWERSVX_GOGC_UNSAFE=1 to keep)" >&2
+  gogc=50
 fi
+export GOGC=$gogc
 
 ensure_geodb() {
   # GEODB_AUTO_DOWNLOAD=0 skips. Path defaults to persistent volume file.

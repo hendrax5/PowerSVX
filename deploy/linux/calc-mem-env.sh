@@ -6,10 +6,17 @@
 #   deploy/linux/calc-mem-env.sh > .env.mem && set -a && . ./.env.mem && set +a
 #
 # Env:
-#   POWERSVX_MEM_PERCENT   default 40  (hard Docker cgroup limit; ~4GiB soft on 11GB)
+#   POWERSVX_MEM_PERCENT   default 55  (hard Docker cgroup; ~6GiB on 11GB, scales on upgrade)
 #   POWERSVX_GOMEM_RATIO   default 90  (% of that limit for GOMEMLIMIT)
 set -e
-PERCENT=${POWERSVX_MEM_PERCENT:-40}
+PERCENT=${POWERSVX_MEM_PERCENT:-}
+if [ -z "$PERCENT" ]; then
+  # Dataplane: leave most RAM for Unbound RPZ; API is light.
+  case "${POWERSVX_DNS_DATAPLANE:-}" in
+    unbound|external|dnsdist|cdb) PERCENT=30 ;;
+    *) PERCENT=55 ;;
+  esac
+fi
 GORATIO=${POWERSVX_GOMEM_RATIO:-90}
 case $PERCENT in
   ''|*[!0-9]*) echo "POWERSVX_MEM_PERCENT must be integer 1-95" >&2; exit 1 ;;
@@ -29,11 +36,12 @@ fi
 LIMIT_BYTES=$(( MEM_KB * 1024 * PERCENT / 100 ))
 GOMEM_BYTES=$(( LIMIT_BYTES * GORATIO / 100 ))
 
-# Export when sourced; always print KEY=value for .env files.
+# Export when sourced; always print export KEY=value for eval / .env files.
 POWERSVX_MEM_LIMIT=$LIMIT_BYTES
 GOMEMLIMIT=${GOMEM_BYTES}B
-export POWERSVX_MEM_LIMIT GOMEMLIMIT
+export POWERSVX_MEM_LIMIT GOMEMLIMIT POWERSVX_MEM_PERCENT
 
-echo "POWERSVX_MEM_LIMIT=$POWERSVX_MEM_LIMIT"
-echo "GOMEMLIMIT=$GOMEMLIMIT"
+echo "export POWERSVX_MEM_LIMIT=$POWERSVX_MEM_LIMIT"
+echo "export GOMEMLIMIT=$GOMEMLIMIT"
+echo "export POWERSVX_MEM_PERCENT=$PERCENT"
 echo "# host MemTotal=${MEM_KB}kB percent=${PERCENT}% gomem_ratio=${GORATIO}%" >&2

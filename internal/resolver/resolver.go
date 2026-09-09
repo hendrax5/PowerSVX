@@ -484,7 +484,7 @@ func PrepareClientResponse(req, resp *dns.Msg, maxUDP uint16) {
 		maxUDP = config.EDNSBufferMin
 	}
 	size := opt.UDPSize()
-	if size == 0 || size > maxUDP {
+	if size < 512 || size > maxUDP {
 		size = maxUDP
 	}
 	resp.SetEdns0(size, opt.Do())

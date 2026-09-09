@@ -1,5 +1,23 @@
 # PowerSVX production notes (Raft clustering deferred)
 
+## DNS dataplane (dnsdist+CDB) vs control-plane (PowerSVX)
+
+On production hosts (`POWERSVX_DNS_DATAPLANE=dnsdist`, default):
+
+| Role | Process | Ports |
+|------|---------|-------|
+| Public DNS + CDB blocklist + bank whitelist | **dnsdist** | `:53` |
+| Recurse-only backend | **Unbound** | `127.0.0.1:5353` |
+| UI / API / AXFR→CDB sync / Kominfo outbound AXFR | **PowerSVX** | `:5380`, auth/AXFR `:5354` |
+
+- Komdigi AXFR / hosts feeds → `data/blocklist/domains.cdb` (full list, mmap; no Unbound 1.5M RPZ cap). Banks filtered from CDB + dnsdist `SuffixMatchNode`.
+- Spoof blocked A → `139.255.196.196` (Komdigi sinkhole). Regen conf: `deploy/linux/gen-dnsdist-conf.sh`.
+- **Do not put Go PowerSVX back on public `:53`.** See `ops/HERMES.md`.
+
+### Legacy: Unbound RPZ on `:53`
+
+Set `POWERSVX_DNS_DATAPLANE=unbound` and stop dnsdist. Partial TrustPositif: `POWERSVX_RPZ_MAX_ENTRIES` auto-cap on small RAM. Full Unbound RPZ needs **≥16 GiB**. Keep `POWERSVX_UNBOUND_QUERYLOG=0`. Run `deploy/linux/unbound-rpz-guard.sh` before Unbound recreate.
+
 ## Query ACL
 - `[acl] allow_query` — CIDRs/IPs allowed to query DNS. **Empty = allow all.**
 - `[acl] deny_query` — always refused (wins over allow).

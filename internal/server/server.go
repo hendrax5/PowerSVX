@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -286,6 +288,15 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	qacl := s.queryACL
 	s.queryACLMu.RUnlock()
 	if qacl != nil && clientIP != "" && !qacl.Allows(clientIP) {
+		// #region agent log
+		aclQ := ""
+		if req != nil && len(req.Question) > 0 {
+			aclQ = config.NormalizeName(req.Question[0].Name)
+		}
+		if allowlist.BankLikeName(aclQ) {
+			debugBankLog("D", "server.go:acl", "ACL REFUSED bank-like query", map[string]any{"qname": aclQ, "client": clientIP, "proto": proto})
+		}
+		// #endregion
 		metrics.QueriesTotal.WithLabelValues(proto, "acl_denied").Inc()
 		// Autoban: after threshold, silent-drop (no REFUSED / no query-log) to cut CPU.
 		if s.aclBan != nil {
@@ -351,6 +362,12 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	qname := config.NormalizeName(q.Name)
 	qtype := q.Qtype
 	qtypeStr := dns.TypeToString[qtype]
+	// #region agent log
+	bankQ := allowlist.BankLikeName(qname)
+	if bankQ {
+		debugBankLog("B", "server.go:ServeDNS", "bank-like query admitted", map[string]any{"qname": qname, "qtype": qtypeStr, "client": clientIP, "proto": proto})
+	}
+	// #endregion
 	observe := func(code string) {
 		if s.stats != nil {
 			s.stats.Observe(qname, code)
@@ -421,7 +438,12 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	if s.rpz != nil || s.deny != nil {
-		whitelisted := s.allow != nil && s.allow.Allows(qname)
+		whitelisted := s.allow.Allows(qname)
+		// #region agent log
+		if bankQ && whitelisted {
+			debugBankLog("E", "server.go:rpz", "whitelist bypass", map[string]any{"qname": qname})
+		}
+		// #endregion
 		if !whitelisted {
 			if s.deny != nil && s.deny.Blocks(qname) {
 				metrics.RPZBlocked.Inc()
@@ -439,6 +461,12 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			}
 			if s.rpz != nil {
 				if hit, ok := s.rpz.Lookup(qname); ok {
+					hit = bankSafeRPZHit(qname, hit)
+					// #region agent log
+					if bankQ {
+						debugBankLog("C", "server.go:rpz.Lookup", "RPZ hit on bank-like name", map[string]any{"qname": qname, "action": string(hit.Action), "target": hit.Target, "ok": ok, "runId": "post-fix"})
+					}
+					// #endregion
 					if hit.Action == rpz.ActionPass {
 						// Explicit allow — continue to cache / auth / recursive.
 					} else {
@@ -478,6 +506,10 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 						note("rpz", code, false, false, false)
 						return
 					}
+				} else if bankQ {
+					// #region agent log
+					debugBankLog("B", "server.go:rpz.Lookup", "RPZ miss on bank-like name", map[string]any{"qname": qname})
+					// #endregion
 				}
 			}
 		}
@@ -552,6 +584,22 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			note("auth", dns.RcodeToString[m.Rcode], false, false, false)
 			return
 		}
+	}
+
+	if qnameTooDeep(qname) {
+		m := new(dns.Msg)
+		m.SetReply(req)
+		m.RecursionAvailable = true
+		m.Rcode = dns.RcodeNameError
+		s.storeAndWriteScoped(w, req, m, ecsKey, viewName, geoTag)
+		metrics.QueriesTotal.WithLabelValues(proto, "qname_budget").Inc()
+		sec := time.Since(start).Seconds()
+		metrics.QueryDuration.WithLabelValues(proto).Observe(sec)
+		metrics.QueryDurationByPath.WithLabelValues("qname_budget").Observe(sec)
+		observe("NXDOMAIN")
+		logQuery(qname, qtypeStr, dns.RcodeNameError, false)
+		note("qname_budget", "NXDOMAIN", false, false, false)
+		return
 	}
 
 	if viewName == "default" && geoTag == "default" {
@@ -759,14 +807,17 @@ func (s *Server) ListenAndServe() error {
 	accept := msgAcceptFunc
 	invalid := func(m []byte, err error) {
 		if s.log != nil {
-			n := len(m)
-			if n > 64 {
-				n = 64
+			if n := s.resolveFailLogN.Add(1); n&0x7f == 1 {
+				headn := len(m)
+				if headn > 64 {
+					headn = 64
+				}
+				s.log.Warn("dns message rejected", "err", err, "bytes", len(m), "head", fmt.Sprintf("%x", m[:headn]), "sampled", n)
 			}
-			s.log.Warn("dns message rejected", "err", err, "bytes", len(m), "head", fmt.Sprintf("%x", m[:n]))
 		}
 		metrics.QueriesTotal.WithLabelValues("udp", "formerr").Inc()
 	}
+	decorate := decorateEDNSRepair
 
 	if s.cfg.Server.TProxy {
 		nUDP := s.cfg.Server.Workers
@@ -784,7 +835,7 @@ func (s *Server) ListenAndServe() error {
 			if err != nil {
 				return fmt.Errorf("tproxy udp %s shard %d: %w", udpAddr, i, err)
 			}
-			srv := &dns.Server{PacketConn: pc, Net: "udp", Handler: handler, UDPSize: int(s.udpBufSize()), MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
+			srv := &dns.Server{PacketConn: pc, Net: "udp", Handler: handler, UDPSize: int(s.udpBufSize()), MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap, DecorateReader: decorate}
 			if i == 0 {
 				s.udp = srv
 			}
@@ -799,7 +850,7 @@ func (s *Server) ListenAndServe() error {
 		if err != nil {
 			return fmt.Errorf("tproxy tcp %s: %w", tcpAddr, err)
 		}
-		s.tcp = &dns.Server{Listener: ln, Net: "tcp", Handler: handler, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
+		s.tcp = &dns.Server{Listener: ln, Net: "tcp", Handler: handler, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap, DecorateReader: decorate}
 		go func() {
 			s.log.Info("TCP listener starting", "addr", tcpAddr, "tproxy", true)
 			errCh <- s.tcp.ActivateAndServe()
@@ -826,6 +877,7 @@ func (s *Server) ListenAndServe() error {
 				MsgAcceptFunc:  accept,
 				MsgInvalidFunc: invalid,
 				TsigSecret:     tsigMap,
+				DecorateReader: decorate,
 			}
 			if i == 0 {
 				s.udp = srv
@@ -837,7 +889,7 @@ func (s *Server) ListenAndServe() error {
 				errCh <- srv.ListenAndServe()
 			}()
 		}
-		s.tcp = &dns.Server{Addr: tcpAddr, Net: "tcp", Handler: handler, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
+		s.tcp = &dns.Server{Addr: tcpAddr, Net: "tcp", Handler: handler, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap, DecorateReader: decorate}
 		go func() {
 			s.log.Info("TCP listener starting", "addr", tcpAddr)
 			errCh <- s.tcp.ListenAndServe()
@@ -848,7 +900,7 @@ func (s *Server) ListenAndServe() error {
 		dotAddr := s.cfg.ListenAddr(s.cfg.Server.DoTPort)
 		dotTLS := s.tlsCfg.Clone()
 		dotTLS.NextProtos = []string{"dot"}
-		s.dot = &dns.Server{Addr: dotAddr, Net: "tcp-tls", Handler: handler, TLSConfig: dotTLS, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap}
+		s.dot = &dns.Server{Addr: dotAddr, Net: "tcp-tls", Handler: handler, TLSConfig: dotTLS, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap, DecorateReader: decorate}
 		s.dotOn = true
 		go func() {
 			s.log.Info("DoT listener starting", "addr", dotAddr)
@@ -1154,6 +1206,7 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 		}
 		s.cfg.SplitHorizon.Enabled = f.SplitHorizon
 		s.cfg.Logging.QueryLogEnabled = f.QueryLog
+		config.ApplyQueryLogGuard(s.cfg)
 		s.cfg.KominfoSync.Enabled = f.KominfoSync
 	}
 	if s.kominfo != nil {
@@ -1309,3 +1362,36 @@ func (m *memResponseWriter) Close() error        { return nil }
 func (m *memResponseWriter) TsigStatus() error   { return nil }
 func (m *memResponseWriter) TsigTimersOnly(bool) {}
 func (m *memResponseWriter) Hijack()             {}
+
+// bankSafeRPZHit turns TrustPositif sinkhole A-records on bank-branded names into
+// NXDOMAIN. Mobile banking apps treat 139.255.196.196 as DNS hijack; websites do not.
+func bankSafeRPZHit(qname string, hit rpz.Hit) rpz.Hit {
+	switch allowlist.BankSafeRPZAction(qname, string(hit.Action)) {
+	case "pass":
+		return rpz.Hit{Action: rpz.ActionPass}
+	case "nxdomain":
+		return rpz.Hit{Action: rpz.ActionNXDOMAIN}
+	default:
+		return hit
+	}
+}
+
+// #region agent log
+func debugBankLog(hypothesisId, location, message string, data map[string]any) {
+	payload, _ := json.Marshal(map[string]any{
+		"sessionId":    "cf81b3",
+		"hypothesisId": hypothesisId,
+		"location":     location,
+		"message":      message,
+		"data":         data,
+		"timestamp":    time.Now().UnixMilli(),
+	})
+	f, err := os.OpenFile(`c:\Users\hendr\OneDrive\Documents\Cursor\PowerSVX\debug-cf81b3.log`, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	_, _ = f.Write(append(payload, '\n'))
+	_ = f.Close()
+}
+
+// #endregion

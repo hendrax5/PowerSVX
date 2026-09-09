@@ -7,7 +7,7 @@ services:
       # make Alpine/Debian package mirrors look "temporarily" unavailable.
       network: host
       args:
-        VERSION: ${POWERSVX_VERSION:-1.6.0}
+        VERSION: ${POWERSVX_VERSION:-1.6.2}
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: powersvx
@@ -20,8 +20,9 @@ services:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
       - TZ=Asia/Jakarta
       - GOGC=${GOGC:-50}
-      # 40% host RAM → ~4GiB soft GOMEMLIMIT on 11GB VPS (room for Unbound/Postgres).
-      - POWERSVX_MEM_PERCENT=${POWERSVX_MEM_PERCENT:-40}
+      - POWERSVX_DISABLE_QUERY_LOG=${POWERSVX_DISABLE_QUERY_LOG:-1}
+      # 55% host RAM soft budget (scales on upgrade; leave room for Unbound/Postgres/OS).
+      - POWERSVX_MEM_PERCENT=${POWERSVX_MEM_PERCENT:-55}
     logging: &powersvx-log
       driver: json-file
       options:
@@ -52,8 +53,26 @@ services:
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:5380/api/v1/health"]
       interval: 30s
-      timeout: 10s
-      retries: 3
+      timeout: 15s
+      retries: 4
+      start_period: 90s
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: powersvx-node-exporter
+    logging: *powersvx-log
+    pid: host
+    command:
+      - '--path.rootfs=/host'
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--web.listen-address=:9101'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - /:/host:ro,rslave
+    ports:
+      - "0.0.0.0:9101:9101"
+    restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:v2.54.1
@@ -68,6 +87,7 @@ services:
       - "0.0.0.0:9091:9090"
     depends_on:
       - powersvx
+      - node-exporter
     restart: unless-stopped
 
   grafana:

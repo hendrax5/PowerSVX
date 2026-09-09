@@ -7,143 +7,243 @@
   "links": [],
   "panels": [
     {
-      "title": "Query rate",
+      "title": "DNS QPS (dnsdist edge)",
+      "description": "Public :53 — from dnsdist jsonstat bridged into powersvx_queries_total{protocol=\"dnsdist\"}",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
       "targets": [
         {
-          "expr": "sum(rate(powersvx_queries_total[1m]))",
+          "expr": "sum(rate(powersvx_queries_total{protocol=\"dnsdist\"}[1m]))",
           "legendFormat": "qps",
           "refId": "A"
+        },
+        {
+          "expr": "sum(rate(powersvx_queries_total{protocol=\"dnsdist\",status=\"cache\"}[1m]))",
+          "legendFormat": "packet-cache",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(powersvx_queries_total{protocol=\"dnsdist\",status=\"blocked\"}[1m]))",
+          "legendFormat": "cdb spoof",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(rate(powersvx_queries_total{protocol=\"dnsdist\",status=\"miss\"}[1m]))",
+          "legendFormat": "cache miss",
+          "refId": "D"
         }
       ]
     },
     {
-      "title": "Cache hit ratio (fresh+stale)",
+      "title": "Cache hit ratio (dnsdist packet cache)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
       "targets": [
         {
-          "expr": "(rate(powersvx_cache_hits_total[1m]) + rate(powersvx_cache_stale_hits_total[1m])) / clamp_min(rate(powersvx_cache_hits_total[1m]) + rate(powersvx_cache_stale_hits_total[1m]) + rate(powersvx_cache_misses_total[1m]), 1e-9)",
-          "legendFormat": "hit+stale",
+          "expr": "sum(rate(powersvx_queries_total{protocol=\"dnsdist\",status=\"cache\"}[1m])) / clamp_min(sum(rate(powersvx_queries_total{protocol=\"dnsdist\",status=~\"cache|miss|ok|blocked\"}[1m])), 1e-9)",
+          "legendFormat": "cache share of edge",
           "refId": "A"
+        },
+        {
+          "expr": "sum(rate(powersvx_queries_total{protocol=\"dnsdist\",status=\"cache\"}[1m])) / clamp_min(sum(rate(powersvx_queries_total{protocol=\"dnsdist\",status=~\"cache|miss\"}[1m])), 1e-9)",
+          "legendFormat": "packet-cache hit ratio",
+          "refId": "B"
         }
       ]
     },
     {
-      "title": "Resolve inflight (vs Unbound reqlist)",
+      "title": "dnsdist / Unbound up",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
       "targets": [
         {
-          "expr": "powersvx_resolve_inflight",
-          "legendFormat": "inflight",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "Latency p95 / p99",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(powersvx_query_duration_seconds_bucket[1m])))",
-          "legendFormat": "p95",
+          "expr": "powersvx_dnsdist_up",
+          "legendFormat": "dnsdist_up",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(powersvx_query_duration_seconds_bucket[1m])))",
-          "legendFormat": "p99",
-          "refId": "B"
-        }
-      ]
-    },
-    {
-      "title": "Path QPS (cache / recursive / fallback)",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-      "targets": [
-        {
-          "expr": "sum by (path) (rate(powersvx_query_duration_by_path_seconds_count[1m]))",
-          "legendFormat": "{{path}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "Admit rejects / rate limit / RPZ",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-      "targets": [
-        {
-          "expr": "rate(powersvx_admit_rejected_total[1m])",
-          "legendFormat": "admit_rejected",
-          "refId": "A"
-        },
-        {
-          "expr": "rate(powersvx_rate_limited_total[1m])",
-          "legendFormat": "ratelimit",
+          "expr": "powersvx_unbound_up",
+          "legendFormat": "unbound_up",
           "refId": "B"
         },
         {
-          "expr": "rate(powersvx_rpz_blocked_total[1m])",
-          "legendFormat": "rpz",
+          "expr": "powersvx_unbound_requestlist_avg",
+          "legendFormat": "unbound_requestlist_avg",
           "refId": "C"
         }
       ]
     },
     {
-      "title": "Queries by status",
+      "title": "Host CPU %",
+      "description": "node-exporter — idle inverted to busy",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
       "targets": [
         {
-          "expr": "sum by (status) (rate(powersvx_queries_total[1m]))",
-          "legendFormat": "{{status}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "Cache stale + prefetch",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
-      "targets": [
-        {
-          "expr": "rate(powersvx_cache_stale_hits_total[1m])",
-          "legendFormat": "stale_hits",
+          "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[1m])) * 100)",
+          "legendFormat": "cpu busy %",
           "refId": "A"
         },
         {
-          "expr": "rate(powersvx_cache_prefetch_total[1m])",
-          "legendFormat": "prefetch",
+          "expr": "powersvx_host_load1",
+          "legendFormat": "load1 (api)",
           "refId": "B"
         }
       ]
     },
     {
-      "title": "RSS / goroutines",
+      "title": "Host memory (MemAvailable)",
+      "description": "Prefer MemAvailable — free alone understates reclaimable cache",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "node_memory_MemAvailable_bytes",
+          "legendFormat": "available",
+          "refId": "A"
+        },
+        {
+          "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes",
+          "legendFormat": "used (approx)",
+          "refId": "B"
+        },
+        {
+          "expr": "powersvx_host_mem_available_bytes",
+          "legendFormat": "available (api)",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "title": "Host disk used % (root)",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "100 - ((node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"} * 100) / clamp_min(node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"}, 1))",
+          "legendFormat": "root used %",
+          "refId": "A"
+        },
+        {
+          "expr": "powersvx_host_disk_used_percent",
+          "legendFormat": "used % (api)",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "Backend QPS (Unbound :5353)",
+      "description": "Recurse-only behind dnsdist — misses that reach Unbound",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(powersvx_queries_total{protocol=\"unbound\"}[1m]))",
+          "legendFormat": "unbound qps",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(powersvx_queries_total{protocol=\"unbound\",status=\"cache\"}[1m]))",
+          "legendFormat": "unbound cache",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(powersvx_queries_total{protocol=\"unbound\",status=\"miss\"}[1m]))",
+          "legendFormat": "unbound recurse",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "title": "Recursion latency avg / median (Unbound)",
+      "description": "Unbound total.recursion.time.* — recurse path only",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "powersvx_unbound_recursion_time_avg_seconds",
+          "legendFormat": "avg",
+          "refId": "A"
+        },
+        {
+          "expr": "powersvx_unbound_recursion_time_median_seconds",
+          "legendFormat": "median",
+          "refId": "B"
+        },
+        {
+          "expr": "powersvx_dnsdist_latency_avg100_seconds",
+          "legendFormat": "dnsdist avg100",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "title": "CDB / block actions /s",
+      "description": "dnsdist self-answered (SpoofAction) ≈ TrustPositif CDB hits",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "rate(powersvx_rpz_blocked_total[1m])",
+          "legendFormat": "blocks/s",
+          "refId": "A"
+        },
+        {
+          "expr": "powersvx_dnsdist_self_answered",
+          "legendFormat": "self-answered cumulative",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "Unbound cache memory (backend)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "powersvx_unbound_mem_cache_rrset_bytes",
+          "legendFormat": "rrset cache",
+          "refId": "A"
+        },
+        {
+          "expr": "powersvx_unbound_mem_cache_message_bytes",
+          "legendFormat": "msg cache",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "Control-plane RSS / goroutines (API only)",
+      "description": "PowerSVX process — not the DNS data-plane.",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 31 },
       "targets": [
         {
           "expr": "powersvx_process_rss_bytes / 1024 / 1024",
-          "legendFormat": "rss_mb",
+          "legendFormat": "api_rss_mb",
           "refId": "A"
         },
         {
           "expr": "powersvx_goroutines",
-          "legendFormat": "goroutines",
+          "legendFormat": "api_goroutines",
           "refId": "B"
         }
       ]
     }
   ],
   "schemaVersion": 39,
-  "tags": ["powersvx", "dns", "unbound-compare"],
+  "tags": ["powersvx", "dns", "dnsdist", "unbound", "host", "dataplane"],
   "timezone": "browser",
-  "title": "PowerSVX DNS",
+  "title": "PowerSVX DNS + Host",
   "uid": "powersvx-dns",
-  "version": 2
+  "version": 5
 }

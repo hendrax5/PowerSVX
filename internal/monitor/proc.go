@@ -69,8 +69,19 @@ func resourceSnapshot() Resources {
 		// Fallback when OS RSS unavailable (e.g. some Windows builds).
 		r.RSSMB = r.HeapMB
 	}
+	enrichHostResources(&r)
 	metrics.Goroutines.Set(float64(r.Goroutines))
 	metrics.RSSBytes.Set(r.RSSMB * 1024 * 1024)
+	if r.HostMemAvailableMB > 0 {
+		metrics.HostMemAvailableBytes.Set(r.HostMemAvailableMB * 1024 * 1024)
+		metrics.HostMemTotalBytes.Set(r.HostMemTotalMB * 1024 * 1024)
+	}
+	if r.DiskUsedPct > 0 {
+		metrics.HostDiskUsedPercent.Set(r.DiskUsedPct)
+	}
+	if r.Load1 > 0 {
+		metrics.HostLoad1.Set(r.Load1)
+	}
 	return r
 }
 

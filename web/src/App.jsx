@@ -7,14 +7,10 @@ import {
   GearSix,
   Globe,
   MagnifyingGlass,
-  Scroll,
-  Stack,
 } from '@phosphor-icons/react'
 import {
   Area,
   AreaChart,
-  Bar,
-  BarChart,
   CartesianGrid,
   ResponsiveContainer,
   Tooltip,
@@ -128,7 +124,6 @@ function Shell({ children }) {
       links: [
         ['/', 'Dashboard', Gauge],
         ['/domains', 'Domains', Globe],
-        ['/zones', 'Zones', Stack],
         ['/lookup', 'Lookup', MagnifyingGlass],
       ],
     },
@@ -136,7 +131,6 @@ function Shell({ children }) {
       label: 'Observe',
       links: [
         ['/analytics', 'Analytics', ChartLine],
-        ['/logs', 'Query logs', Scroll],
         ['/audit', 'Audit', ClipboardText],
       ],
     },
@@ -407,35 +401,33 @@ function Dashboard() {
   if (!data) return <LoadingBlock label="Loading dashboard" />
 
   const s = data.status
-  const names = data.top_names || []
-  const rcodes = data.rcodes || []
   const anomaly = data.anomaly || { alerts: [] }
   const anomalyAlerts = anomaly.alerts || []
   const mon = data.monitor || {}
   const health = data.health || { checks: {}, status: '—' }
   const checks = health.checks || {}
-  const trafficChart = [
-    { name: 'Hits', value: s.cache_hits },
-    { name: 'Misses', value: s.cache_misses },
-    { name: 'Queries', value: s.queries_total },
-    { name: 'Limited', value: s.rate_limited },
-  ]
-  const rcodeChart = rcodes.map((r) => ({ name: r.rcode, value: r.count }))
+  const dataplane = data.dns_dataplane || s.dns_dataplane || 'powersvx'
+  const isDnsdist = dataplane === 'dnsdist'
+  const isUnboundDP = dataplane === 'unbound'
+  const planeLabel = isDnsdist ? 'dnsdist + CDB' : isUnboundDP ? 'Unbound RPZ' : 'PowerSVX edge'
   const qpsChart = (mon.qps_series || []).map((p) => ({
     t: new Date((p.t || 0) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     qps: Number(p.qps || 0),
   }))
-  const pathChart = (mon.paths || []).map((p) => ({ name: p.key, value: p.count }))
-  const errChart = (mon.errors || []).map((p) => ({ name: p.key, value: p.count }))
   const lat = mon.latency || {}
   const res = mon.resources || {}
+  const hostAvailGiB = Number(res.host_mem_available_mb || 0) / 1024
+  const hostTotalGiB = Number(res.host_mem_total_mb || 0) / 1024
+  const diskUsed = Number(res.disk_used_pct || 0)
+  const memUsed = Number(res.host_mem_used_pct || 0)
+  const cdbEntries = checks.rpz?.entries ?? s.rpz_entries ?? 0
   const healthItems = [
-    ['UDP :53', checks.dns_udp],
+    ['DNS :53', checks.dns_udp],
+    ['Dataplane', checks.dns_dataplane || { status: 'pass', engine: planeLabel }],
+    ['Unbound', checks.unbound || (isDnsdist || isUnboundDP ? { status: '—' } : { status: 'disabled' })],
     ['Database', checks.database],
-    ['Cache', checks.cache],
-    ['Forwarders', checks.forwarders],
-    ['Resolver', checks.resolver],
-    ['Resources', checks.resources],
+    ['Blocklist', checks.rpz || { status: 'pass', entries: cdbEntries, engine: isDnsdist ? 'cdb' : 'rpz' }],
+    ['API process', checks.resources],
   ]
 
   return (
@@ -443,23 +435,24 @@ function Dashboard() {
       <PageHeader
         eyebrow="Operate"
         title="Dashboard"
-        sub={`${releaseLabel(s) || `v${s.version || ''}`} · uptime ${formatUptime(s.uptime_seconds)} · mode ${s.mode} · QPS ${Number(mon.qps_now || 0).toFixed(0)}`}
+        sub={`${releaseLabel(s) || `v${s.version || ''}`} · uptime ${formatUptime(s.uptime_seconds)} · ${planeLabel} · QPS ${Number(mon.qps_now || 0).toFixed(0)}`}
         actions={
           <a href="/analytics" className="btn btn-secondary">
-            Longer trends
+            Analytics
           </a>
         }
       />
 
       <div className="flex flex-wrap gap-2 reveal reveal-delay-1">
-        <Badge on={s.dot_enabled} label="DoT" />
-        <Badge on={s.doh_enabled} label="DoH" />
-        <Badge on={!!s.doh3_enabled} label="DoH3" />
-        <Badge on={s.doq_enabled} label="DoQ" />
-        <Badge on={s.rpz_enabled} label="RPZ" />
-        <Badge on={s.ecs_enabled} label="ECS" />
-        <Badge on={s.geodns_enabled} label="GeoDNS" />
-        <Badge on={s.split_horizon_enabled} label="Split Horizon" />
+        <Badge on={isDnsdist} label={isDnsdist ? 'Edge: dnsdist' : isUnboundDP ? 'Edge: Unbound' : 'Edge: PowerSVX'} />
+        <Badge on={isDnsdist || !!s.rpz_enabled} label={isDnsdist ? 'CDB blocklist' : 'RPZ'} />
+        <Badge on={isDnsdist || isUnboundDP} label="Backend Unbound" />
+        {!isDnsdist && !isUnboundDP ? (
+          <>
+            <Badge on={s.dot_enabled} label="DoT" />
+            <Badge on={s.doh_enabled} label="DoH" />
+          </>
+        ) : null}
       </div>
 
       <section className="panel overflow-hidden reveal reveal-delay-1">
@@ -477,26 +470,19 @@ function Dashboard() {
             return (
               <div key={label} className="px-4 py-3.5">
                 <div className="text-xs text-[var(--muted)]">{label}</div>
-                <div className={`mono text-sm mt-1 ${ok ? '' : 'text-[var(--warn)]'}`}>{st}</div>
+                <div className={`mono text-sm mt-1 ${ok || st === '—' ? '' : 'text-[var(--warn)]'}`}>
+                  {c?.engine || st}
+                </div>
                 {c?.latency_ms != null ? (
                   <div className="text-xs text-[var(--muted)] mt-1">{c.latency_ms} ms</div>
                 ) : null}
                 {c?.addr ? <div className="text-xs text-[var(--muted)] truncate mono mt-0.5">{c.addr}</div> : null}
-                {c?.reason ? <div className="text-xs text-[var(--warn)] mt-1">{c.reason}</div> : null}
-                {label === 'Forwarders' && Array.isArray(c?.forwarders) && c.forwarders.length ? (
-                  <ul className="mt-1 space-y-0.5 text-[10px] text-[var(--muted)] mono">
-                    {c.forwarders.slice(0, 3).map((f) => {
-                      const total = Number(f.ok || 0) + Number(f.fail || 0)
-                      const pct = total ? Math.round((100 * Number(f.fail || 0)) / total) : 0
-                      return (
-                        <li key={f.addr} className="truncate" title={`${f.addr} ok=${f.ok} fail=${f.fail}`}>
-                          {f.addr}: {pct}% fail
-                        </li>
-                      )
-                    })}
-                  </ul>
+                {c?.backend ? <div className="text-xs text-[var(--muted)] truncate mono mt-0.5">{c.backend}</div> : null}
+                {c?.entries != null ? (
+                  <div className="text-xs text-[var(--muted)] mt-1 mono">{Number(c.entries).toLocaleString()} names</div>
                 ) : null}
-                {label === 'Resources' && c?.goroutines != null ? (
+                {c?.reason ? <div className="text-xs text-[var(--warn)] mt-1">{c.reason}</div> : null}
+                {label === 'API process' && c?.goroutines != null ? (
                   <div className="text-xs text-[var(--muted)] mt-1 mono">
                     {c.goroutines} g · {Number(c.rss_mb || 0).toFixed(0)} MB
                   </div>
@@ -508,22 +494,44 @@ function Dashboard() {
       </section>
 
       <div className="metric-rail reveal reveal-delay-2">
-        <Metric label="QPS" value={Number(mon.qps_now || 0).toFixed(0)} sub={`total ${mon.queries_total ?? s.queries_total}`} />
+        <Metric
+          label="QPS"
+          value={Number(mon.qps_now || 0).toFixed(0)}
+          sub={`total ${Number(mon.queries_total ?? s.queries_total ?? 0).toLocaleString()}`}
+        />
         <Metric
           label="Blocked"
           value={`${Number(mon.blocked_percent || 0).toFixed(1)}%`}
-          sub={`${mon.blocked_total ?? 0} blocked · RPZ ${s.rpz_entries ?? 0}`}
+          sub={`${Number(mon.blocked_total ?? 0).toLocaleString()} · list ${Number(cdbEntries).toLocaleString()}`}
         />
         <Metric
-          label="Latency p50 / p95"
-          value={`${Number(lat.p50_ms || 0).toFixed(1)} / ${Number(lat.p95_ms || 0).toFixed(1)}`}
-          sub={`p99 ${Number(lat.p99_ms || 0).toFixed(1)} ms`}
+          label="Host RAM free"
+          value={hostAvailGiB > 0 ? `${hostAvailGiB.toFixed(1)} GiB` : '—'}
+          sub={
+            hostTotalGiB > 0
+              ? `${memUsed.toFixed(0)}% used of ${hostTotalGiB.toFixed(0)} GiB · load ${Number(res.load1 || 0).toFixed(2)}`
+              : `API CPU ${Number(res.cpu_percent || 0).toFixed(1)}% · RSS ${Number(res.rss_mb || 0).toFixed(0)} MB`
+          }
         />
         <Metric
-          label="CPU / RAM"
-          value={`${Number(res.cpu_percent || 0).toFixed(1)}%`}
-          sub={`RSS ${Number(res.rss_mb || 0).toFixed(0)} MB · ${res.num_cpu ?? '—'} cores · ${res.goroutines ?? '—'} g`}
+          label="Disk / latency"
+          value={diskUsed > 0 ? `${diskUsed.toFixed(0)}%` : `${Number(lat.p95_ms || 0).toFixed(0)} ms`}
+          sub={
+            diskUsed > 0
+              ? `${Number(res.disk_used_gb || 0).toFixed(0)} / ${Number(res.disk_total_gb || 0).toFixed(0)} GiB root`
+              : isDnsdist || isUnboundDP
+                ? `cache ${Number(s.cache_hits || 0).toLocaleString()} / ${Number(s.cache_misses || 0).toLocaleString()}`
+                : `p50 ${Number(lat.p50_ms || 0).toFixed(1)} · p99 ${Number(lat.p99_ms || 0).toFixed(1)}`
+          }
         />
+      </div>
+
+      <div className="text-xs text-[var(--muted)] px-1 reveal reveal-delay-2">
+        {isDnsdist
+          ? 'Live QPS from dnsdist edge. Host RAM/disk from the API host (/proc). Longer CPU/disk trends → Analytics (Grafana + node-exporter).'
+          : isUnboundDP
+            ? 'Live QPS from Unbound. Host RAM/disk from the API host. Trends → Analytics.'
+            : 'Go-edge resolver. Host RAM/disk from this process host.'}
       </div>
 
       <div className="bento bento-hero reveal reveal-delay-2">
@@ -543,56 +551,24 @@ function Dashboard() {
             <EmptyState title="Waiting for traffic" hint="QPS series fills as queries arrive." />
           )}
         </section>
-        <section className="panel chart-panel">
-          <h2>Resolver path</h2>
-          {pathChart.length ? (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={pathChart}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis dataKey="name" stroke="var(--muted)" fontSize={10} interval={0} angle={-20} textAnchor="end" height={50} />
-                <YAxis stroke="var(--muted)" fontSize={12} />
-                <Tooltip contentStyle={chartTip} />
-                <Bar dataKey="value" fill="var(--accent)" radius={[3, 3, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <EmptyState title="No path samples" hint="Appears after the resolver answers queries." />
-          )}
-        </section>
-      </div>
-
-      <div className="bento bento-split reveal reveal-delay-3">
-        <section className="panel chart-panel">
-          <h2>Error kinds</h2>
-          {errChart.length ? (
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={errChart}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis dataKey="name" stroke="var(--muted)" fontSize={11} />
-                <YAxis stroke="var(--muted)" fontSize={12} />
-                <Tooltip contentStyle={chartTip} />
-                <Bar dataKey="value" fill="var(--warn)" radius={[3, 3, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <EmptyState title="No errors recorded" hint="Error buckets stay empty while the resolver is healthy." />
-          )}
-        </section>
-        <section className="panel chart-panel">
-          <h2>RCODE distribution</h2>
-          {rcodeChart.length ? (
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={rcodeChart}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis dataKey="name" stroke="var(--muted)" fontSize={11} />
-                <YAxis stroke="var(--muted)" fontSize={12} />
-                <Tooltip contentStyle={chartTip} />
-                <Bar dataKey="value" fill="var(--muted)" radius={[3, 3, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <EmptyState title="No aggregates yet" hint="RCODE bars appear after query logging starts." />
-          )}
+        <section className="panel p-4">
+          <h2 className="section-title mb-1">Host resources</h2>
+          <p className="text-xs text-[var(--muted)] mb-3">Machine running the control plane (and DNS on host-net).</p>
+          <div className="grid grid-cols-2 gap-3">
+            <Stat label="Mem available" value={hostAvailGiB > 0 ? `${hostAvailGiB.toFixed(1)} GiB` : '—'} />
+            <Stat label="Mem used" value={memUsed > 0 ? `${memUsed.toFixed(0)}%` : '—'} />
+            <Stat label="Disk used" value={diskUsed > 0 ? `${diskUsed.toFixed(0)}%` : '—'} />
+            <Stat label="Load 1m" value={Number(res.load1 || 0) > 0 ? Number(res.load1).toFixed(2) : '—'} />
+          </div>
+          <div className="mt-4 pt-3 border-t border-[var(--border)] text-xs text-[var(--muted)] mono space-y-1">
+            <div>
+              API RSS {Number(res.rss_mb || 0).toFixed(0)} MB · CPU {Number(res.cpu_percent || 0).toFixed(1)}% ·{' '}
+              {res.num_cpu ?? '—'} cores · {res.goroutines ?? '—'} g
+            </div>
+            <a href="/analytics" className="text-[var(--accent)] hover:underline underline-offset-4">
+              Open Analytics for host CPU / disk charts →
+            </a>
+          </div>
         </section>
       </div>
 
@@ -622,7 +598,14 @@ function Dashboard() {
               ) : null}
             </>
           ) : (
-            <EmptyState title="No blocks yet" hint="Appears when RPZ or a plugin blocks a query." />
+            <EmptyState
+              title="No live block samples"
+              hint={
+                isDnsdist
+                  ? 'CDB spoofs at dnsdist; sample tops appear when the monitor bridge fills. Manage list in Domains.'
+                  : 'Appears when the dataplane reports blocked qnames.'
+              }
+            />
           )}
         </section>
 
@@ -630,22 +613,20 @@ function Dashboard() {
           <div className="flex items-center justify-between gap-2 mb-2">
             <h2 className="section-title mb-0">Top clients</h2>
             <a href="/settings" className="text-xs text-[var(--accent)] hover:underline underline-offset-4">
-              ACL
+              Settings
             </a>
           </div>
           {(mon.top_clients || []).length ? (
             <ul>
               {mon.top_clients.map((n, i) => (
                 <li key={n.key} className="data-row text-sm mono" style={{ '--index': i }}>
-                  <a className="truncate text-[var(--accent)]" href={`/logs?client_ip=${encodeURIComponent(n.key)}`}>
-                    {n.key}
-                  </a>
+                  <span className="truncate">{n.key}</span>
                   <span className="shrink-0">{n.count}</span>
                 </li>
               ))}
             </ul>
           ) : (
-            <EmptyState title="No client traffic" hint="Appears after allowed queries arrive." />
+            <EmptyState title="No client samples" hint="Fills when the edge monitor has per-client counters." />
           )}
           {(mon.top_subnets || []).length ? (
             <div className="mt-4 pt-3 border-t border-[var(--border)]">
@@ -664,107 +645,6 @@ function Dashboard() {
       </div>
 
       <div className="bento bento-split reveal reveal-delay-3">
-        <section className="panel p-4">
-          <h2 className="section-title">Recent queries</h2>
-          {(mon.recent || []).length ? (
-            <ul className="max-h-80 overflow-auto">
-              {mon.recent.slice(0, 25).map((q, i) => (
-                <li
-                  key={`${q.time}-${q.qname}-${i}`}
-                  className="data-row !items-start flex-col !justify-start gap-0.5"
-                  style={{ '--index': i }}
-                >
-                  <div className="flex justify-between gap-2 w-full text-sm mono">
-                    <span className={`truncate ${q.blocked ? 'text-[var(--warn)]' : ''}`}>{q.qname || '—'}</span>
-                    <span className="text-xs text-[var(--muted)] shrink-0">{Number(q.ms || 0).toFixed(0)}ms</span>
-                  </div>
-                  <div className="text-xs text-[var(--muted)] flex justify-between gap-2 w-full mono">
-                    <span className="truncate">{q.client_ip || '—'}</span>
-                    <span>
-                      {q.blocked ? 'blocked' : q.path} · {q.rcode}
-                    </span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <EmptyState title="No recent queries" hint="Live ring fills as DNS traffic arrives." />
-          )}
-        </section>
-
-        <div className="space-y-4">
-          <section className="panel p-4">
-            <h2 className="section-title mb-1">ACL</h2>
-            {mon.acl_open_resolver ? (
-              <p className="text-xs text-[var(--warn)] mb-3 border border-[var(--warn)]/40 bg-[color-mix(in_srgb,var(--warn)_10%,transparent)] px-2.5 py-2 rounded-[var(--radius)]">
-                Open resolver: allow_query is empty — any client may query. Restrict in Settings.
-              </p>
-            ) : (
-              <p className="text-xs text-[var(--muted)] mb-3">Query ACL is restricted.</p>
-            )}
-            <div className="grid grid-cols-2 gap-3 mb-3">
-              <Stat label="Allowed" value={mon.acl_allow ?? 0} />
-              <Stat label="Denied" value={mon.acl_deny ?? 0} />
-            </div>
-            <a href="/settings" className="text-xs text-[var(--accent)] hover:underline underline-offset-4">
-              Edit allow / deny lists
-            </a>
-          </section>
-
-          <section className="panel p-4">
-            <h2 className="section-title mb-1">Rate limit</h2>
-            <p className="text-xs text-[var(--muted)] mb-3">
-              Lifetime limited {mon.rate_limited_total ?? s.rate_limited ?? 0}
-              {s.ratelimit_enabled ? '' : ' · limiter off'}
-            </p>
-            {(mon.rate_limit_active || []).length ? (
-              <div className="mb-3">
-                <h3 className="text-xs text-[var(--muted)] mb-1">Currently blocked</h3>
-                <ul>
-                  {mon.rate_limit_active.map((n, i) => (
-                    <li key={n.key} className="data-row text-sm mono" style={{ '--index': i }}>
-                      <span className="truncate">{n.key}</span>
-                      <span className="text-[var(--warn)] shrink-0">{n.count}s</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <p className="text-xs text-[var(--muted)] mb-3">No active blocks.</p>
-            )}
-            {(mon.rate_limit_top || []).length ? (
-              <div>
-                <h3 className="text-xs text-[var(--muted)] mb-1">Top offenders</h3>
-                <ul>
-                  {mon.rate_limit_top.map((n, i) => (
-                    <li key={n.key} className="data-row text-sm mono" style={{ '--index': i }}>
-                      <span className="truncate">{n.key}</span>
-                      <span className="shrink-0">{n.count}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </section>
-        </div>
-      </div>
-
-      <div className="bento bento-split reveal reveal-delay-4">
-        <section className="panel p-4">
-          <h2 className="section-title">Top queried names</h2>
-          {names.length ? (
-            <ul className="max-h-56 overflow-auto">
-              {names.map((n, i) => (
-                <li key={n.name} className="data-row text-sm mono" style={{ '--index': i }}>
-                  <span className="truncate">{n.name}</span>
-                  <span className="text-[var(--accent)] shrink-0">{n.count}</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <EmptyState title="No queries yet" hint="Totals appear after DNS traffic hits this instance." />
-          )}
-        </section>
         <section className="panel p-4">
           <h2 className="section-title mb-1">Anomaly alerts</h2>
           <p className="text-xs text-[var(--muted)] mb-3">
@@ -786,51 +666,31 @@ function Dashboard() {
               ))}
             </ul>
           ) : (
-            <p className="text-sm text-[var(--muted)]">No spikes detected yet (needs a few windows of traffic).</p>
+            <p className="text-sm text-[var(--muted)]">No spikes detected yet.</p>
           )}
+        </section>
+        <section className="panel p-4">
+          <h2 className="section-title mb-1">ACL</h2>
+          {mon.acl_open_resolver ? (
+            <p className="text-xs text-[var(--warn)] mb-3 border border-[var(--warn)]/40 bg-[color-mix(in_srgb,var(--warn)_10%,transparent)] px-2.5 py-2 rounded-[var(--radius)]">
+              Open resolver: allow_query is empty — any client may query. Restrict in Settings.
+            </p>
+          ) : (
+            <p className="text-xs text-[var(--muted)] mb-3">
+              {isDnsdist ? 'Public ACL is on dnsdist; control-plane auth is separate.' : 'Query ACL is restricted.'}
+            </p>
+          )}
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <Stat label="Allowed" value={mon.acl_allow ?? 0} />
+            <Stat label="Denied" value={mon.acl_deny ?? 0} />
+          </div>
+          <a href="/lookup" className="text-xs text-[var(--accent)] hover:underline underline-offset-4">
+            Test a name with Lookup →
+          </a>
         </section>
       </div>
 
-      <section className="panel chart-panel reveal reveal-delay-4">
-        <h2>Traffic snapshot</h2>
-        <ResponsiveContainer width="100%" height={180}>
-          <BarChart data={trafficChart}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-            <XAxis dataKey="name" stroke="var(--muted)" fontSize={12} />
-            <YAxis stroke="var(--muted)" fontSize={12} />
-            <Tooltip contentStyle={chartTip} />
-            <Bar dataKey="value" fill="var(--accent)" radius={[3, 3, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </section>
-
-      <section className="reveal reveal-delay-4">
-        <h2 className="section-title">Zones</h2>
-        {data.zones?.length ? (
-          <ul className="panel divide-y divide-[var(--border)] overflow-hidden">
-            {data.zones.map((z) => (
-              <li key={z.name} className="flex justify-between gap-3 px-4 py-3 text-sm">
-                <span className="mono">{z.name}</span>
-                <span className="text-[var(--muted)]">{z.record_count} records</span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <div className="panel px-4">
-            <EmptyState
-              title="No zones yet"
-              hint="Add an authoritative zone to serve local records."
-              action={
-                <a href="/zones" className="btn btn-secondary">
-                  Go to Zones
-                </a>
-              }
-            />
-          </div>
-        )}
-      </section>
-
-      <div className="reveal reveal-delay-5">
+      <div className="reveal reveal-delay-4">
         <LiveErrorLog />
       </div>
     </div>
@@ -2509,6 +2369,13 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
               <option value="redirect">redirect (sinkhole IP)</option>
               <option value="cname">cname (landing host)</option>
             </select>
+            {action === 'redirect' ? (
+              <p className="text-[11px] text-[var(--muted)] leading-relaxed">
+                Sinkhole IP breaks many Indonesian banking apps (they treat it as DNS hijack). The
+                website still loads. PowerSVX answers NXDOMAIN instead of the landing IP for
+                bank-branded names; gambling/porn redirect is unchanged.
+              </p>
+            ) : null}
           </label>
           {action === 'redirect' || action === 'cname' ? (
             <label className="text-xs text-[var(--muted)] space-y-1">
@@ -2876,6 +2743,13 @@ function RPZPanel({ initial, onChange }) {
             <option value="redirect">redirect (sinkhole IP)</option>
             <option value="cname">cname (landing host)</option>
           </select>
+          {action === 'redirect' ? (
+            <p className="text-[11px] text-[var(--muted)] leading-relaxed">
+              Sinkhole IP breaks many Indonesian banking apps (they treat it as DNS hijack). The
+              website still loads. PowerSVX answers NXDOMAIN instead of the landing IP for
+              bank-branded names; gambling/porn redirect is unchanged.
+            </p>
+          ) : null}
         </label>
         {action === 'redirect' || action === 'cname' ? (
           <label className="text-xs text-[var(--muted)] space-y-1 sm:col-span-2">
@@ -3357,7 +3231,8 @@ function Analytics() {
         title="Analytics"
         sub={
           <>
-            Grafana trends (Prometheus). Live ops stay on{' '}
+            Grafana + Prometheus: dnsdist edge QPS, Unbound backend, and host CPU / MemAvailable / disk via
+            node-exporter. Live ops:{' '}
             <a href="/" className="text-[var(--accent)] hover:underline underline-offset-4">
               Dashboard
             </a>
@@ -3371,6 +3246,11 @@ function Analytics() {
         }
       />
 
+      <div className="panel px-4 py-3 text-sm text-[var(--muted)] reveal">
+        <strong className="text-[var(--fg)]">Panels:</strong> dnsdist QPS / packet-cache / CDB spoof, Unbound recurse
+        latency, host CPU · MemAvailable · disk %, control-plane RSS. Query-log UI is off in production — use these
+        charts instead.
+      </div>
       <form onSubmit={saveBase} className="panel px-4 py-3 flex flex-wrap gap-2 items-end reveal">
         <label className="field flex-1 min-w-[14rem]">
           <span className="label-quiet">Grafana URL</span>
@@ -3764,12 +3644,16 @@ function QueryLogs() {
         sub="Per-query traffic from PostgreSQL. Filter by client IP to inspect a single user."
       />
 
+      {note ? (
+        <div className="border border-[var(--border)] bg-[var(--panel)] text-sm px-3 py-2 rounded-[var(--radius)] text-[var(--muted)]">
+          {note}
+        </div>
+      ) : null}
       {!enabled ? (
         <div className="border border-[var(--warn)]/40 bg-[color-mix(in_srgb,var(--warn)_10%,transparent)] text-[var(--warn)] text-sm px-3 py-2 rounded-[var(--radius)]">
           Query logging is off — enable it in Settings to record new queries.
         </div>
       ) : null}
-      {note ? <p className="text-xs text-[var(--muted)]">{note}</p> : null}
       {err ? <ErrorBox msg={err} /> : null}
 
       <form onSubmit={applyFilter} className="panel px-4 py-3 flex flex-wrap gap-2 items-end reveal">
@@ -3942,11 +3826,11 @@ export default function App() {
               <Shell>
                 <Routes>
                   <Route path="/" element={<Dashboard />} />
-                  <Route path="/zones" element={<Zones />} />
+                  <Route path="/zones" element={<Navigate to="/" replace />} />
                   <Route path="/domains" element={<DomainsPage />} />
-                  <Route path="/zones/:name" element={<ZoneDetail />} />
+                  <Route path="/zones/:name" element={<Navigate to="/" replace />} />
                   <Route path="/lookup" element={<Lookup />} />
-                  <Route path="/logs" element={<QueryLogs />} />
+                  <Route path="/logs" element={<Navigate to="/analytics" replace />} />
                   <Route path="/audit" element={<AuditLog />} />
                   <Route path="/settings" element={<SettingsPage />} />
                   <Route path="/analytics" element={<Analytics />} />

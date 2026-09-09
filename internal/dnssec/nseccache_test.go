@@ -38,6 +38,28 @@ func TestNSECCacheExpiry(t *testing.T) {
 	}
 }
 
+func TestNSECTLDApexDoesNotCoverChildren(t *testing.T) {
+	c := NewNSECCache()
+	c.AddFrom([]dns.RR{&dns.NSEC{
+		Hdr:        dns.RR_Header{Name: "com.", Rrtype: dns.TypeNSEC, Ttl: 86400},
+		NextDomain: "commbank.",
+		TypeBitMap: []uint16{dns.TypeNS, dns.TypeDS, dns.TypeRRSIG, dns.TypeNSEC},
+	}})
+	if c.Cover("google.com.") != nil {
+		t.Fatal("TLD-apex NSEC must not synthesize NXDOMAIN for google.com")
+	}
+	if c.Cover("example.com.") != nil {
+		t.Fatal("TLD-apex NSEC must not cover example.com")
+	}
+	c.AddFrom([]dns.RR{&dns.NSEC{
+		Hdr:        dns.RR_Header{Name: "id.", Rrtype: dns.TypeNSEC, Ttl: 86400},
+		NextDomain: "info.",
+	}})
+	if c.Cover("go.id.") != nil || c.Cover("putatgede.kendalkab.go.id.") != nil {
+		t.Fatal("TLD-apex NSEC must not NXDOMAIN government/ccTLD children")
+	}
+}
+
 func TestNSECCoverWraparound(t *testing.T) {
 	c := NewNSECCache()
 	n := &dns.NSEC{

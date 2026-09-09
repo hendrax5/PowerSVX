@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/powersvx/powersvx/internal/allowlist"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/rpz"
 )
@@ -38,10 +39,7 @@ func (a *API) handleDomainLookup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	norm := config.NormalizeName(name)
-	whitelisted := false
-	if wl := a.srv.Allowlist(); wl != nil {
-		whitelisted = wl.Allows(norm)
-	}
+	whitelisted := a.srv.Allowlist().Allows(norm)
 	blacklisted := false
 	if bl := a.srv.Denylist(); bl != nil {
 		blacklisted = bl.Blocks(norm)
@@ -59,7 +57,14 @@ func (a *API) handleDomainLookup(w http.ResponseWriter, r *http.Request) {
 	if eng := a.srv.RPZ(); eng != nil && eng.Enabled() {
 		hit, ok := eng.Lookup(norm)
 		if ok {
-			out["in_rpz"] = true
+			hit.Action = rpz.Action(allowlist.BankSafeRPZAction(norm, string(hit.Action)))
+			if hit.Action == rpz.ActionPass {
+				ok = false
+				hit = rpz.Hit{}
+			} else if hit.Action == rpz.ActionNXDOMAIN {
+				hit.Target = ""
+			}
+			out["in_rpz"] = ok
 			out["action"] = string(hit.Action)
 			out["target"] = hit.Target
 		}
