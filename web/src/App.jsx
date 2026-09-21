@@ -2058,7 +2058,12 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
       const axfrSec = Math.max(0, Number(axfrIntervalSec) || 0)
       const r = await api.updateRPZ([...hostsPolicies, ...policies], false, hostsSec, axfrSec, true)
       applyRPZ(r)
-      if (r.loading) {
+      if (r.sync_skipped) {
+        setAwaitingSync(true)
+        setOk(
+          `Saved AXFR policy. Sync already running — wait until it finishes, then click Re-sync (${r.sync_skip_reason || 'busy'}).`,
+        )
+      } else if (r.loading) {
         setAwaitingSync(true)
         setOk('Saved — AXFR/IXFR syncing from masters… (first pull can take several minutes)')
       } else {

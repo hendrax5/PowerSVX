@@ -1223,11 +1223,8 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 			}
 			axfrInterval = *body.AxfrUpdateInterval
 		}
-		eng := a.srv.RPZ()
-		if eng != nil && eng.LoadStatus().Loading {
-			http.Error(w, "rpz sync already in progress", http.StatusConflict)
-			return
-		}
+		// Always persist policy edits first. A long AXFR/CDB rebuild must not
+		// block saving the new AXFR masters (UI used to fail with 409).
 		axfrPtr := axfrInterval
 		path := config.RPZPoliciesPath(a.dataDir)
 		if err := config.SaveRPZPoliciesFile(path, config.RPZPoliciesFile{
@@ -1254,11 +1251,14 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 			}
 			startErr = a.startRPZReload(sync)
 		}
+		payload := a.rpzPayload()
 		if startErr != nil {
-			http.Error(w, startErr.Error(), http.StatusConflict)
-			return
+			// Policies are saved; sync just could not start (already running).
+			payload["sync_skipped"] = true
+			payload["sync_skip_reason"] = startErr.Error()
+			a.log.Info("rpz policies saved; sync deferred", "err", startErr)
 		}
-		writeJSON(w, http.StatusOK, a.rpzPayload())
+		writeJSON(w, http.StatusOK, payload)
 	case http.MethodPost:
 		if a.srv.RPZ() != nil && a.srv.RPZ().LoadStatus().Loading {
 			http.Error(w, "rpz sync already in progress", http.StatusConflict)

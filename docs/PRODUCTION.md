@@ -11,6 +11,7 @@ On production hosts (`POWERSVX_DNS_DATAPLANE=dnsdist`, default):
 | UI / API / AXFR→CDB sync / Kominfo outbound AXFR | **PowerSVX** | `:5380`, auth/AXFR `:5354` |
 
 - Komdigi AXFR / hosts feeds → `data/blocklist/domains.cdb` (full list, mmap; no Unbound 1.5M RPZ cap). Banks filtered from CDB + dnsdist `SuffixMatchNode`.
+- **CDB refresh:** SOA check first (skip if unchanged); if serial advanced, try **IXFR** then fall back to full AXFR. Serials in `data/rpz-axfr-state.json` (same file as Unbound RPZ path).
 - Spoof blocked A → `139.255.196.196` (Komdigi sinkhole). Regen conf: `deploy/linux/gen-dnsdist-conf.sh`.
 - **Do not put Go PowerSVX back on public `:53`.** See `ops/HERMES.md`.
 
