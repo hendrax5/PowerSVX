@@ -89,6 +89,10 @@ fi
 echo "==> metrics stack (node-exporter + prometheus + grafana)"
 "${COMPOSE[@]}" up -d --no-deps --force-recreate node-exporter prometheus grafana || true
 
+echo "==> prune docker build cache + unused images"
+chmod +x "$ROOT/deploy/linux/docker-prune-after-update.sh" 2>/dev/null || true
+bash "$ROOT/deploy/linux/docker-prune-after-update.sh" || true
+
 echo "==> status"
 docker ps --format 'table {{.Names}}\t{{.Status}}' | head -20
 df -h / | tail -1

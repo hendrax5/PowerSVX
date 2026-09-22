@@ -1,12 +1,13 @@
-# PowerSVX — host-network CONTROL PLANE (Unbound owns public :53)
+# PowerSVX — host-network CONTROL PLANE (dnsdist or Unbound owns public :53)
 #
-# DNS dataplane: Unbound (POWERSVX_DNS_DATAPLANE=unbound).
-# This process serves UI/API :5380, RPZ sync → Unbound zonefiles, optional
-# auth/AXFR on :5354 for Kominfo secondaries (not customer recurse).
+# DNS dataplane: POWERSVX_DNS_DATAPLANE=dnsdist (recommended) or unbound.
+# This process serves UI/API :5380 + side DNS on :5354 (AXFR/NOTIFY only).
+# Recurse backend is always Unbound on 127.0.0.1:5353 — never point forwarders at :53
+# (that is dnsdist/public listen and would loop).
 
 [server]
 bind_address = "0.0.0.0"
-# Customer DNS is Unbound :53. Keep a side port for AXFR/NOTIFY only.
+# Customer DNS is dnsdist/Unbound :53. Keep a side port for AXFR/NOTIFY only.
 udp_port = 5354
 tcp_port = 5354
 dot_port = 0
@@ -43,7 +44,7 @@ prefetch_pct = 0
 
 [resolver]
 mode = "forward"
-forwarders = ["127.0.0.1:53"]
+forwarders = ["127.0.0.1:5353"]
 forward_on_fail = false
 dnssec_mode = "off"
 edns_buffer_size = 1232

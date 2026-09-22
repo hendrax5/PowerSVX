@@ -26,7 +26,7 @@ Default target if unspecified: **isehat2 / 103.172.70.254**.
 2. Sync changed files to `remote_dir` (SCP) **or** `git pull` on the server.
 3. `chmod +x deploy/linux/*.sh`
 4. `export POWERSVX_DNS_DATAPLANE=dnsdist`
-5. Prefer one-shot: `bash deploy/linux/apply-update.sh` (gens Unbound+dnsdist, builds powersvx, recreates unbound/dnsdist/powersvx).
+5. Prefer one-shot: `bash deploy/linux/apply-update.sh` (gens Unbound+dnsdist, builds powersvx, recreates unbound/dnsdist/powersvx, then **prunes Docker build cache + unused images**).
 6. Or manually:
    ```bash
    export POWERSVX_DNS_DATAPLANE=dnsdist
@@ -39,6 +39,7 @@ Default target if unspecified: **isehat2 / 103.172.70.254**.
    docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml build powersvx
    docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \
      up -d --no-deps --force-recreate unbound dnsdist powersvx
+   bash deploy/linux/docker-prune-after-update.sh
    ```
 7. Verify:
    - `dig @127.0.0.1 -p 53 example.com` → NOERROR (**dnsdist → Unbound**)
