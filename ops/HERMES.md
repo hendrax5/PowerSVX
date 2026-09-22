@@ -59,6 +59,40 @@ Default target if unspecified: **isehat2 / 103.172.70.254**.
 - Dataplane: PowerSVX `POWERSVX_MEM_PERCENT` defaults to **30%**.
 - Query log (Go edge) stays off (`POWERSVX_DISABLE_QUERY_LOG=1`).
 
+## Host hygiene (fleet standard)
+
+Every production host must run `deploy/linux/disk-guard.sh` hourly (installed by `apply-update.sh`):
+
+| Cap | Value |
+|-----|--------|
+| **journald** | `SystemMaxUse=1G` (`/etc/systemd/journald.conf.d/powersvx-size.conf`) |
+| Disk trigger | clean when ≥ **80%** |
+| Over threshold | `docker image prune -af` + `docker builder prune -af` + truncate large container logs |
+
+Always-on (even under 80%): journald drop-in + vacuum to 1G, light dangling-image prune, query_logs size cap.
+
+```bash
+# one host
+sudo bash deploy/linux/disk-guard.sh
+# or after deploy
+bash deploy/linux/apply-update.sh   # installs cron + runs once
+```
+
+Phrase: **“hygiene semua” / “prune fleet”** → loop inventory hosts with SSH creds and run `disk-guard.sh` (root).
+
+## Default filter (TrustPositif AXFR) + GitHub seed
+
+- Default policy: `trustpositifkominfo` AXFR from `182.23.79.202:53` / `139.255.196.202:53` (enabled). UI can **Disable** without deleting.
+- **First boot:** if `domains.cdb` empty/tiny, bootstrap from GitHub Release  
+  `https://github.com/hendrax5/PowerSVX/releases/latest/download/blocklist-seed.tgz`  
+  (`POWERSVX_FILTER_SEED_URL`; set `off` to skip). Then IXFR/SOA-skip vs Komdigi — no full AXFR unless seed missing.
+- **Publish seed from JMG** (after sync):  
+  `bash deploy/linux/publish-filter-seed.sh` (needs `gh` + API token).  
+  Or `GET /api/v1/blocklist/seed` (auth) → upload asset manually.
+- **AXFR fail:** keep last-good CDB; health `filter sync failed; serving last CDB`. DNS resolve stays up (dnsdist→Unbound).
+- dnsdist backend health: `maxCheckFailures=5`, `checkTimeout=2000` in `gen-dnsdist-conf.sh`.
+- Policy file lives in Docker volume `/data/rpz-policies.json` on some hosts (not only host `data/`).
+
 ## Incident lessons (JLA 2026-09-05)
 
 | Symptom | Cause |
@@ -76,3 +110,4 @@ Default target if unspecified: **isehat2 / 103.172.70.254**.
 | deploy / update ke 70.254 / isehat2 | inventory → isehat2, steps above |
 | deploy ke semua | loop `hosts` with `role: production` |
 | cek status | health + dig :53 + docker ps + Recv-Q, no rebuild |
+| hygiene / prune fleet / disk | install+run `disk-guard.sh` (journal 1G + docker prune) on all SSH-ready hosts |

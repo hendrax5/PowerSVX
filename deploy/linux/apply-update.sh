@@ -35,7 +35,7 @@ if [ ! -f "$ROOT/deploy/linux/disk-guard.sh" ]; then
   exit 1
 fi
 
-echo "==> install disk-guard cron (80%)"
+echo "==> install disk-guard cron (journald max 1G, clean at 80%)"
 sudo install -m 755 "$ROOT/deploy/linux/disk-guard.sh" /usr/local/sbin/powersvx-disk-guard
 echo "POWERSVX_DIR=$ROOT" | sudo tee /etc/default/powersvx-disk-guard >/dev/null
 echo "15 * * * * root . /etc/default/powersvx-disk-guard 2>/dev/null; /usr/local/sbin/powersvx-disk-guard" | sudo tee /etc/cron.d/powersvx-disk-guard >/dev/null

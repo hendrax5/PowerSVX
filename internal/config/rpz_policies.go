@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // RPZPoliciesFile is UI-editable RPZ policy list (survives restart; overrides TOML policies when present).
@@ -71,3 +72,126 @@ func SaveRPZPolicies(path string, policies []RPZPolicyTOML) error {
 
 // DefaultAxfrUpdateInterval is used when axfr_update_interval is omitted from disk.
 const DefaultAxfrUpdateInterval = 86400
+
+// DefaultKomdigiZone is the official TrustPositif AXFR apex.
+const DefaultKomdigiZone = "trustpositifkominfo."
+
+// DefaultKomdigiPolicyName is the canonical filter feed name.
+const DefaultKomdigiPolicyName = "trustpositifkominfo"
+
+// DefaultFilterSeedURL is the GitHub Release asset for first-boot CDB bootstrap
+// (published from a synced host such as JMG). Override with POWERSVX_FILTER_SEED_URL.
+const DefaultFilterSeedURL = "https://github.com/hendrax5/PowerSVX/releases/latest/download/blocklist-seed.tgz"
+
+// PolicyEnabled reports whether a policy should sync (nil/omitted = enabled).
+func PolicyEnabled(p RPZPolicyTOML) bool {
+	if p.Enabled == nil {
+		return true
+	}
+	return *p.Enabled
+}
+
+// BoolPtr returns a *bool for JSON/TOML literals.
+func BoolPtr(v bool) *bool { return &v }
+
+// DefaultKomdigiAXFRPolicy returns the fleet-standard TrustPositif AXFR feed (enabled).
+func DefaultKomdigiAXFRPolicy() RPZPolicyTOML {
+	return RPZPolicyTOML{
+		Name:    DefaultKomdigiPolicyName,
+		Source:  DefaultKomdigiPolicyName,
+		Format:  "axfr",
+		Action:  "redirect",
+		Target:  "139.255.196.196",
+		Zone:    DefaultKomdigiZone,
+		Masters: []string{"182.23.79.202:53", "139.255.196.202:53"},
+		Enabled: BoolPtr(true),
+	}
+}
+
+func hasValidTrustpositifAXFR(pols []RPZPolicyTOML) bool {
+	for _, p := range pols {
+		if strings.ToLower(strings.TrimSpace(p.Format)) != "axfr" {
+			continue
+		}
+		z := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(p.Zone), "."))
+		if strings.Contains(z, "trustpositif") {
+			return true
+		}
+		n := strings.ToLower(strings.TrimSpace(p.Name))
+		if strings.Contains(n, "trustpositif") {
+			return true
+		}
+	}
+	return false
+}
+
+func onlyBrokenKominfoLegacy(pols []RPZPolicyTOML) bool {
+	if len(pols) == 0 {
+		return false
+	}
+	for _, p := range pols {
+		z := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(p.Zone), "."))
+		n := strings.ToLower(strings.TrimSpace(p.Name))
+		format := strings.ToLower(strings.TrimSpace(p.Format))
+		if format != "" && format != "axfr" {
+			return false
+		}
+		// Broken legacy: zone/name "kominfo" without trustpositif.
+		okLegacy := (z == "kominfo" || n == "kominfo") && !strings.Contains(z, "trustpositif")
+		if !okLegacy {
+			return false
+		}
+	}
+	return true
+}
+
+// EnsureDefaultRPZPolicies writes the default TrustPositif AXFR policy when missing,
+// empty, or only a broken legacy kominfo. zone. Returns true if the file was written.
+func EnsureDefaultRPZPolicies(path string) (wrote bool, err error) {
+	f, err := LoadRPZPoliciesFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	if err == nil && len(f.Policies) > 0 && hasValidTrustpositifAXFR(f.Policies) {
+		return false, nil
+	}
+	if err == nil && len(f.Policies) > 0 && !onlyBrokenKominfoLegacy(f.Policies) {
+		// Custom non-empty policies without trustpositif — leave alone.
+		return false, nil
+	}
+	axfr := DefaultAxfrUpdateInterval
+	out := RPZPoliciesFile{
+		Policies:           []RPZPolicyTOML{DefaultKomdigiAXFRPolicy()},
+		UpdateInterval:     86400,
+		UpdateAt:           "04:00",
+		AxfrUpdateInterval: &axfr,
+	}
+	if f.UpdateInterval > 0 {
+		out.UpdateInterval = f.UpdateInterval
+	}
+	if strings.TrimSpace(f.UpdateAt) != "" {
+		out.UpdateAt = strings.TrimSpace(f.UpdateAt)
+	}
+	if f.AxfrUpdateInterval != nil {
+		out.AxfrUpdateInterval = f.AxfrUpdateInterval
+	}
+	if err := SaveRPZPoliciesFile(path, out); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// FilterSeedURL returns POWERSVX_FILTER_SEED_URL or the GitHub release default.
+// Set to "off" / "none" / "-" to disable seed bootstrap.
+func FilterSeedURL() string {
+	v := strings.TrimSpace(os.Getenv("POWERSVX_FILTER_SEED_URL"))
+	if v == "" {
+		return DefaultFilterSeedURL
+	}
+	switch strings.ToLower(v) {
+	case "off", "none", "-", "0", "false":
+		return ""
+	default:
+		return v
+	}
+}

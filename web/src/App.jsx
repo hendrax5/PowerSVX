@@ -2022,13 +2022,16 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
       format: 'axfr',
       action,
       target: action === 'redirect' || action === 'cname' ? t : '',
+      enabled: true,
     }
     if (editName != null) {
       if (policies.some((p) => p.name === n && p.name !== editName)) {
         setErr(`Feed "${n}" already exists`)
         return
       }
-      setPolicies((list) => list.map((p) => (p.name === editName ? nextPolicy : p)))
+      setPolicies((list) =>
+        list.map((p) => (p.name === editName ? { ...nextPolicy, enabled: p.enabled !== false } : p)),
+      )
       setOk(`Updated "${n}" in draft — click Save & sync filters to apply`)
       resetForm()
       return
@@ -2047,6 +2050,18 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
     setOk(`Removed "${n}" from draft — click Save & sync filters to apply`)
     setPolicies((p) => p.filter((x) => x.name !== n))
     if (editName === n) resetForm()
+  }
+
+  const toggleEnabled = (n) => {
+    setErr('')
+    setPolicies((list) =>
+      list.map((p) => {
+        if (p.name !== n) return p
+        const on = p.enabled !== false
+        return { ...p, enabled: !on }
+      }),
+    )
+    setOk(`Toggled "${n}" — click Save & sync filters to apply`)
   }
 
   const saveSync = async () => {
@@ -2142,8 +2157,9 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
             Filter feeds — pull blocklist (PowerSVX as slave)
           </h3>
           <p className="text-xs text-[var(--muted)] mt-1 leading-relaxed max-w-[56ch]">
-            Komdigi-recommended path: AXFR zone <span className="mono text-[var(--text)]">trustpositifkominfo</span>{' '}
-            from their masters into RPZ. First sync is full AXFR; later updates use IXFR.
+            Default: AXFR zone <span className="mono text-[var(--text)]">trustpositifkominfo</span> (enabled).
+            First install can bootstrap CDB from the GitHub seed release; later updates use IXFR. Disable a feed
+            without deleting it.
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
             <span className={`inline-flex items-center px-2 py-0.5 border mono ${toneClass}`}>{syncState.label}</span>
@@ -2195,8 +2211,11 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
             <p>Sync in progress — large zones can take several minutes. Status updates every few seconds.</p>
           ) : anyFailed ? (
             <p>
-              Last sync failed
-              {status?.error ? `: ${status.error}` : err ? `: ${err}` : '.'} Check feed rows and the log below.
+              Filter sync failed
+              {status?.error ? `: ${status.error}` : err ? `: ${err}` : '.'}{' '}
+              {Number(status?.entries ?? 0) > 0
+                ? `DNS still resolves; serving last CDB (${Number(status.entries).toLocaleString()} entries).`
+                : 'Check feed rows and the log below.'}
             </p>
           ) : anySynced ? (
             <p>
@@ -2213,7 +2232,15 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
           )}
         </div>
 
-        {err || status?.error ? <ErrorBox msg={err || `Engine error: ${status.error}`} /> : null}
+        {err || (status?.error && !(Number(status?.entries ?? 0) > 0)) ? (
+          <ErrorBox msg={err || `Engine error: ${status.error}`} />
+        ) : null}
+        {status?.error && Number(status?.entries ?? 0) > 0 && !err ? (
+          <div className="border border-amber-500/40 bg-amber-500/10 text-amber-900 text-sm px-3 py-2">
+            Sync warning: {status.error} — serving last-good filter CDB ({Number(status.entries).toLocaleString()}{' '}
+            entries). Resolve path stays up.
+          </div>
+        ) : null}
         {ok ? (
           <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
             {ok}
@@ -2252,6 +2279,13 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
                   <div className="min-w-0">
                     <div className="font-medium flex flex-wrap items-center gap-2">
                       <span>{p.name}</span>
+                      <span
+                        className={`text-[10px] uppercase tracking-wide mono ${
+                          p.enabled === false ? 'text-[var(--muted)]' : 'text-emerald-700'
+                        }`}
+                      >
+                        {p.enabled === false ? 'disabled' : 'enabled'}
+                      </span>
                       <span className={`text-[10px] uppercase tracking-wide mono ${rowTone}`}>
                         {st ? modeLabel(st.last_mode) : 'never synced'}
                       </span>
@@ -2276,6 +2310,14 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
                     )}
                   </div>
                   <div className="flex gap-1 shrink-0">
+                    <button
+                      type="button"
+                      disabled={!isAdmin || busy || loading}
+                      onClick={() => toggleEnabled(p.name)}
+                      className="btn btn-ghost text-xs disabled:opacity-40"
+                    >
+                      {p.enabled === false ? 'Enable' : 'Disable'}
+                    </button>
                     <button
                       type="button"
                       disabled={!isAdmin || busy || loading}

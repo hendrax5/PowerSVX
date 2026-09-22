@@ -226,6 +226,8 @@ type RPZPolicyTOML struct {
 	// Zone + Masters are used when Format is "axfr" (PowerSVX as slave; names → RPZ).
 	Zone    string   `toml:"zone" json:"zone,omitempty"`
 	Masters []string `toml:"masters" json:"masters,omitempty"`
+	// Enabled: nil/omitted = on (backward compatible); false = skip sync for this feed.
+	Enabled *bool `toml:"enabled,omitempty" json:"enabled,omitempty"`
 }
 
 type RPZConfig struct {

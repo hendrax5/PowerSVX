@@ -109,6 +109,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/kominfo-sync", a.withAuth(a.handleAxfrSync)) // legacy alias
 	mux.HandleFunc("/api/v1/axfr-sync", a.withAuth(a.handleAxfrSync))
 	mux.HandleFunc("/api/v1/rpz", a.withAuth(a.handleRPZ))
+	mux.HandleFunc("/api/v1/blocklist/seed", a.withAuth(a.handleBlocklistSeed))
 	mux.HandleFunc("/api/v1/domains/", a.withAuth(a.handleDomains))
 	mux.HandleFunc("/api/v1/tools/lookup", a.withAuth(a.handleLookup))
 	mux.HandleFunc("/api/v1/events", a.withAuth(a.handleEvents))
@@ -355,6 +356,15 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 		} else if (config.UnboundDataplane() || config.DNSDistDataplane()) && a.unboundRPZEntryCount() == 0 {
 			rpzDetail["status"] = "pass"
 			rpzDetail["reason"] = "waiting for filter sync"
+		} else if config.DNSDistDataplane() && a.unboundRPZEntryCount() > 0 {
+			// Last sync may have failed while still serving a good CDB.
+			if feedSyncFailed(a.axfrFeedSnapshot()) {
+				rpzDetail["status"] = "pass"
+				rpzDetail["reason"] = "filter sync failed; serving last CDB"
+				rpzDetail["filter_sync"] = "failed"
+			} else {
+				rpzDetail["filter_sync"] = "ok"
+			}
 		}
 	} else {
 		rpzDetail["status"] = "disabled"
@@ -1299,10 +1309,11 @@ func (a *API) rpzPayload() map[string]any {
 		pols = []config.RPZPolicyTOML{}
 	}
 	entries := a.srv.RPZCount()
-	if config.UnboundDataplane() {
+	if config.UnboundDataplane() || config.DNSDistDataplane() {
 		a.refreshUnboundEntryCount()
 		entries = a.unboundRPZEntryCount()
 	}
+	note := "PUT policies + update_interval + update_at (HH:MM local) + axfr_update_interval. Default feed is trustpositifkominfo AXFR (enabled); set enabled=false to disable without deleting. First boot may bootstrap CDB from GitHub seed (POWERSVX_FILTER_SEED_URL); later refreshes use IXFR. Filter sync failure keeps last-good CDB."
 	return map[string]any{
 		"enabled":              a.srv.RuntimeFlags().RPZ,
 		"entries":              entries,
@@ -1317,8 +1328,26 @@ func (a *API) rpzPayload() map[string]any {
 		"from_disk":            st.FromDisk,
 		"axfr_feeds":           axfrFeeds,
 		"axfr_events":          axfrEvents,
-		"note": "PUT policies + update_interval + update_at (HH:MM local) + axfr_update_interval. When update_at is set, hosts reload daily at that time. Full hosts reload via API is blocked 06:00–22:00 local unless force=true (scheduled update_at still runs). AXFR uses IXFR after first pull; NOTIFY triggers AXFR-only refresh.",
+		"filter_seed_url":      config.FilterSeedURL(),
+		"note":                 note,
 	}
+}
+
+func (a *API) axfrFeedSnapshot() map[string]rpz.FeedState {
+	if eng := a.srv.RPZ(); eng != nil {
+		feeds, _ := eng.AxfrStatus()
+		return feeds
+	}
+	return map[string]rpz.FeedState{}
+}
+
+func feedSyncFailed(feeds map[string]rpz.FeedState) bool {
+	for _, st := range feeds {
+		if st.LastMode == "failed" || (st.OK == false && st.LastError != "") {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeRPZPolicies(in []config.RPZPolicyTOML) ([]config.RPZPolicyTOML, error) {
@@ -1406,6 +1435,7 @@ func rpzPolicyConfigs(pols []config.RPZPolicyTOML) []rpz.PolicyConfig {
 			Target:  p.Target,
 			Zone:    p.Zone,
 			Masters: append([]string(nil), p.Masters...),
+			Enabled: p.Enabled,
 		})
 	}
 	return out

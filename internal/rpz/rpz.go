@@ -615,6 +615,16 @@ type PolicyConfig struct {
 	// Zone + Masters for format=axfr (slave pull; owner names → RPZ).
 	Zone    string
 	Masters []string
+	// Enabled nil/true = sync; false = skip.
+	Enabled *bool
+}
+
+// PolicyEnabled reports whether the feed should sync (nil = on).
+func PolicyEnabled(p PolicyConfig) bool {
+	if p.Enabled == nil {
+		return true
+	}
+	return *p.Enabled
 }
 
 func (e *Engine) applyColdIndex(bf *bloom.Filter, wild *trie, n int, fromDisk bool) {
@@ -669,6 +679,9 @@ func (e *Engine) loadPoliciesDisk(policies []PolicyConfig, timeout time.Duration
 	keepFeeds := map[string]bool{}
 
 	for _, p := range policies {
+		if !PolicyEnabled(p) {
+			continue
+		}
 		action := p.Action
 		if action == "" {
 			action = ActionNXDOMAIN
@@ -793,6 +806,9 @@ func (e *Engine) loadPoliciesRAM(policies []PolicyConfig, timeout time.Duration,
 	}{}
 	keepFeeds := map[string]bool{}
 	for _, p := range policies {
+		if !PolicyEnabled(p) {
+			continue
+		}
 		action := p.Action
 		if action == "" {
 			action = ActionNXDOMAIN
@@ -859,10 +875,14 @@ func (e *Engine) RefreshAXFR(policies []PolicyConfig, timeout time.Duration) (in
 	keepFeeds := map[string]bool{}
 	var axfrPols []PolicyConfig
 	for _, p := range policies {
-		if strings.EqualFold(strings.TrimSpace(p.Format), "axfr") {
-			axfrPols = append(axfrPols, p)
-			keepFeeds[p.Name] = true
+		if !strings.EqualFold(strings.TrimSpace(p.Format), "axfr") {
+			continue
 		}
+		if !PolicyEnabled(p) {
+			continue
+		}
+		axfrPols = append(axfrPols, p)
+		keepFeeds[p.Name] = true
 	}
 	if state != nil {
 		_ = state.Prune(keepFeeds)

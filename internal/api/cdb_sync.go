@@ -23,6 +23,34 @@ func (a *API) TriggerDNSDistCDBSync() error {
 	return a.startDNSDistCDBRefresh(false)
 }
 
+// TryBootstrapFilterSeed downloads GitHub (or configured) seed when CDB is empty.
+// Returns true if a seed was installed. Caller should then run CDB refresh for IXFR.
+func (a *API) TryBootstrapFilterSeed() (bool, error) {
+	if !rpzUsesDNSDistDataplane() {
+		return false, nil
+	}
+	if !blockcdb.NeedsSeed(a.dataDir) {
+		return false, nil
+	}
+	url := config.FilterSeedURL()
+	if url == "" {
+		return false, nil
+	}
+	man, err := blockcdb.BootstrapFromURL(a.dataDir, url, 30*time.Minute)
+	if err != nil {
+		return false, err
+	}
+	if man.Entries > 0 {
+		a.unboundRPZEntries.Store(int64(man.Entries))
+	} else {
+		a.RefreshUnboundEntryCount()
+	}
+	a.tryReloadDNSDist()
+	a.log.Info("filter seed installed",
+		"url", url, "serial", man.Serial, "entries", man.Entries, "policy", man.Policy)
+	return true, nil
+}
+
 // startDNSDistCDBRefresh pulls AXFR/IXFR (or hosts) and builds domains.cdb for dnsdist.
 func (a *API) startDNSDistCDBRefresh(sync bool) error {
 	eng := a.srv.RPZ()
@@ -35,12 +63,14 @@ func (a *API) startDNSDistCDBRefresh(sync bool) error {
 		if eng != nil {
 			eng.EndLoad(err)
 		}
+		if n > 0 {
+			a.unboundRPZEntries.Store(int64(n))
+		}
 		if err != nil {
 			a.log.Warn("dnsdist cdb refresh failed", "err", err)
 			return
 		}
 		_, _ = blockcdb.WriteBanksWhitelist(a.dataDir)
-		a.unboundRPZEntries.Store(int64(n))
 		a.tryReloadDNSDist()
 		a.log.Info("dnsdist cdb refreshed", "entries", n)
 	}
@@ -62,6 +92,10 @@ func (a *API) pullAndWriteBlockCDB(policies []rpz.PolicyConfig) (int, error) {
 	needRewrite := false
 
 	for _, p := range policies {
+		if !rpz.PolicyEnabled(p) {
+			a.log.Info("axfr skipped (policy disabled)", "policy", p.Name)
+			continue
+		}
 		format := strings.ToLower(strings.TrimSpace(p.Format))
 		switch format {
 		case "axfr":
@@ -80,6 +114,11 @@ func (a *API) pullAndWriteBlockCDB(policies []rpz.PolicyConfig) (int, error) {
 			res, err := rpz.PullZone(ctx, zone, p.Masters, localSerial)
 			if err != nil {
 				_ = state.PutFailure(p.Name, zone, "", err.Error())
+				// Keep last-good CDB — do not wipe on AXFR failure.
+				if existing > 0 {
+					a.log.Warn("axfr failed; keeping last-good CDB", "policy", p.Name, "entries", existing, "err", err)
+					return existing, fmt.Errorf("policy %s: %w (serving last CDB %d entries)", p.Name, err, existing)
+				}
 				return 0, fmt.Errorf("policy %s: %w", p.Name, err)
 			}
 			mode := "full_axfr"
@@ -92,11 +131,13 @@ func (a *API) pullAndWriteBlockCDB(policies []rpz.PolicyConfig) (int, error) {
 			} else {
 				base, err := readDomainsTxt(filepath.Join(blockcdb.Dir(a.dataDir), blockcdb.DomainsFile))
 				if err != nil {
-					// No local list — fall back to full AXFR.
 					a.log.Warn("ixfr without domains.txt; forcing AXFR", "policy", p.Name, "err", err)
 					res2, err2 := rpz.PullZone(ctx, zone, p.Masters, 0)
 					if err2 != nil {
 						_ = state.PutFailure(p.Name, zone, "", err2.Error())
+						if existing > 0 {
+							return existing, fmt.Errorf("policy %s: %w (serving last CDB)", p.Name, err2)
+						}
 						return 0, fmt.Errorf("policy %s: %w", p.Name, err2)
 					}
 					mode = "full_axfr"
@@ -133,6 +174,9 @@ func (a *API) pullAndWriteBlockCDB(policies []rpz.PolicyConfig) (int, error) {
 			}
 			n, err := a.hostsNamesForCDB(p)
 			if err != nil {
+				if existing > 0 {
+					return existing, fmt.Errorf("policy %s: %w (serving last CDB)", p.Name, err)
+				}
 				return 0, fmt.Errorf("policy %s: %w", p.Name, err)
 			}
 			all = append(all, n...)
@@ -145,7 +189,6 @@ func (a *API) pullAndWriteBlockCDB(policies []rpz.PolicyConfig) (int, error) {
 			a.log.Info("dnsdist cdb unchanged (SOA skip)", "entries", existing)
 			return existing, nil
 		}
-		// First boot with empty policies / empty CDB.
 		if err := blockcdb.EnsureEmpty(a.dataDir); err != nil {
 			return 0, err
 		}
@@ -153,10 +196,7 @@ func (a *API) pullAndWriteBlockCDB(policies []rpz.PolicyConfig) (int, error) {
 	}
 
 	filtered := blockcdb.FilterBlockNames(all)
-	if err := blockcdb.EnsureEmpty(a.dataDir); err != nil {
-		return 0, err
-	}
-	_, cdbN, err := blockcdb.SyncNames(a.dataDir, filtered)
+	_, cdbN, err := blockcdb.SyncNamesGuarded(a.dataDir, filtered)
 	if err != nil {
 		return 0, err
 	}
@@ -171,7 +211,6 @@ func existingCDBCount(dataDir string) int {
 	if err != nil {
 		return 0
 	}
-	// tiny JSON: {"domains":N,"cdb":N,...}
 	var n int
 	for _, part := range strings.Split(string(b), ",") {
 		part = strings.TrimSpace(part)

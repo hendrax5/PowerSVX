@@ -185,6 +185,11 @@ func main() {
 	limiter.ConfigureGlobal(cfg.RateLimit.GlobalQPS, cfg.RateLimit.GlobalBurst)
 
 	rpzPath := config.RPZPoliciesPath(*dataDir)
+	if wrote, err := config.EnsureDefaultRPZPolicies(rpzPath); err != nil {
+		log.Warn("ensure default rpz policies failed", "err", err)
+	} else if wrote {
+		log.Info("wrote default trustpositifkominfo AXFR policy", "path", rpzPath)
+	}
 	if file, err := config.LoadRPZPoliciesFile(rpzPath); err == nil {
 		// Empty policies in the JSON overlay must not silently wipe TOML feeds
 		// (that caused fleet hosts to run with rpz_enabled=true and 0 entries).
@@ -236,7 +241,7 @@ func main() {
 	for _, p := range cfg.RPZ.Policies {
 		policies = append(policies, rpz.PolicyConfig{
 			Name: p.Name, Source: p.Source, Format: p.Format, Action: rpz.Action(p.Action), Target: p.Target,
-			Zone: p.Zone, Masters: append([]string(nil), p.Masters...),
+			Zone: p.Zone, Masters: append([]string(nil), p.Masters...), Enabled: p.Enabled,
 		})
 	}
 	if len(policies) > 0 {
@@ -418,6 +423,11 @@ func main() {
 		rest.RefreshUnboundEntryCount()
 		rest.StartDNSDistStatsBridge()
 		rest.StartUnboundStatsBridge() // backend Unbound :5353 (Prometheus only; UI QPS from dnsdist)
+		if ok, err := rest.TryBootstrapFilterSeed(); err != nil {
+			log.Warn("filter seed bootstrap skipped", "err", err, "url", config.FilterSeedURL())
+		} else if ok {
+			log.Info("filter seed bootstrap ok; next refresh will IXFR if serial matches")
+		}
 		if err := rest.TriggerDNSDistCDBSync(); err != nil {
 			log.Warn("dnsdist cdb initial sync not started", "err", err)
 		}

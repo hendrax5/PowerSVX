@@ -1,5 +1,8 @@
 #!/bin/bash
 # Keep host disk usage under a threshold (default 80%), and always cap query_logs size.
+# Fleet standard (all PowerSVX hosts):
+#   - journald SystemMaxUse=1G (persistent drop-in)
+#   - prune unused Docker images + build cache when disk is high
 # Safe cleanups: Docker json logs, unused images, old query_logs, journal.
 #
 # Install (hourly):
@@ -10,6 +13,7 @@
 #   DISK_GUARD_PCT=80
 #   DISK_GUARD_PATH=/
 #   POWERSVX_DIR=/home/hendra/powersvx
+#   JOURNAL_MAX=1G          # journald SystemMaxUse + vacuum target
 #   QUERY_LOG_MAX_MB=5120   # hard cap for query_logs (table+indexes)
 #   PG_PASSWORD=...   (or load from $POWERSVX_DIR/.env)
 
@@ -19,6 +23,7 @@ THRESHOLD="${DISK_GUARD_PCT:-80}"
 MOUNT="${DISK_GUARD_PATH:-/}"
 ROOT_DIR="${POWERSVX_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
 QUERY_LOG_MAX_MB="${QUERY_LOG_MAX_MB:-5120}"
+JOURNAL_MAX="${JOURNAL_MAX:-1G}"
 
 pct() {
   df -P "$MOUNT" 2>/dev/null | awk 'NR==2 { gsub(/%/,"",$5); print $5 }'
@@ -74,8 +79,66 @@ purge_query_logs_over_size() {
   echo "disk-guard: query_logs now ${AFTER} bytes"
 }
 
-# Always enforce query_log size cap (even when disk % is fine).
+ensure_journald_cap() {
+  # Persistent fleet standard: never let journals grow unbounded.
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "disk-guard: journald cap skipped (need root)" >&2
+    return 0
+  fi
+  if ! command -v journalctl >/dev/null 2>&1; then
+    return 0
+  fi
+  conf_dir=/etc/systemd/journald.conf.d
+  conf_file="${conf_dir}/powersvx-size.conf"
+  mkdir -p "$conf_dir"
+  cat >"$conf_file" <<EOF
+[Journal]
+SystemMaxUse=${JOURNAL_MAX}
+SystemKeepFree=500M
+MaxRetentionSec=14day
+EOF
+  chmod 644 "$conf_file"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl restart systemd-journald >/dev/null 2>&1 || true
+  fi
+  journalctl --vacuum-size="$JOURNAL_MAX" >/dev/null 2>&1 || true
+  echo "disk-guard: journald SystemMaxUse=${JOURNAL_MAX}"
+}
+
+prune_docker_light() {
+  # Safe anytime: dangling images + old build cache only.
+  if ! command -v docker >/dev/null 2>&1; then
+    return 0
+  fi
+  docker image prune -f >/dev/null 2>&1 || true
+  docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
+}
+
+prune_docker_hard() {
+  # When disk is high: drop ALL unused images + entire build cache.
+  # Running containers keep their images.
+  if ! command -v docker >/dev/null 2>&1; then
+    return 0
+  fi
+  for id in $(docker ps -aq 2>/dev/null || true); do
+    logpath=$(docker inspect --format='{{.LogPath}}' "$id" 2>/dev/null || true)
+    if [ -n "${logpath:-}" ] && [ -f "$logpath" ]; then
+      size=$(stat -c%s "$logpath" 2>/dev/null || echo 0)
+      if [ "${size:-0}" -gt 20971520 ]; then
+        : > "$logpath" || true
+        echo "disk-guard: truncated docker log $id (${size} bytes)"
+      fi
+    fi
+  done
+  docker image prune -af >/dev/null 2>&1 || true
+  docker builder prune -af >/dev/null 2>&1 || true
+  echo "disk-guard: docker unused images + build cache pruned"
+}
+
+# Always enforce journald 1G + query_log size (even when disk % is fine).
+ensure_journald_cap
 purge_query_logs_over_size
+prune_docker_light
 
 USED=$(pct || echo 0)
 if ! [[ "$USED" =~ ^[0-9]+$ ]]; then
@@ -90,25 +153,12 @@ fi
 
 echo "disk-guard: ${USED}% >= ${THRESHOLD}% — cleaning…"
 
-# 1) Cap / truncate Docker container logs
-if command -v docker >/dev/null 2>&1; then
-  for id in $(docker ps -aq 2>/dev/null || true); do
-    logpath=$(docker inspect --format='{{.LogPath}}' "$id" 2>/dev/null || true)
-    if [ -n "${logpath:-}" ] && [ -f "$logpath" ]; then
-      size=$(stat -c%s "$logpath" 2>/dev/null || echo 0)
-      if [ "${size:-0}" -gt 20971520 ]; then
-        : > "$logpath" || true
-        echo "disk-guard: truncated docker log $id (${size} bytes)"
-      fi
-    fi
-  done
-  docker image prune -f >/dev/null 2>&1 || true
-  docker builder prune -f --filter until=72h >/dev/null 2>&1 || true
-fi
+# 1) Aggressive Docker reclaim
+prune_docker_hard
 
-# 2) Journal (if present)
+# 2) Re-vacuum journal to cap (idempotent)
 if command -v journalctl >/dev/null 2>&1; then
-  journalctl --vacuum-size=200M >/dev/null 2>&1 || true
+  journalctl --vacuum-size="$JOURNAL_MAX" >/dev/null 2>&1 || true
 fi
 
 # 3) Aggressive age purge when disk is high (keep 1 day)
