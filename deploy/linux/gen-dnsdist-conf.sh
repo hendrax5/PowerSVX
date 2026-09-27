@@ -31,6 +31,12 @@ RECURSIVE_PORT="${POWERSVX_UNBOUND_BACKEND_PORT:-5353}"
 CDB_REFRESH="${POWERSVX_CDB_REFRESH_SEC:-30}"
 PTR_QPS="${POWERSVX_PTR_QPS_PER_IP:-50}"
 
+# auto: listen on [::]:53 only when the host has a global IPv6 address.
+LISTEN_V6="${POWERSVX_DNSDIST_IPV6:-auto}"
+if [ "$LISTEN_V6" = "auto" ]; then
+  if ip -6 addr show scope global 2>/dev/null | grep -q inet6; then LISTEN_V6=1; else LISTEN_V6=0; fi
+fi
+
 # Ensure valid empty CDB (tinycdb: 256×(pos=2048,nslots=0)) so dnsdist can start before first sync.
 if [ ! -f "$ROOT/data/blocklist/domains.cdb" ]; then
   if command -v python3 >/dev/null 2>&1; then
@@ -66,7 +72,41 @@ TMP="${OUT}.tmp.$$"
   echo ""
   echo "setACL({\"0.0.0.0/0\", \"::/0\"})"
   echo "addLocal(\"0.0.0.0:53\")"
-  echo "addLocal(\"[::]:53\")"
+  if [ "$LISTEN_V6" = "1" ]; then
+    echo "addLocal(\"[::]:53\")"
+  else
+    echo "-- addLocal(\"[::]:53\") disabled (POWERSVX_DNSDIST_IPV6=0 or no global IPv6)"
+  fi
+  echo ""
+  # PowerSVX writes allow_query/deny_query to blocklist/acl.txt; reload on change.
+  cat <<'LUA'
+local aclPath = "/etc/dnsdist/blocklist/acl.txt"
+local aclLast = nil
+local function reloadACL()
+  local f = io.open(aclPath, "r")
+  if f == nil then return end
+  local body = f:read("*a")
+  f:close()
+  if body == nil or body == aclLast then return end
+  aclLast = body
+  local masks = {}
+  for line in body:gmatch("[^\r\n]+") do
+    line = line:gsub("^%s+", ""):gsub("%s+$", "")
+    if line ~= "" and line:sub(1, 1) ~= "#" then table.insert(masks, line) end
+  end
+  if #masks == 0 then return end
+  local ok, err = pcall(setACL, masks)
+  if ok then
+    infolog("powersvx acl loaded: " .. #masks .. " masks")
+  else
+    errlog("powersvx acl rejected: " .. tostring(err))
+  end
+end
+reloadACL()
+function maintenance()
+  reloadACL()
+end
+LUA
   echo ""
   # Control console needs a base64 key from makeKey(); skip plaintext setKey (crashes dnsdist).
   echo "-- controlSocket disabled; use webserver on 127.0.0.1:8083"
@@ -116,4 +156,4 @@ TMP="${OUT}.tmp.$$"
 } >"$TMP"
 
 mv -f "$TMP" "$OUT"
-echo "dnsdist-conf: wrote $OUT (cache=${PACKET_CACHE} spoof=${SPOOF_V4} backend=:${RECURSIVE_PORT})" >&2
+echo "dnsdist-conf: wrote $OUT (cache=${PACKET_CACHE} spoof=${SPOOF_V4} backend=:${RECURSIVE_PORT} ipv6=${LISTEN_V6})" >&2

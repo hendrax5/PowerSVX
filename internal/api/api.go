@@ -1046,6 +1046,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 					a.log.Warn("unbound reload after ACL update", "err", err)
 				}
 			}
+			a.SyncDNSDistACL()
 		}
 		mode := cur.ResolverMode
 		allow, deny := a.srv.QueryACL()

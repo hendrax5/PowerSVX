@@ -9,9 +9,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/powersvx/powersvx/internal/blockcdb"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/metrics"
 )
+
+// SyncDNSDistACL mirrors allow_query/deny_query into blocklist/acl.txt; dnsdist
+// maintenance() reloads it into setACL within ~1s.
+func (a *API) SyncDNSDistACL() {
+	if a == nil || !config.DNSDistDataplane() {
+		return
+	}
+	allow, deny := a.srv.QueryACL()
+	n, err := blockcdb.WriteDNSDistACL(a.dataDir, allow, deny)
+	if err != nil {
+		a.log.Warn("dnsdist acl write failed", "err", err)
+		return
+	}
+	a.log.Info("dnsdist acl synced", "masks", n, "allow", len(allow), "deny", len(deny))
+}
 
 // StartDNSDistStatsBridge polls dnsdist web /jsonstat and feeds monitor + Prometheus
 // when POWERSVX_DNS_DATAPLANE=dnsdist (edge QPS, cache, CDB self-answers).

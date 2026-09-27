@@ -421,6 +421,7 @@ func main() {
 	rest.StartRPZAutoUpdate()
 	if config.DNSDistDataplane() {
 		rest.RefreshUnboundEntryCount()
+		rest.SyncDNSDistACL()
 		rest.StartDNSDistStatsBridge()
 		rest.StartUnboundStatsBridge() // backend Unbound :5353 (Prometheus only; UI QPS from dnsdist)
 		if ok, err := rest.TryBootstrapFilterSeed(); err != nil {
