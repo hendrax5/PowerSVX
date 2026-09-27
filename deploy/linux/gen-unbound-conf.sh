@@ -147,8 +147,6 @@ server:
     aggressive-nsec: yes
     prefetch: no
     prefetch-key: yes
-    local-zone: "in-addr.arpa." always_nodata
-    local-zone: "ip6.arpa." always_nodata
     domain-insecure: "in-addr.arpa."
     domain-insecure: "ip6.arpa."
     serve-expired: yes
@@ -248,8 +246,6 @@ server:
     aggressive-nsec: yes
     prefetch: no
     prefetch-key: yes
-    local-zone: "in-addr.arpa." always_nodata
-    local-zone: "ip6.arpa." always_nodata
     domain-insecure: "in-addr.arpa."
     domain-insecure: "ip6.arpa."
     serve-expired: yes

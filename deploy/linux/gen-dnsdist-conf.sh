@@ -29,6 +29,7 @@ WEB_PASS="${POWERSVX_DNSDIST_WEB_PASSWORD:-powersvx}"
 API_KEY="${POWERSVX_DNSDIST_API_KEY:-powersvx-api}"
 RECURSIVE_PORT="${POWERSVX_UNBOUND_BACKEND_PORT:-5353}"
 CDB_REFRESH="${POWERSVX_CDB_REFRESH_SEC:-30}"
+PTR_QPS="${POWERSVX_PTR_QPS_PER_IP:-50}"
 
 # Ensure valid empty CDB (tinycdb: 256×(pos=2048,nslots=0)) so dnsdist can start before first sync.
 if [ ! -f "$ROOT/data/blocklist/domains.cdb" ]; then
@@ -100,6 +101,9 @@ TMP="${OUT}.tmp.$$"
   fi
   echo ""
   echo "addAction(SuffixMatchNodeRule(whitelistSMN), PoolAction(\"\"))"
+  echo ""
+  # CPE PTR storms recurse to dead reverse NS; cap per client instead of blocking PTR.
+  echo "addAction(AndRule({QTypeRule(DNSQType.PTR), MaxQPSIPRule(${PTR_QPS})}), RCodeAction(DNSRCode.REFUSED))"
   echo ""
   echo "addAction(AndRule({KeyValueStoreLookupRule(blocklistKVS,suffixLookupKey), QTypeRule(DNSQType.AAAA)}), SpoofAction(\"${SPOOF_V6}\"))"
   echo "addAction(AndRule({KeyValueStoreLookupRule(blocklistKVS,suffixLookupKey), QTypeRule(DNSQType.A)}), SpoofAction(\"${SPOOF_V4}\"))"
