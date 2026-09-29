@@ -18,6 +18,11 @@ elif [ "$MEM_MB" -ge 16384 ]; then PACKET_CACHE=1000000
 fi
 
 UDP_OUT=65535
+# One backend socket = one source port = one Unbound so-reuseport thread; spread across threads.
+BACKEND_SOCKETS="${POWERSVX_DNSDIST_BACKEND_SOCKETS:-$((NPROC * 2))}"
+if [ "$BACKEND_SOCKETS" -lt 8 ]; then BACKEND_SOCKETS=8; fi
+if [ "$BACKEND_SOCKETS" -gt 64 ]; then BACKEND_SOCKETS=64; fi
+
 TCP_THREADS=$((NPROC * 2))
 if [ "$TCP_THREADS" -lt 4 ]; then TCP_THREADS=4; fi
 if [ "$TCP_THREADS" -gt 32 ]; then TCP_THREADS=32; fi
@@ -118,7 +123,7 @@ LUA
   echo "setMaxTCPConnectionsPerClient(20)"
   echo ""
   # Tolerate brief Unbound stalls under load (avoids dnsdist flapping backend down/up).
-  echo "newServer({address=\"127.0.0.1:${RECURSIVE_PORT}\", name=\"unbound\", checkInterval=2, maxCheckFailures=5, checkTimeout=2000, rise=2})"
+  echo "newServer({address=\"127.0.0.1:${RECURSIVE_PORT}\", name=\"unbound\", sockets=${BACKEND_SOCKETS}, checkInterval=2, maxCheckFailures=5, checkTimeout=2000, rise=2})"
   echo "setServerPolicy(leastOutstanding)"
   echo ""
   echo "pc = newPacketCache(${PACKET_CACHE},{maxTTL=86400, minTTL=60, maxNegativeTTL=300})"
@@ -156,4 +161,4 @@ LUA
 } >"$TMP"
 
 mv -f "$TMP" "$OUT"
-echo "dnsdist-conf: wrote $OUT (cache=${PACKET_CACHE} spoof=${SPOOF_V4} backend=:${RECURSIVE_PORT} ipv6=${LISTEN_V6})" >&2
+echo "dnsdist-conf: wrote $OUT (cache=${PACKET_CACHE} spoof=${SPOOF_V4} backend=:${RECURSIVE_PORT} sockets=${BACKEND_SOCKETS} ipv6=${LISTEN_V6})" >&2
