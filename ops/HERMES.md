@@ -1,6 +1,8 @@
 # Hermes — PowerSVX deploy / update
 
-Read **`ops/inventory.local.yaml`** first. Match the user’s host by `name`, `ip`, or `aliases` (e.g. “70.254” → `isehat2`). Use that row’s SSH + UI credentials. Never commit `inventory.local.yaml`. Never print passwords in chat unless the user asks.
+Read **`ops/inventory.local.yaml`** first. Match the user’s host by `name`, `ip`, or `aliases` (e.g. “70.254” → `isehat2`). Resolve passwords from **`ops/vault.local.yaml`** via `ssh_vault` / `admin_vault` (preferred) or legacy inline fields. Never commit `*.local.yaml`. Never print passwords in chat unless the user asks.
+
+Copy templates if missing: `ops/inventory.example.yaml` → `inventory.local.yaml`, `ops/vault.example.yaml` → `vault.local.yaml`.
 
 ## Architecture (v1.6.3+ dnsdist)
 

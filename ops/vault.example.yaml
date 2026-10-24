@@ -1,0 +1,17 @@
+# Copy to ops/vault.local.yaml (gitignored) and fill secrets.
+# Inventory hosts may set ssh_vault / admin_vault to a credentials key below
+# instead of embedding passwords. Agents must read vault.local.yaml and
+# must not echo secret values into chat unless the user explicitly asks.
+
+version: 1
+
+credentials:
+  hendra-std:
+    user: hendra
+    password: "CHANGE_ME"
+    notes: "default SSH for most hosts"
+
+  ui-admin1:
+    user: admin
+    password: "CHANGE_ME"
+    notes: "PowerSVX UI admin"

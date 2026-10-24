@@ -1,5 +1,6 @@
 # Copy to ops/inventory.local.yaml (gitignored) and fill secrets.
 # Hermes / Cursor reads inventory.local.yaml before any deploy or update.
+# Prefer ssh_vault / admin_vault keys from ops/vault.local.yaml over inline passwords.
 
 fleet: powersvx
 git_remote: http://x7q29vwl.servicex.id/network/powersvx.git
@@ -26,10 +27,9 @@ hosts:
     aliases: ["70.254"]
     ip: 203.0.113.10
     ssh_user: hendra
-    ssh_password: "CHANGE_ME"
+    ssh_vault: hendra-std
     ssh_port: 22
     role: production
     ui_url: http://203.0.113.10:5380
-    admin_user: admin
-    admin_password: "CHANGE_ME"
-    notes: "host-network + Unbound on 127.0.0.1:5353"
+    admin_vault: ui-admin1
+    notes: "host-network + dnsdist :53; Unbound 127.0.0.1:5353"

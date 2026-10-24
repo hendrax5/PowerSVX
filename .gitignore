@@ -25,4 +25,9 @@ powersvx-start.err
 
 powersvx-disk-guard.bundle
 powersvx-disk-guard-files.tgz
+blocklist-seed.tgz
+
+# Scratch & ad-hoc scripts (prevent accidental credential leaks)
+_*
+_*/
 

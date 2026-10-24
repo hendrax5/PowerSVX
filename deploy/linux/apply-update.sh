@@ -41,6 +41,12 @@ echo "POWERSVX_DIR=$ROOT" | sudo tee /etc/default/powersvx-disk-guard >/dev/null
 echo "15 * * * * root . /etc/default/powersvx-disk-guard 2>/dev/null; /usr/local/sbin/powersvx-disk-guard" | sudo tee /etc/cron.d/powersvx-disk-guard >/dev/null
 sudo POWERSVX_DIR="$ROOT" /usr/local/sbin/powersvx-disk-guard || true
 
+echo "==> apply OS & kernel hardening"
+if [ -f "$ROOT/deploy/linux/os-hardening.sh" ]; then
+  chmod +x "$ROOT/deploy/linux/os-hardening.sh" 2>/dev/null || true
+  sudo bash "$ROOT/deploy/linux/os-hardening.sh" || true
+fi
+
 echo "==> generate Unbound + dnsdist conf"
 export POWERSVX_DNS_DATAPLANE="${POWERSVX_DNS_DATAPLANE:-dnsdist}"
 export POWERSVX_UNBOUND_MODE="${POWERSVX_UNBOUND_MODE:-}"

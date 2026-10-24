@@ -70,7 +70,11 @@ else
   if [ "$QPT" -gt 4096 ]; then QPT=4096; fi
 fi
 
-SLABS=$THREADS
+# Unbound requires cache slab counts to be powers of two (threads may be any integer).
+SLABS=1
+while [ "$SLABS" -lt "$THREADS" ]; do
+  SLABS=$((SLABS * 2))
+done
 
 RPZ_DIR_HOST="$ROOT/data/unbound-rpz"
 LOG_DIR_HOST="$ROOT/data/unbound-logs"

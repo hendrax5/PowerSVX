@@ -1,14 +1,15 @@
 ---
-description: Read ops inventory before deploy/update; follow Hermes playbook.
+description: Read ops inventory + vault before deploy/update; follow Hermes playbook.
 alwaysApply: true
 ---
 
 # Ops deploy (Hermes)
 
-When the user asks to **deploy**, **update**, **cek server**, or names a host/IP:
+When the user asks to **deploy**, **update**, **cek server**, **install**, or names a host/IP:
 
 1. Read `ops/inventory.local.yaml` (gitignored). If missing, copy `ops/inventory.example.yaml`.
-2. Match host by `name`, `ip`, or `aliases`.
-3. Follow `ops/HERMES.md` for compose files, recreate list, and verify steps.
-4. Do not commit `ops/inventory.local.yaml` or echo passwords unless asked.
-5. Default host if unspecified: **isehat2** (`103.172.70.254`).
+2. Read `ops/vault.local.yaml` (gitignored) for SSH/UI secrets. If missing, copy `ops/vault.example.yaml` and ask the user to fill it — do **not** ask them to paste passwords into chat.
+3. Match host by `name`, `ip`, or `aliases`. Resolve `ssh_vault` / `admin_vault` (or legacy `ssh_password` / `admin_password`) via vault credentials keys.
+4. Follow `ops/HERMES.md` for compose files, recreate list, and verify steps.
+5. Do **not** commit `ops/*.local.yaml`. Do **not** echo passwords, tokens, or vault values into chat unless the user explicitly asks.
+6. Default host if unspecified: **isehat2** (`103.172.70.254`).

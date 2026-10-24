@@ -152,6 +152,8 @@ LUA
   echo ""
   echo "addAction(AndRule({KeyValueStoreLookupRule(blocklistKVS,suffixLookupKey), QTypeRule(DNSQType.AAAA)}), SpoofAction(\"${SPOOF_V6}\"))"
   echo "addAction(AndRule({KeyValueStoreLookupRule(blocklistKVS,suffixLookupKey), QTypeRule(DNSQType.A)}), SpoofAction(\"${SPOOF_V4}\"))"
+  echo "-- Non-A/AAAA queries (e.g. HTTPS type 65, MX, TXT) on blocked domains return NODATA (NOERROR) to prevent upstream leak & trigger browser A/AAAA fallback"
+  echo "addAction(KeyValueStoreLookupRule(blocklistKVS,suffixLookupKey), RCodeAction(DNSRCode.NOERROR))"
   echo ""
   echo "addAction(AllRule(), PoolAction(\"\"))"
   echo "setSecurityPollSuffix(\"\")"
