@@ -1,28 +1,79 @@
-# PowerSVX
+# PowerSVX `v1.6.3`
 
-Modern DNS server in Go — recursive/authoritative, encrypted transports, RPZ policy, and a React ops UI.
+Modern High-Performance DNS Server in Go & Dnsdist — recursive/authoritative, encrypted transports, RPZ & Kominfo CDB policy (>10k QPS), and React ops UI with dark/light mode.
 
-**Repository:** [http://x7q29vwl.servicex.id/network/powersvx](http://x7q29vwl.servicex.id/network/powersvx)
+**Repository:** [https://github.com/hendrax5/PowerSVX.git](https://github.com/hendrax5/PowerSVX.git)
+
+---
+
+## ⚡ Quick Install via Hermes (Langsung Cus)
+
+Jika Anda mengelola fleet server menggunakan **Hermes** (AI Ops Assistant), Anda cukup jalankan atau perintahkan:
+
+> *"Hermes, bootstrap/install PowerSVX di host `<nama_host_atau_ip>`"*
+
+Hermes akan otomatis:
+1. Membaca host dari `ops/inventory.local.yaml` & password dari `ops/vault.local.yaml`.
+2. Melakukan SSH ke server dan clone repo ke `/home/hendra/powersvx`.
+3. Menjalankan turnkey bootstrap: kernel hardening (`NOTRACK` + 3M conntrack), auto-sizing RAM, generate secret `.env`, dan menyalakan seluruh stack carrier-grade.
+4. Memvalidasi port 53, Unbound `:5353`, API `:5380`, dan Grafana `:3000`.
+
+### 🚀 Atau 1-Line Command di Terminal Server (Langsung Cus)
+Cukup copy-paste perintah satu baris ini di server Ubuntu/Debian baru:
 
 ```bash
-git clone http://x7q29vwl.servicex.id/network/powersvx.git
-cd powersvx
+git clone https://github.com/hendrax5/PowerSVX.git /home/hendra/powersvx && cd /home/hendra/powersvx && sudo bash deploy/linux/bootstrap-node.sh
 ```
+
+---
 
 ## Features
 
 | Area | Capabilities |
 |------|----------------|
-| DNS | UDP/TCP, forward/recursive, **Unbound hybrid backend**, **conditional forward zones**, L1+L2 cache, PostgreSQL zones, AXFR/NOTIFY, **secondary AXFR pull**, **RFC 2136 DDNS** |
-| Encrypted | DoT, DoH, DoH3, DoQ inbound; **outbound DoT/DoH forwarders**, DNSSEC modes, TSIG |
-| Policy | RPZ (`nxdomain` / `nodata` / `pass` / **redirect** / **cname**), query ACL, rate limit, ECS, GeoDNS, views |
-| Control | REST API, React UI, query logs, audit log, RBAC users, settings Save |
-| Ops | Prometheus + alert rules, Grafana, analytics, ACME DNS-01, SIGHUP reload |
-| Privacy | Query-log retention + IP masking |
-| Intercept | MikroTik/iptables DNAT; Linux `tproxy` (`IP_TRANSPARENT`) |
-| Deploy | Docker Compose, Linux systemd pack (`deploy/linux`) |
+| DNS Dataplane | **Dnsdist (port 53, 1M packet cache, memory-mapped CDB)** + **Unbound (127.0.0.1:5353 multi-threaded recursive backend)** |
+| Performance | **>10k QPS**, kernel `NOTRACK` bypass conntrack, 3M conntrack table, 16MB socket buffers, 4096 NIC ring buffers |
+| Filter & Policy | Kominfo TrustPositif (full 20M+ via AXFR/IXFR mmap), banks whitelist bypass, RPZ, query ACL, rate-limiting |
+| Control & UI | PowerSVX Go `:5380`, REST API, React modular UI with **Dark & Light Mode**, query logs, RBAC |
+| Observability | Auto-provisioned **Grafana (`:3000`)** embedded in `/analytics`, **Prometheus (`127.0.0.1:9091`)**, **Node-Exporter (`127.0.0.1:9101`)** |
+| Encrypted DNS | DoT (`:853`), DoH/DoH3 (`:443`), DoQ (`:784`), outbound forwarders, ACME DNS-01 |
+| Intercept | MikroTik / iptables DNAT; Linux kernel `tproxy` (`IP_TRANSPARENT`) |
+| Automation | **Hermes** ops engine (`ops/HERMES.md`), `ops/probe.py`, auto-disk hygiene |
 
-## Quick start (Windows)
+---
+
+## Architecture Port Layout
+
+| Port | Service | Access / Role |
+|------|---------|---------------|
+| `53` | DNS (UDP/TCP) | **Dnsdist** (Public edge, 1M packet cache + CDB mmap) |
+| `5353` | Unbound Recursive | Loopback `127.0.0.1` multi-threaded backend |
+| `5380` | PowerSVX Control | Web UI + REST API (AXFR initial + IXFR delta updates) |
+| `3000` | Grafana Analytics | Auto-provisioned dashboards (embedded in UI `/analytics`) |
+| `9091` | Prometheus Metrics | Loopback `127.0.0.1` internal metrics |
+| `9101` | Node-Exporter | Loopback `127.0.0.1` host telemetry |
+| `5433` | PostgreSQL | Loopback `127.0.0.1` persistent DB for logs & auth |
+
+---
+
+## Hermes Ops Guide (`ops/HERMES.md`)
+
+Untuk mengelola, probe, dan update server fleet:
+- **Dokumentasi Lengkap Hermes:** **[ops/HERMES.md](ops/HERMES.md)**
+- **Riwayat Rilis & Update:** **[CHANGELOG.md](CHANGELOG.md)**
+- **Detail Deploy Linux:** **[deploy/linux/README.md](deploy/linux/README.md)**
+
+```bash
+# Probe kesehatan seluruh fleet:
+python ops/probe.py all
+
+# Update node yang sudah berjalan ke v1.6.3:
+bash deploy/linux/apply-update.sh
+```
+
+---
+
+## Quick start (Local Development / Windows)
 
 UDP `5353` is often taken by Edge/Copilot mDNS — use the UI config:
 
@@ -33,53 +84,7 @@ go run ./cmd/powersvx --config configs/powersvx.ui.toml
 .\scripts\smoke.ps1
 ```
 
-## Docker
-
-**Linux / VPS (recommended):** use **host networking** so DNS sees real client IPs (ACL, rate-limit, query log). Bridge mode SNAT sources to `172.18.0.1` and breaks per-IP controls.
-
-```bash
-cp .env.example .env   # set PG_PASSWORD + API_TOKEN (+ ADMIN_PASSWORD)
-# stop anything bound to :53 on the host first (e.g. systemd-resolved)
-docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --build
-```
-
-| Host | Service |
-|------|---------|
-| 53 | DNS (UDP/TCP) |
-| 853 / 443 / 784 | DoT / DoH / DoQ |
-| 5380 | API + UI |
-| 9100 | Prometheus metrics (app) |
-| 9091 | Prometheus server |
-| 3000 | Grafana |
-| 5433 | Postgres (published on loopback in host override) |
-
-This mounts `configs/powersvx.docker.host.toml` (Postgres via `127.0.0.1:5433`). Do **not** later run plain `docker compose up` alone — that drops `network_mode: host` and returns to bridge.
-
-**Hybrid recursive (default on host compose):** starts **Unbound on `127.0.0.1:5353`**; PowerSVX defaults to forward → that address. Conditional forward zones still override per domain. See **[docs/UNBOUND-HYBRID.md](docs/UNBOUND-HYBRID.md)**. Recursive (Go) remains optional in Settings for lab only.
-
-**Local / Windows-friendly bridge** (mapped ports, not for production DNS):
-
-```bash
-docker compose up -d --build
-# DNS on host 5453 → container 53; UI http://127.0.0.1:5380/
-```
-
-## Linux production deploy
-
-See **[deploy/linux/README.md](deploy/linux/README.md)** for systemd install, `configs/powersvx.linux.toml`, secrets env, firewall, and Docker host-network details.
-
-```bash
-# Bare metal / VM
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags='-w -s' -o powersvx ./cmd/powersvx
-(cd web && npm install && npm run build)
-sudo ./deploy/linux/install.sh ./powersvx
-
-# Or Docker on Linux (host network — preferred)
-cp .env.example .env   # set PG_PASSWORD + API_TOKEN
-docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --build
-```
-
-## RPZ actions
+## RPZ & Filter Actions
 
 Configure feeds in **Settings → RPZ** (or TOML/`data/rpz-policies.json`):
 

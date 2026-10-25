@@ -20,7 +20,18 @@ Env: `POWERSVX_DNS_DATAPLANE=dnsdist` (compose host default).
 
 Legacy: `POWERSVX_DNS_DATAPLANE=unbound` puts Unbound on `:53` + RPZ (partial cap on ≤12 GiB). Stop dnsdist before that mode.
 
-## When the user says “deploy” or “update”
+## When the user says “install”, “bootstrap”, or “fresh deploy”
+
+For a **brand-new host** (or fresh VPS):
+1. Resolve host from inventory (`ops/inventory.local.yaml`).
+2. SSH to the server and clone/sync repo to `/home/hendra/powersvx`.
+3. Run the one-shot turnkey bootstrap as root:
+   ```bash
+   sudo bash deploy/linux/bootstrap-node.sh
+   ```
+   *This automatically installs Docker, applies kernel `NOTRACK` + 3M conntrack hardening, creates random `.env` secrets, auto-sizes Unbound/Dnsdist configs, and spins up the full stack including Grafana on port 3000.*
+
+## When the user says “deploy” or “update” (Existing Nodes)
 
 Default target if unspecified: **isehat2 / 103.172.70.254**.
 
@@ -28,7 +39,7 @@ Default target if unspecified: **isehat2 / 103.172.70.254**.
 2. Sync changed files to `remote_dir` (SCP) **or** `git pull` on the server.
 3. `chmod +x deploy/linux/*.sh`
 4. `export POWERSVX_DNS_DATAPLANE=dnsdist`
-5. Prefer one-shot: `bash deploy/linux/apply-update.sh` (gens Unbound+dnsdist, builds powersvx, recreates unbound/dnsdist/powersvx, then **prunes Docker build cache + unused images**).
+5. Prefer one-shot: `bash deploy/linux/apply-update.sh` (gens Unbound+dnsdist, builds powersvx, recreates unbound/dnsdist/powersvx, starts grafana/prometheus, then **prunes Docker build cache + unused images**).
 6. Or manually:
    ```bash
    export POWERSVX_DNS_DATAPLANE=dnsdist
@@ -37,10 +48,10 @@ Default target if unspecified: **isehat2 / 103.172.70.254**.
    eval "$(deploy/linux/calc-mem-env.sh)"
    export GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
    export BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-   export POWERSVX_VERSION=1.6.2 GOGC=50
+   export POWERSVX_VERSION=1.6.3 GOGC=50
    docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml build powersvx
    docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \
-     up -d --no-deps --force-recreate unbound dnsdist powersvx
+     up -d --no-deps --force-recreate unbound dnsdist powersvx node-exporter prometheus grafana
    bash deploy/linux/docker-prune-after-update.sh
    ```
 7. Verify:
