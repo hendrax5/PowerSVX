@@ -29,6 +29,24 @@ EOF
 # Apply sysctl settings
 sysctl -p /etc/sysctl.d/98-powersvx.conf 2>/dev/null || sysctl --system >/dev/null 2>&1 || true
 
+# Bypass conntrack for DNS UDP traffic to eliminate conntrack CPU overhead and prevent table overflow
+if command -v iptables &>/dev/null; then
+  echo "==> Configuring iptables NOTRACK on UDP port 53..."
+  iptables -t raw -C PREROUTING -p udp --dport 53 -j NOTRACK 2>/dev/null || \
+    iptables -t raw -A PREROUTING -p udp --dport 53 -j NOTRACK 2>/dev/null || true
+  iptables -t raw -C OUTPUT -p udp --sport 53 -j NOTRACK 2>/dev/null || \
+    iptables -t raw -A OUTPUT -p udp --sport 53 -j NOTRACK 2>/dev/null || true
+fi
+
+# Maximize NIC ring buffers if ethtool is available
+if command -v ethtool &>/dev/null; then
+  DEFAULT_IFACE=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1 || true)
+  if [[ -n "$DEFAULT_IFACE" ]]; then
+    echo "==> Tuning NIC ring buffer on $DEFAULT_IFACE..."
+    ethtool -G "$DEFAULT_IFACE" rx 4096 tx 4096 2>/dev/null || true
+  fi
+fi
+
 # Display current conntrack & socket buffer limits
 echo "==> Current conntrack limits:"
 sysctl net.netfilter.nf_conntrack_max 2>/dev/null || true

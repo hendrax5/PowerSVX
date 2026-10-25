@@ -15,6 +15,19 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
+# Default to Full Production High-QPS stack (Docker Host Mode) unless --standalone is requested
+if [[ "${1:-}" != "--standalone" && -z "${1:-}" ]]; then
+  echo "=========================================================================="
+  echo " Installing Full PowerSVX Production Stack (Dnsdist + Unbound + Grafana) "
+  echo "=========================================================================="
+  exec bash "$ROOT/deploy/linux/bootstrap-node.sh"
+fi
+
+if [[ "${1:-}" == "--standalone" ]]; then
+  shift
+fi
+
 BIN_SRC="${1:-}"
 if [[ -z "$BIN_SRC" ]]; then
   if [[ -x "$ROOT/powersvx" ]]; then

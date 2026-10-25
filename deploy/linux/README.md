@@ -1,22 +1,26 @@
-# PowerSVX — Linux deployment
+# PowerSVX — Linux Deployment
 
-Two supported paths: **systemd (bare metal/VM)** or **Docker Compose**.
+## A. Turnkey Full Production Stack (>10k QPS, Recommended)
 
-## A. Systemd (recommended for DNS on port 53)
+Deploys the complete carrier-grade stack with **zero manual configuration**:
+* **Public DNS (:53)**: `dnsdist` with 1M packet cache + memory-mapped CDB blocklist (Kominfo 20M+ rules)
+* **Backend Resolver (:5353)**: `Unbound` multi-threaded recursive engine on loopback
+* **Control-Plane (:5380)**: `PowerSVX` Web UI & REST API (AXFR initial + IXFR incremental auto-sync)
+* **Observability Stack**: `Grafana` (:3000, auto-embedded in UI) + `Prometheus` (:9091) + `Node-Exporter` (:9101)
+* **Automatic Hardening**: Conntrack 3M limits, 16MB socket buffers, and `NOTRACK` for zero packet drops.
 
-### 1. Build on a machine with Go 1.26+ and Node 22+
-
-```bash
-git clone http://x7q29vwl.servicex.id/network/powersvx.git && cd powersvx
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags='-w -s' -o powersvx ./cmd/powersvx
-(cd web && npm install --no-audit --no-fund && npm run build)
-```
-
-Copy the tree (or release tarball) to the server, then:
+### Quick Start (1 Command on Clean Server)
 
 ```bash
-sudo ./deploy/linux/install.sh ./powersvx
+git clone https://github.com/hendrax5/PowerSVX.git /home/hendra/powersvx
+cd /home/hendra/powersvx
+sudo bash deploy/linux/bootstrap-node.sh
 ```
+
+---
+
+## B. Standalone Systemd (Bare-metal Binary Only)
+For lab, testing, or minimalist single-binary deployments:
 
 ### 2. PostgreSQL
 
