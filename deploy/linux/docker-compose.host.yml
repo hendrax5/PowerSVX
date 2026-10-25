@@ -116,7 +116,7 @@ services:
       - '--path.rootfs=/host'
       - '--path.procfs=/host/proc'
       - '--path.sysfs=/host/sys'
-      - '--web.listen-address=:9101'
+      - '--web.listen-address=127.0.0.1:9101'
       - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
     volumes:
       - /:/host:ro,rslave
@@ -125,7 +125,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports: !override
-      - "0.0.0.0:9091:9090"
+      - "127.0.0.1:9091:9090"
 
   grafana:
     environment:

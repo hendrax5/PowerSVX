@@ -73,6 +73,25 @@ mkdir -p data/postgres data/blocklist data/unbound-rpz data/unbound-logs configs
 # PostgreSQL alpine uses UID 70
 chown -R 70:70 data/postgres 2>/dev/null || true
 
+# Auto-generate secure random secrets if .env does not exist
+if [[ ! -f ".env" ]]; then
+  echo "    Generating strong random secrets in .env..."
+  PG_PASS=$(openssl rand -hex 16 2>/dev/null || echo "psvx_pg_$(date +%s)")
+  API_TOK=$(openssl rand -hex 24 2>/dev/null || echo "psvx_api_$(date +%s)")
+  GRAF_PASS=$(openssl rand -hex 16 2>/dev/null || echo "psvx_graf_$(date +%s)")
+  DIST_PASS=$(openssl rand -hex 16 2>/dev/null || echo "psvx_dist_$(date +%s)")
+  DIST_KEY=$(openssl rand -hex 24 2>/dev/null || echo "psvx_key_$(date +%s)")
+  cat > .env <<EOF
+PG_PASSWORD=${PG_PASS}
+API_TOKEN=${API_TOK}
+GRAFANA_USER=admin
+GRAFANA_PASSWORD=${GRAF_PASS}
+POWERSVX_DNSDIST_WEB_PASSWORD=${DIST_PASS}
+POWERSVX_DNSDIST_API_KEY=${DIST_KEY}
+EOF
+  chmod 600 .env
+fi
+
 # Seed bank whitelist if missing
 if [[ ! -f "data/blocklist/banks.lua" ]]; then
   echo "whitelistSMN = newSuffixMatchNode()" > data/blocklist/banks.lua
