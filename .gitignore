@@ -30,4 +30,8 @@ blocklist-seed.tgz
 # Scratch & ad-hoc scripts (prevent accidental credential leaks)
 _*
 _*/
+crede*.env
+*.env
+*.env.*
+
 
