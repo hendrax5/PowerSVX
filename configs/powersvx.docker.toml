@@ -67,7 +67,7 @@ global_burst = 0
 enabled = true
 hot_cache_max = 300000
 hot_seed_top_n = 20000
-update_interval = 3600
+update_interval = 0
 axfr_update_interval = 86400
 policies = [
   { name = "sample", source = "/etc/PowerSVX/sample-blocklist.txt", format = "hosts", action = "nxdomain" }

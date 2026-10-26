@@ -162,8 +162,8 @@ func EnsureDefaultRPZPolicies(path string) (wrote bool, err error) {
 	axfr := DefaultAxfrUpdateInterval
 	out := RPZPoliciesFile{
 		Policies:           []RPZPolicyTOML{DefaultKomdigiAXFRPolicy()},
-		UpdateInterval:     86400,
-		UpdateAt:           "04:00",
+		UpdateInterval:     0,  // hosts feeds disabled by default (no web scraping)
+		UpdateAt:           "", // no hosts schedule by default
 		AxfrUpdateInterval: &axfr,
 	}
 	if f.UpdateInterval > 0 {

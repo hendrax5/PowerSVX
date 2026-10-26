@@ -102,16 +102,28 @@ if [[ ! -f "data/blocklist/banks.lua" ]]; then
   echo "whitelistSMN:add(newDNSName('bni.co.id.'))" >> data/blocklist/banks.lua
 fi
 
-# Seed minimal CDB if missing
-if [[ ! -f "data/blocklist/domains.cdb" ]]; then
-  echo "    Generating initial blocklist seed..."
-  if command -v cdb &>/dev/null; then
-    touch data/blocklist/domains.cdb
-  else
-    # Create empty valid file
+# Seed CDB from repo if missing
+if [[ ! -f "data/blocklist/domains.cdb" ]] || [[ ! -s "data/blocklist/domains.cdb" ]]; then
+  echo "    Checking for repository blocklist seed..."
+  mkdir -p data/blocklist
+  if [[ -f "$ROOT/blocklist-seed.tgz" ]]; then
+    echo "    Extracting default Kominfo sync seed from $ROOT/blocklist-seed.tgz..."
+    tar -zxf "$ROOT/blocklist-seed.tgz" -C data/blocklist/ 2>/dev/null || true
+    if [[ -f "data/blocklist/rpz-axfr-state.json" ]]; then
+      cp "data/blocklist/rpz-axfr-state.json" "data/rpz-axfr-state.json" 2>/dev/null || true
+    fi
+  elif [[ -f "blocklist-seed.tgz" ]]; then
+    echo "    Extracting default Kominfo sync seed from blocklist-seed.tgz..."
+    tar -zxf "blocklist-seed.tgz" -C data/blocklist/ 2>/dev/null || true
+    if [[ -f "data/blocklist/rpz-axfr-state.json" ]]; then
+      cp "data/blocklist/rpz-axfr-state.json" "data/rpz-axfr-state.json" 2>/dev/null || true
+    fi
+  fi
+  if [[ ! -f "data/blocklist/domains.cdb" ]]; then
     touch data/blocklist/domains.cdb
   fi
 fi
+
 
 # 5. Generate Unbound & dnsdist configurations sized to Host RAM/CPU
 echo "==> [5/7] Auto-sizing Unbound & dnsdist configs from host specs..."

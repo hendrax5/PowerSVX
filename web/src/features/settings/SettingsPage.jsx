@@ -1040,8 +1040,6 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
 
 function RPZPanel({ initial, onChange }) {
   const defaultRedirectTarget = '139.255.196.196'
-  const defaultName = 'trustpositif'
-  const defaultSource = 'https://trustpositif.komdigi.go.id/assets/db/domains_isp'
   const [policies, setPolicies] = useState(() => hostsOnlyPolicies(initial?.policies))
   const [axfrPolicies, setAxfrPolicies] = useState(() => axfrOnlyPolicies(initial?.policies))
   const [intervalSec, setIntervalSec] = useState(() => Number(initial?.update_interval) || 0)
@@ -1052,8 +1050,8 @@ function RPZPanel({ initial, onChange }) {
       : Number(initial.axfr_update_interval),
   )
   const [status, setStatus] = useState(initial)
-  const [name, setName] = useState(defaultName)
-  const [source, setSource] = useState(defaultSource)
+  const [name, setName] = useState('')
+  const [source, setSource] = useState('')
   const [action, setAction] = useState('nxdomain')
   const [target, setTarget] = useState('')
   const [editName, setEditName] = useState(null)
@@ -1100,8 +1098,8 @@ function RPZPanel({ initial, onChange }) {
   }, [status?.loading, onChange])
 
   const resetForm = () => {
-    setName(defaultName)
-    setSource(defaultSource)
+    setName('')
+    setSource('')
     setAction('nxdomain')
     setTarget('')
     setEditName(null)
@@ -1225,13 +1223,23 @@ function RPZPanel({ initial, onChange }) {
     <section className="panel p-4 space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-medium">RPZ feeds</h2>
+          <h2 className="text-sm font-medium">RPZ feeds (Hosts / Files)</h2>
           <p className="text-xs text-[var(--muted)] mt-1">
-            HTTP URL or local file · hosts format · actions: nxdomain, nodata, pass, redirect (IP), cname.
-            Slave AXFR filter feeds are managed under Tools → AXFR.
+            HTTP URL or local file · hosts format (disabled by default; primary filter feed is Kominfo AXFR under Tools → AXFR).
           </p>
           <p className="text-sm mt-2">
-            {status?.enabled ? 'Enabled' : 'Disabled'} · {status?.entries ?? 0} entries
+            {policies.length > 0 ? (
+              <>
+                <span className="text-[var(--text)] font-medium">
+                  {policies.length} {policies.length === 1 ? 'hosts feed' : 'hosts feeds'} configured
+                </span>
+                {intervalSec > 0 ? ` · auto-reload every ${intervalSec}s` : ' · auto-reload off'}
+              </>
+            ) : (
+              <span className="text-[var(--muted)]">
+                Disabled · No hosts feeds active (using official Kominfo AXFR filter)
+              </span>
+            )}
             {loading ? ' · syncing…' : null}
             {status?.from_disk ? ' · from disk' : null}
             {status?.last_loaded ? (
@@ -1259,6 +1267,10 @@ function RPZPanel({ initial, onChange }) {
         </div>
       </div>
 
+      <div className="border border-[var(--border)] bg-[var(--card)] text-xs text-[var(--muted)] p-3 rounded leading-relaxed">
+        <strong>Default filtering policy:</strong> PowerSVX uses direct slave AXFR synchronization with Kominfo masters (managed under <strong>Tools → AXFR</strong>) using the bundled repository seed dataset. RPZ web scraping feeds are optional and disabled by default with zero automatic web scraping.
+      </div>
+
       {err ? <ErrorBox msg={err} /> : null}
       {ok ? (
         <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
@@ -1267,8 +1279,7 @@ function RPZPanel({ initial, onChange }) {
       ) : null}
       {loading ? (
         <div className="border border-[var(--warn)]/40 bg-[var(--warn)]/10 text-[var(--warn)] text-sm px-3 py-2">
-          Large feeds (e.g. TrustPositif ~9M domains) can take several minutes. Snapshot is written to
-          data/rpz-store for faster restarts.
+          Large feeds can take several minutes. Snapshot is written to data/rpz-store for faster restarts.
         </div>
       ) : null}
 
@@ -1348,7 +1359,7 @@ function RPZPanel({ initial, onChange }) {
             className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm text-[var(--text)]"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="trustpositif"
+            placeholder="e.g. adblock-custom"
           />
         </label>
         <label className="text-xs text-[var(--muted)] space-y-1">
@@ -1389,7 +1400,7 @@ function RPZPanel({ initial, onChange }) {
             className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
             value={source}
             onChange={(e) => setSource(e.target.value)}
-            placeholder="https://…"
+            placeholder="e.g. /etc/powersvx/custom-hosts.txt or https://example.com/hosts"
           />
         </label>
       </div>

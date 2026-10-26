@@ -237,15 +237,42 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
-// BootstrapFromURL downloads a seed .tgz (GitHub Release) and installs it when CDB is empty.
+// BootstrapFromURL installs a seed .tgz from local disk or downloads from GitHub Release when CDB is empty.
 func BootstrapFromURL(dataDir, url string, timeout time.Duration) (SeedManifest, error) {
 	var man SeedManifest
-	if url == "" {
-		return man, fmt.Errorf("seed url empty")
-	}
 	if !NeedsSeed(dataDir) {
 		return man, fmt.Errorf("cdb already present")
 	}
+
+	// Check local disk candidates first (default seed from repo)
+	candidates := []string{
+		url,
+		"./blocklist-seed.tgz",
+		filepath.Join(dataDir, "blocklist-seed.tgz"),
+		filepath.Join(filepath.Dir(dataDir), "blocklist-seed.tgz"),
+		"/etc/powersvx/blocklist-seed.tgz",
+		"/usr/share/PowerSVX/blocklist-seed.tgz",
+	}
+	for _, cand := range candidates {
+		cand = strings.TrimSpace(cand)
+		if cand == "" || strings.HasPrefix(cand, "http://") || strings.HasPrefix(cand, "https://") {
+			continue
+		}
+		cand = strings.TrimPrefix(cand, "file://")
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() && st.Size() > 0 {
+			f, err := os.Open(cand)
+			if err != nil {
+				continue
+			}
+			defer f.Close()
+			return InstallSeedTarGz(dataDir, f)
+		}
+	}
+
+	if url == "" || (!strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://")) {
+		return man, fmt.Errorf("no local seed found and url empty or invalid: %q", url)
+	}
+
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}
@@ -269,3 +296,4 @@ func BootstrapFromURL(dataDir, url string, timeout time.Duration) (SeedManifest,
 	}
 	return InstallSeedTarGz(dataDir, resp.Body)
 }
+
