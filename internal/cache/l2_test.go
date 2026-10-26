@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -38,5 +37,5 @@ func TestL2RoundTripAndPromote(t *testing.T) {
 	if _, ok := l1.Get(Key("promote.test.", 1)); !ok {
 		t.Fatal("expected promote to L1")
 	}
-	_ = os.RemoveAll(dir)
 }
+
