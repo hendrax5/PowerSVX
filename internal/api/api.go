@@ -325,6 +325,36 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 	} else {
 		checks["dns_dataplane"] = map[string]any{"status": "pass", "engine": "powersvx"}
 		checks["dns_udp"] = map[string]any{"status": "pass", "addr": a.srv.UDPAddr()}
+		// Probe Unbound if configured as backend or in forwarders
+		isUnboundFwd := false
+		for _, f := range a.srv.RuntimeFlags().Forwarders {
+			if strings.Contains(f, "5353") {
+				isUnboundFwd = true
+				break
+			}
+		}
+		if isUnboundFwd {
+			if st, err := unboundrpz.Stats(); err == nil {
+				checks["unbound"] = map[string]any{"status": "pass", "stats": st, "addr": "127.0.0.1:5353"}
+			} else {
+				c, dialErr := net.DialTimeout("udp", "127.0.0.1:5353", 400*time.Millisecond)
+				if dialErr != nil {
+					checks["unbound"] = map[string]any{
+						"status": "fail",
+						"err":    "read udp 127.0.0.1:5353: connection refused (Unbound service is not running)",
+						"addr":   "127.0.0.1:5353",
+					}
+				} else {
+					_ = c.Close()
+					checks["unbound"] = map[string]any{"status": "pass", "addr": "127.0.0.1:5353"}
+				}
+				if status == "healthy" {
+					status = "degraded"
+				}
+			}
+		} else {
+			checks["unbound"] = map[string]any{"status": "disabled", "hint": "Resolver mode: " + a.srv.RuntimeFlags().ResolverMode}
+		}
 	}
 	checks["dns_dot"] = statusOrDisabled(a.srv.DoTEnabled(), a.srv.DoTAddr())
 	checks["dns_doh"] = statusOrDisabled(a.srv.DoHEnabled(), a.srv.DoHAddr())

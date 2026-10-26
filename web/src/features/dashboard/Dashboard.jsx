@@ -240,11 +240,19 @@ export default function Dashboard() {
   const hostTotalGiB = Number(res.host_mem_total_mb || 0) / 1024
   const diskUsed = Number(res.disk_used_pct || 0)
   const memUsed = Number(res.host_mem_used_pct || 0)
-  const cdbEntries = checks.rpz?.entries ?? s.rpz_entries ?? 0
+  const isUnboundBackend =
+    isDnsdist ||
+    isUnboundDP ||
+    (s.forwarders || []).some((f) => f.includes('5353')) ||
+    s.resolver_mode === 'unbound' ||
+    checks.unbound?.status === 'pass' ||
+    checks.unbound?.status === 'fail' ||
+    checks.unbound?.status === 'degraded'
+
   const healthItems = [
     ['DNS :53', checks.dns_udp],
     ['Dataplane', checks.dns_dataplane || { status: 'pass', engine: planeLabel }],
-    ['Unbound', checks.unbound || (isDnsdist || isUnboundDP ? { status: '—' } : { status: 'disabled' })],
+    ['Unbound', checks.unbound || (isUnboundBackend ? { status: '—' } : { status: 'disabled' })],
     ['Database', checks.database],
     ['Blocklist', checks.rpz || { status: 'pass', entries: cdbEntries, engine: isDnsdist ? 'cdb' : 'rpz' }],
     ['API process', checks.resources],
@@ -273,7 +281,7 @@ export default function Dashboard() {
       <div className="flex flex-wrap gap-2 reveal reveal-delay-1">
         <Badge on={isDnsdist} label={isDnsdist ? 'Edge: dnsdist' : isUnboundDP ? 'Edge: Unbound' : 'Edge: PowerSVX'} />
         <Badge on={isDnsdist || !!s.rpz_enabled} label={isDnsdist ? 'CDB blocklist' : 'RPZ'} />
-        <Badge on={isDnsdist || isUnboundDP} label="Backend Unbound" />
+        <Badge on={isUnboundBackend} label="Backend Unbound" />
         {!isDnsdist && !isUnboundDP ? (
           <>
             <Badge on={s.dot_enabled} label="DoT" />
