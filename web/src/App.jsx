@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { api } from './api'
 import { AuthCtx, useAuth } from './auth'
 import Shell from './components/Shell'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { ThemeProvider } from './theme'
 import { LoadingBlock } from './ui'
 
@@ -105,33 +106,35 @@ export default function App() {
     <ThemeProvider>
       <AuthCtx.Provider value={value}>
         <UpdateWatcher />
-        <Suspense fallback={<div className="p-8"><LoadingBlock label="Loading page" /></div>}>
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route
-              path="/*"
-              element={
-                <RequireAuth>
-                  <Shell>
-                    <Suspense fallback={<LoadingBlock label="Loading feature" />}>
-                      <Routes>
-                        <Route path="/" element={<Dashboard />} />
-                        <Route path="/zones" element={<Navigate to="/" replace />} />
-                        <Route path="/domains" element={<DomainsPage />} />
-                        <Route path="/zones/:name" element={<Navigate to="/" replace />} />
-                        <Route path="/lookup" element={<Lookup />} />
-                        <Route path="/logs" element={<Navigate to="/analytics" replace />} />
-                        <Route path="/audit" element={<AuditLog />} />
-                        <Route path="/settings" element={<SettingsPage />} />
-                        <Route path="/analytics" element={<Analytics />} />
-                      </Routes>
-                    </Suspense>
-                  </Shell>
-                </RequireAuth>
-              }
-            />
-          </Routes>
-        </Suspense>
+        <ErrorBoundary>
+          <Suspense fallback={<div className="p-8"><LoadingBlock label="Loading page" /></div>}>
+            <Routes>
+              <Route path="/login" element={<LoginPage />} />
+              <Route
+                path="/*"
+                element={
+                  <RequireAuth>
+                    <Shell>
+                      <Suspense fallback={<LoadingBlock label="Loading feature" />}>
+                        <Routes>
+                          <Route path="/" element={<Dashboard />} />
+                          <Route path="/zones" element={<Navigate to="/" replace />} />
+                          <Route path="/domains" element={<DomainsPage />} />
+                          <Route path="/zones/:name" element={<Navigate to="/" replace />} />
+                          <Route path="/lookup" element={<Lookup />} />
+                          <Route path="/logs" element={<Navigate to="/analytics" replace />} />
+                          <Route path="/audit" element={<AuditLog />} />
+                          <Route path="/settings" element={<SettingsPage />} />
+                          <Route path="/analytics" element={<Analytics />} />
+                        </Routes>
+                      </Suspense>
+                    </Shell>
+                  </RequireAuth>
+                }
+              />
+            </Routes>
+          </Suspense>
+        </ErrorBoundary>
       </AuthCtx.Provider>
     </ThemeProvider>
   )

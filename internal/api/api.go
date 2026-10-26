@@ -269,6 +269,12 @@ func (a *API) spaHandler() http.Handler {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
 		if _, err := fs.Stat(a.webFS, p); err != nil {
+			// Do NOT serve index.html for static assets or files with extensions (e.g. .js, .css, .map)
+			// Returning index.html (text/html) for missing JS files causes browser "SyntaxError: Unexpected token '<'"
+			if strings.HasPrefix(p, "assets/") || path.Ext(p) != "" {
+				http.NotFound(w, r)
+				return
+			}
 			r.URL.Path = "/"
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			fileServer.ServeHTTP(w, r)
