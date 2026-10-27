@@ -249,6 +249,8 @@ export default function Dashboard() {
     checks.unbound?.status === 'fail' ||
     checks.unbound?.status === 'degraded'
 
+  const cdbEntries = checks.rpz?.entries ?? s?.rpz_entries ?? 0
+
   const healthItems = [
     ['DNS :53', checks.dns_udp],
     ['Dataplane', checks.dns_dataplane || { status: 'pass', engine: planeLabel }],
