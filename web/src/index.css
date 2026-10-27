@@ -2,27 +2,30 @@
 
 :root,
 [data-theme="dark"] {
-  /* Dark technical palette */
-  --bg: #12110f;
-  --bg-elevated: #1a1815;
-  --bg-panel: #211f1b;
-  --border: #35322c;
-  --border-strong: #4e4a42;
-  --text: #f1eee6;
-  --muted: #9e998f;
-  --accent: #c9883a;
-  --accent-dim: #a06c2e;
-  --accent-soft: rgba(201, 136, 58, 0.14);
-  --warn: #c4a03a;
-  --danger: #d85a5a;
-  --ok: #3aa889;
-  --shadow: rgba(10, 9, 7, 0.55);
-  --font: "Outfit", "Segoe UI", sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, monospace;
-  --radius: 6px;
-  --radius-sm: 3px;
-  --radius-lg: 14px;
-  --control-h: 44px;
+  /* Cloudflare Obsidian + AdGuard Technical Palette */
+  --bg: #0c0e12;
+  --bg-elevated: #12151b;
+  --bg-panel: #181c24;
+  --border: #232834;
+  --border-strong: #363d4f;
+  --text: #f3f5f8;
+  --muted: #8b95a5;
+  --accent: #f6821f;          /* Cloudflare Flame Orange */
+  --accent-dim: #d96b14;
+  --accent-soft: rgba(246, 130, 31, 0.12);
+  --accent-hover: #fa8f35;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+  --ok: #10b981;              /* AdGuard Emerald */
+  --info: #0284c7;            /* Route53 Blue */
+  --purple: #8b5cf6;
+  --shadow: rgba(4, 6, 9, 0.65);
+  --font: "Outfit", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --radius: 8px;
+  --radius-sm: 4px;
+  --radius-lg: 16px;
+  --control-h: 42px;
   --content-max: 87.5rem; /* 1400px */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --z-skip: 60;
@@ -32,22 +35,26 @@
 }
 
 [data-theme="light"] {
-  /* Clean, crisp high-contrast technical light palette */
+  /* Clean, crisp enterprise light palette inspired by Cloudflare & Route53 */
   --bg: #f8fafc;
   --bg-elevated: #ffffff;
-  --bg-panel: #f1f5f9;
+  --bg-panel: #ffffff;
   --border: #e2e8f0;
   --border-strong: #cbd5e1;
   --text: #0f172a;
   --muted: #64748b;
-  --accent: #2563eb;
-  --accent-dim: #1d4ed8;
-  --accent-soft: rgba(37, 99, 235, 0.12);
+  --accent: #ea580c;          /* Crisp Cloudflare Amber Orange */
+  --accent-dim: #c2410c;
+  --accent-soft: rgba(234, 88, 12, 0.08);
+  --accent-hover: #f97316;
   --warn: #d97706;
   --danger: #dc2626;
-  --ok: #16a34a;
-  --shadow: rgba(15, 23, 42, 0.08);
+  --ok: #10b981;              /* AdGuard Emerald */
+  --info: #0284c7;
+  --purple: #7c3aed;
+  --shadow: rgba(15, 23, 42, 0.06);
 }
+
 
 * {
   box-sizing: border-box;
@@ -1376,3 +1383,260 @@ a:focus-visible {
     transition: none !important;
   }
 }
+
+/* ——— Cloudflare DNS Record Badges ——— */
+.cf-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  line-height: 1;
+}
+
+.cf-badge-a {
+  background: rgba(2, 132, 199, 0.12);
+  color: #38bdf8;
+  border-color: rgba(2, 132, 199, 0.3);
+}
+
+[data-theme="light"] .cf-badge-a {
+  background: rgba(2, 132, 199, 0.1);
+  color: #0284c7;
+  border-color: rgba(2, 132, 199, 0.25);
+}
+
+.cf-badge-aaaa {
+  background: rgba(139, 92, 246, 0.12);
+  color: #a78bfa;
+  border-color: rgba(139, 92, 246, 0.3);
+}
+
+[data-theme="light"] .cf-badge-aaaa {
+  background: rgba(124, 58, 237, 0.1);
+  color: #7c3aed;
+  border-color: rgba(124, 58, 237, 0.25);
+}
+
+.cf-badge-cname {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+[data-theme="light"] .cf-badge-cname {
+  background: rgba(217, 119, 6, 0.1);
+  color: #d97706;
+  border-color: rgba(217, 119, 6, 0.25);
+}
+
+.cf-badge-txt {
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+[data-theme="light"] .cf-badge-txt {
+  background: rgba(16, 185, 129, 0.1);
+  color: #059669;
+  border-color: rgba(16, 185, 129, 0.25);
+}
+
+.cf-badge-mx {
+  background: rgba(20, 184, 166, 0.12);
+  color: #2dd4bf;
+  border-color: rgba(20, 184, 166, 0.3);
+}
+
+[data-theme="light"] .cf-badge-mx {
+  background: rgba(13, 148, 136, 0.1);
+  color: #0d9488;
+  border-color: rgba(13, 148, 136, 0.25);
+}
+
+.cf-badge-ns {
+  background: rgba(246, 130, 31, 0.12);
+  color: #fb923c;
+  border-color: rgba(246, 130, 31, 0.3);
+}
+
+[data-theme="light"] .cf-badge-ns {
+  background: rgba(234, 88, 12, 0.1);
+  color: #ea580c;
+  border-color: rgba(234, 88, 12, 0.25);
+}
+
+.cf-badge-soa,
+.cf-badge-ptr,
+.cf-badge-srv,
+.cf-badge-caa {
+  background: rgba(100, 116, 139, 0.12);
+  color: #94a3b8;
+  border-color: rgba(100, 116, 139, 0.3);
+}
+
+/* ——— AdGuard Home Proportional Bar Rows ——— */
+.ag-bar-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 0.85rem;
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  transition: border-color 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+}
+
+.ag-bar-row:hover {
+  border-color: var(--border-strong);
+  transform: translateX(2px);
+}
+
+.ag-bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, var(--accent-soft), transparent);
+  pointer-events: none;
+  transition: width 0.4s var(--ease-out);
+  z-index: 0;
+}
+
+.ag-bar-fill-danger {
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.15), transparent);
+}
+
+.ag-bar-fill-ok {
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.14), transparent);
+}
+
+.ag-bar-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+/* ——— AdGuard Protection Hero Banner ——— */
+.protection-hero-banner {
+  position: relative;
+  border-radius: var(--radius-lg);
+  padding: 1.15rem 1.4rem;
+  border: 1px solid color-mix(in srgb, var(--ok) 30%, var(--border));
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--ok) 8%, var(--bg-panel)),
+    var(--bg-panel) 60%
+  );
+  box-shadow: 0 16px 36px -22px rgba(16, 185, 129, 0.2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.protection-hero-banner.warn {
+  border-color: color-mix(in srgb, var(--warn) 35%, var(--border));
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--warn) 8%, var(--bg-panel)),
+    var(--bg-panel) 60%
+  );
+  box-shadow: 0 16px 36px -22px rgba(245, 158, 11, 0.2);
+}
+
+/* ——— Cloudflare / Route53 Tables ——— */
+.cf-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+}
+
+.cf-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.8125rem;
+}
+
+.cf-table th {
+  padding: 0.75rem 1rem;
+  font-weight: 500;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-elevated) 90%, transparent);
+  white-space: nowrap;
+}
+
+.cf-table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: middle;
+}
+
+.cf-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.cf-table tbody tr {
+  transition: background-color 0.18s var(--ease-out);
+}
+
+.cf-table tbody tr:hover {
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--bg-elevated));
+}
+
+/* ——— Tabs Navigation (Cloudflare Style) ——— */
+.cf-tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+
+.cf-tab-btn {
+  padding: 0.4rem 0.85rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--muted);
+  border-radius: calc(var(--radius) - 2px);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s var(--ease-out);
+}
+
+.cf-tab-btn:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+
+.cf-tab-btn.is-active {
+  color: var(--text);
+  background: var(--bg-panel);
+  box-shadow: 0 1px 3px var(--shadow);
+  font-weight: 600;
+}
+

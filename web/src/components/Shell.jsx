@@ -48,22 +48,22 @@ export default function Shell({ children }) {
 
   const navGroups = [
     {
-      label: 'Operate',
+      label: 'Control Plane',
       links: [
         ['/', 'Dashboard', Gauge],
-        ['/domains', 'Domains', Globe],
-        ['/lookup', 'Lookup', MagnifyingGlass],
+        ['/domains', 'DNS & Filtering', Globe],
+        ['/lookup', 'Query Lookup', MagnifyingGlass],
       ],
     },
     {
-      label: 'Observe',
+      label: 'Observability',
       links: [
         ['/analytics', 'Analytics', ChartLine],
-        ['/audit', 'Audit', ClipboardText],
+        ['/audit', 'Audit Logs', ClipboardText],
       ],
     },
     {
-      label: 'Configure',
+      label: 'System & Routing',
       links: [['/settings', 'Settings', GearSix]],
     },
   ]
@@ -92,9 +92,14 @@ export default function Shell({ children }) {
       </a>
       <aside className="shell-aside" aria-label="Sidebar">
         <div className="shell-brand reveal">
-          <div className="brand-mark text-[clamp(1.4rem,2vw,1.7rem)]" aria-label="PowerSVX">
-            <span>Power</span>
-            <span className="svx">SVX</span>
+          <div className="flex items-center justify-between">
+            <div className="brand-mark text-[clamp(1.4rem,2vw,1.75rem)] flex items-center gap-1.5" aria-label="PowerSVX">
+              <span>Power</span>
+              <span className="svx">SVX</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent)] font-semibold border border-[var(--accent)]/30 ml-1">
+                EDGE
+              </span>
+            </div>
           </div>
           <div className="crumb-live" aria-current="page">
             <span className="pulse-dot on" aria-hidden />
@@ -103,6 +108,22 @@ export default function Shell({ children }) {
             <strong>{hereLabel}</strong>
           </div>
         </div>
+
+        <button
+          type="button"
+          onClick={() => nav('/lookup')}
+          className="w-full flex items-center justify-between px-3 py-2 text-xs rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)] transition-all"
+          title="Press Ctrl+K or Cmd+K to search"
+        >
+          <span className="flex items-center gap-2">
+            <MagnifyingGlass size={14} weight="bold" />
+            <span>Quick Lookup…</span>
+          </span>
+          <kbd className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-[var(--bg-panel)] border border-[var(--border)] text-[var(--muted)]">
+            ⌘K
+          </kbd>
+        </button>
+
         <nav className="shell-nav" aria-label="Primary">
           {navGroups.map((group) => (
             <div key={group.label} className="shell-nav-group">
@@ -121,7 +142,8 @@ export default function Shell({ children }) {
             </div>
           ))}
         </nav>
-        <div className="shell-user space-y-2 text-xs">
+
+        <div className="shell-user space-y-2.5 text-xs pt-3 border-t border-[var(--border)]">
           <button
             type="button"
             onClick={toggleTheme}
@@ -133,21 +155,25 @@ export default function Shell({ children }) {
             <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
           </button>
           {release ? (
-            <div className="text-[var(--muted)] px-1 mono" title="Deployed DNS build">
+            <div className="text-[var(--muted)] px-1 mono text-[11px]" title="Deployed DNS build">
               {release}
             </div>
           ) : null}
           {me?.auth_required ? (
-            <>
-              <div className="text-[var(--muted)] px-1">
-                <span className="text-[var(--text)] font-medium">{me.name}</span>
-                <span className="mx-1.5 text-[var(--border-strong)]">·</span>
-                <span className="text-[var(--accent)]">{me.role}</span>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 px-1 py-1 rounded bg-[var(--bg-panel)] border border-[var(--border)]">
+                <div className="w-6 h-6 rounded-full bg-[var(--accent)] text-black font-semibold flex items-center justify-center text-xs">
+                  {String(me.name || 'A').slice(0, 1).toUpperCase()}
+                </div>
+                <div className="truncate">
+                  <div className="text-[var(--text)] font-medium leading-none truncate">{me.name}</div>
+                  <div className="text-[10px] text-[var(--accent)] uppercase font-mono mt-0.5">{me.role}</div>
+                </div>
               </div>
-              <button type="button" onClick={logout} className="btn btn-secondary w-full">
+              <button type="button" onClick={logout} className="btn btn-secondary w-full text-xs">
                 Log out
               </button>
-            </>
+            </div>
           ) : (
             <div className="text-[var(--muted)] px-1">Open access</div>
           )}
