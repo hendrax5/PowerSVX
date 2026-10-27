@@ -1640,3 +1640,112 @@ a:focus-visible {
   font-weight: 600;
 }
 
+/* ——— System & Routing: Dataplane Flow Pipeline (Route 53 & Cloudflare) ——— */
+.routing-flow-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding: 0.75rem 1rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  margin-bottom: 1.25rem;
+}
+
+.routing-flow-step {
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-width: 130px;
+  flex-shrink: 0;
+  transition: border-color 0.2s var(--ease-out);
+}
+
+.routing-flow-step.is-active {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--bg-panel));
+}
+
+.routing-flow-title {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.routing-flow-val {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--text);
+  margin-top: 0.15rem;
+}
+
+.routing-flow-sub {
+  font-size: 0.65rem;
+  color: var(--muted);
+}
+
+.routing-flow-arrow {
+  color: var(--muted);
+  opacity: 0.6;
+  font-size: 0.875rem;
+  flex-shrink: 0;
+}
+
+.settings-rail-group {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  color: var(--muted);
+  padding: 0.75rem 0.75rem 0.25rem;
+  opacity: 0.75;
+}
+
+.settings-rail-group:first-child {
+  padding-top: 0.25rem;
+}
+
+.settings-rail-pill {
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+  color: var(--muted);
+  margin-left: auto;
+}
+
+.settings-rail-item.is-active .settings-rail-pill {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.preset-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  padding: 0.25rem 0.6rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.18s var(--ease-out);
+}
+
+.preset-chip-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 50%, var(--bg-elevated));
+}
+
+

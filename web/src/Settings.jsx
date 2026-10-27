@@ -635,17 +635,106 @@ export default function Settings({ tools = {} }) {
   if (err && !saved) return <ErrorBox msg={err} />
   if (!saved || !draft) return <LoadingBlock label="Loading settings" />
 
-  const categories = [
-    { id: 'dns', label: 'DNS', hint: 'Lookup path', Icon: Stack, dirty: dirtyFlags.dns },
-    { id: 'access', label: 'Access', hint: 'Who may query', Icon: LockSimple, dirty: dirtyFlags.access },
-    { id: 'rate-limit', label: 'Rate limit', hint: 'Per-IP caps', Icon: Gauge, dirty: dirtyFlags['rate-limit'] },
-    { id: 'engines', label: 'Engines', hint: 'Optional features', Icon: GearSix, dirty: dirtyFlags.engines },
-    { id: 'logging', label: 'Logging', hint: 'Query history', Icon: ClipboardText, dirty: dirtyFlags.logging },
-    { id: 'tproxy', label: 'TPROXY', hint: 'Transparent DNS', Icon: Network, dirty: !!tpDirty },
-    { id: 'conntrack', label: 'OS', hint: 'Conntrack / kernel', Icon: Cpu, dirty: !!ctDirty },
-    { id: 'status', label: 'Status', hint: 'Read-only', Icon: ChartLine, dirty: false },
-    { id: 'tools', label: 'Tools', hint: 'AXFR, ACME…', Icon: HardDrives, dirty: false },
+  const allowEmpty = linesToList(draft.allow_query).length === 0
+  const needsForwarders =
+    draft.resolver_mode === 'forward' || (draft.resolver_mode === 'recursive' && draft.forward_on_fail)
+  const noForwarders = (draft.forwarders || []).length === 0
+  const isUnboundBackend =
+    draft.resolver_mode === 'forward' &&
+    (draft.forwarders || []).length === 1 &&
+    ['127.0.0.1:5353', '127.0.0.1', '[::1]:5353', '::1'].includes(String(draft.forwarders[0] || '').trim())
+
+  const railGroups = [
+    {
+      group: 'Routing & Traffic',
+      items: [
+        {
+          id: 'dns',
+          label: 'DNS & Resolvers',
+          hint: 'Lookup path & upstreams',
+          Icon: Stack,
+          dirty: dirtyFlags.dns,
+          pill: isUnboundBackend ? '127.0.0.1:5353' : draft.resolver_mode === 'forward' ? 'Forward' : 'Recursive',
+        },
+        {
+          id: 'access',
+          label: 'Access Control',
+          hint: 'Ingress ACL & CIDRs',
+          Icon: LockSimple,
+          dirty: dirtyFlags.access,
+          pill: allowEmpty ? '0.0.0.0/0' : `${linesToList(draft.allow_query).length} CIDRs`,
+        },
+        {
+          id: 'rate-limit',
+          label: 'Rate Limiting',
+          hint: 'Per-IP DDoS caps',
+          Icon: Gauge,
+          dirty: dirtyFlags['rate-limit'],
+          pill: draft.rate_limit ? `${draft.rate_limit_qps} QPS` : 'off',
+        },
+      ],
+    },
+    {
+      group: 'Core Engines',
+      items: [
+        {
+          id: 'engines',
+          label: 'Engines & GeoDNS',
+          hint: 'RPZ, ECS & split-view',
+          Icon: GearSix,
+          dirty: dirtyFlags.engines,
+          pill: draft.rpz_enabled ? 'RPZ On' : 'Core',
+        },
+        {
+          id: 'logging',
+          label: 'Query Logging',
+          hint: 'Retention & sampling',
+          Icon: ClipboardText,
+          dirty: dirtyFlags.logging,
+          pill: draft.query_log_enabled ? `${draft.query_log_retention_days}d` : 'off',
+        },
+      ],
+    },
+    {
+      group: 'System & Dataplane',
+      items: [
+        {
+          id: 'tproxy',
+          label: 'TPROXY Intercept',
+          hint: 'Transparent DNS routing',
+          Icon: Network,
+          dirty: !!tpDirty,
+          pill: tproxy?.status?.applied ? 'active' : 'idle',
+        },
+        {
+          id: 'conntrack',
+          label: 'Kernel Conntrack',
+          hint: 'Netfilter table tuning',
+          Icon: Cpu,
+          dirty: !!ctDirty,
+          pill: conntrack?.status?.count ? `${Math.round(conntrack.status.usage_pct || 0)}%` : 'Linux',
+        },
+        {
+          id: 'status',
+          label: 'Dataplane Status',
+          hint: 'Engine & socket stats',
+          Icon: ChartLine,
+          dirty: false,
+          pill: saved?.version || 'v1.6.3',
+        },
+        {
+          id: 'tools',
+          label: 'System Tools',
+          hint: 'AXFR, ACME & Backup',
+          Icon: HardDrives,
+          dirty: false,
+          pill: 'Tools',
+        },
+      ],
+    },
   ]
+
+  const categories = railGroups.flatMap((g) => g.items)
 
   const toolTabs = [
     { id: 'axfr', label: 'AXFR' },
@@ -657,14 +746,6 @@ export default function Settings({ tools = {} }) {
 
   const sectionMeta = categories.find((c) => c.id === section)
   const toolMeta = toolTabs.find((t) => t.id === tool)
-  const allowEmpty = linesToList(draft.allow_query).length === 0
-  const needsForwarders =
-    draft.resolver_mode === 'forward' || (draft.resolver_mode === 'recursive' && draft.forward_on_fail)
-  const noForwarders = (draft.forwarders || []).length === 0
-  const isUnboundBackend =
-    draft.resolver_mode === 'forward' &&
-    (draft.forwarders || []).length === 1 &&
-    ['127.0.0.1:5353', '127.0.0.1', '[::1]:5353', '::1'].includes(String(draft.forwarders[0] || '').trim())
 
   const saveBar = (
     <div className="flex gap-2">
@@ -697,8 +778,8 @@ export default function Settings({ tools = {} }) {
   return (
     <div className="settings-page space-y-5 max-w-5xl pb-28">
       <PageHeader
-        eyebrow="Configure"
-        title="Settings"
+        eyebrow="System & Routing"
+        title="Routing & Dataplane Architecture"
         sub={
           section === 'tools'
             ? `Tools · ${toolMeta?.label || 'AXFR'}`
@@ -773,33 +854,66 @@ export default function Settings({ tools = {} }) {
 
       <div className="settings-layout">
         <nav className="settings-rail panel" aria-label="Settings categories">
-          {categories.map((c) => {
-            const Icon = c.Icon
-            const active = section === c.id
-            return (
-              <button
-                key={c.id}
-                type="button"
-                onClick={() => goSection(c.id)}
-                aria-current={active ? 'page' : undefined}
-                className={`settings-rail-item ${active ? 'is-active' : ''}`}
-              >
-                <Icon weight={ICON} className="settings-rail-icon" aria-hidden />
-                <span className="settings-rail-text">
-                  <span className="settings-rail-label">
-                    {c.label}
-                    {c.dirty ? <span className="settings-dirty-dot" title="Unsaved" aria-label="Unsaved" /> : null}
-                  </span>
-                  <span className="settings-rail-hint">{c.hint}</span>
-                </span>
-              </button>
-            )
-          })}
+          {railGroups.map((g) => (
+            <div key={g.group} className="flex flex-col gap-1 w-full">
+              <div className="settings-rail-group">{g.group}</div>
+              {g.items.map((c) => {
+                const Icon = c.Icon
+                const active = section === c.id
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => goSection(c.id)}
+                    aria-current={active ? 'page' : undefined}
+                    className={`settings-rail-item ${active ? 'is-active' : ''}`}
+                  >
+                    <Icon weight={ICON} className="settings-rail-icon" aria-hidden />
+                    <span className="settings-rail-text">
+                      <span className="settings-rail-label">
+                        {c.label}
+                        {c.dirty ? <span className="settings-dirty-dot" title="Unsaved" aria-label="Unsaved" /> : null}
+                      </span>
+                      <span className="settings-rail-hint">{c.hint}</span>
+                    </span>
+                    {c.pill ? <span className="settings-rail-pill">{c.pill}</span> : null}
+                  </button>
+                )
+              })}
+            </div>
+          ))}
         </nav>
 
         <div key={section} className="settings-main reveal space-y-4">
           {section === 'dns' ? (
             <>
+              {/* Route 53 & Cloudflare Dataplane Flow Pipeline */}
+              <div className="routing-flow-wrap">
+                <div className="routing-flow-step">
+                  <span className="routing-flow-title">1. Client Ingress</span>
+                  <span className="routing-flow-val">0.0.0.0:53</span>
+                  <span className="routing-flow-sub">UDP · TCP · DoH Sockets</span>
+                </div>
+                <span className="routing-flow-arrow">➔</span>
+                <div className="routing-flow-step">
+                  <span className="routing-flow-title">2. Edge Filter</span>
+                  <span className="routing-flow-val">{draft.rate_limit ? `${draft.rate_limit_qps} QPS` : 'Open Ingress'}</span>
+                  <span className="routing-flow-sub">{allowEmpty ? 'ACL 0.0.0.0/0' : `${linesToList(draft.allow_query).length} Allowed CIDRs`}</span>
+                </div>
+                <span className="routing-flow-arrow">➔</span>
+                <div className="routing-flow-step is-active">
+                  <span className="routing-flow-title">3. RPZ Policy</span>
+                  <span className="routing-flow-val">{draft.rpz_enabled ? 'CDB 9.95M' : 'Disabled'}</span>
+                  <span className="routing-flow-sub">{draft.rpz_enabled ? 'Kominfo Fast Spoof' : 'Pass-through'}</span>
+                </div>
+                <span className="routing-flow-arrow">➔</span>
+                <div className="routing-flow-step">
+                  <span className="routing-flow-title">4. Resolver Target</span>
+                  <span className="routing-flow-val">{isUnboundBackend ? 'Unbound :5353' : draft.resolver_mode}</span>
+                  <span className="routing-flow-sub">{isUnboundBackend ? 'Local Root Recurse' : `${(draft.forwarders || []).length} Upstreams`}</span>
+                </div>
+              </div>
+
               {needsForwarders && noForwarders ? (
                 <SettingCallout tone="warn">
                   No forwarders configured — add at least one for forward mode, Unbound backend, or recursive fallback.
@@ -807,21 +921,22 @@ export default function Settings({ tools = {} }) {
               ) : null}
               {isUnboundBackend ? (
                 <SettingCallout tone="muted">
-                  Unbound backend: cache misses go to <span className="mono">127.0.0.1:5353</span>. Conditional forward
+                  Unbound backend active: cache misses go to <span className="mono font-semibold">127.0.0.1:5353</span>. Conditional forward
                   zones still win for matching domains (evaluated first).
                 </SettingCallout>
               ) : null}
+
               <SettingSection
                 id="settings-dns-heading"
-                title="Lookup mode"
+                title="Lookup Mode & Engine Strategy"
                 hint="Pick how PowerSVX resolves cache misses. Conditional forward zones always override this for matching domains."
               >
                 <div className="settings-mode-grid">
                   {[
-                    ['unbound', 'Unbound backend', 'Default — misses → local Unbound on 127.0.0.1:5353'],
-                    ['forward', 'Forward', 'Send all misses to the forwarders list (any upstream)'],
-                    ['recursive', 'Recursive (Go)', 'Lab only — ask the DNS root from PowerSVX (higher CPU)'],
-                  ].map(([mode, title, desc]) => {
+                    ['unbound', 'Unbound backend', 'Default ISP — misses → local Unbound on 127.0.0.1:5353 with DNSSEC', '< 1ms local'],
+                    ['forward', 'Forward Proxy', 'Send all misses to the forwarders list (Cloudflare, Google, or any upstream)', '~15-30ms'],
+                    ['recursive', 'Recursive (Go Native)', 'Lab only — ask the DNS root nameservers directly from PowerSVX', '~80-150ms'],
+                  ].map(([mode, title, desc, lat]) => {
                     const selected =
                       mode === 'unbound' ? isUnboundBackend : draft.resolver_mode === mode && !isUnboundBackend
                     return (
@@ -846,11 +961,19 @@ export default function Settings({ tools = {} }) {
                         className={`settings-mode-card ${selected ? 'is-selected' : ''}`}
                         aria-pressed={selected}
                       >
-                        <div className="text-sm font-medium flex items-center gap-2">
-                          {title}
-                          {selected ? <span className="settings-chip">selected</span> : null}
+                        <div className="text-sm font-medium flex items-center justify-between gap-2">
+                          <span className="flex items-center gap-1.5">
+                            {selected ? <span className="text-[var(--accent)] font-bold">●</span> : null}
+                            {title}
+                          </span>
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--bg-elevated)] text-[var(--muted)]">{lat}</span>
                         </div>
-                        <div className="text-xs text-[var(--muted)] mt-1 leading-relaxed">{desc}</div>
+                        <div className="text-xs text-[var(--muted)] mt-1.5 leading-relaxed">{desc}</div>
+                        {selected ? (
+                          <div className="mt-2 pt-2 border-t border-[var(--border)] text-[10px] uppercase font-semibold tracking-wider text-[var(--accent)]">
+                            Active Routing Profile
+                          </div>
+                        ) : null}
                       </button>
                     )
                   })}
@@ -871,29 +994,130 @@ export default function Settings({ tools = {} }) {
 
               <SettingSection
                 id="settings-fwd-heading"
-                title="Forwarders"
+                title="Upstream Resolvers (Route 53 Outbound Endpoints)"
                 hint={
                   isUnboundBackend
                     ? 'Unbound backend uses 127.0.0.1:5353. Keep this loopback — do not point at public resolvers unless you intend to.'
                     : 'Upstream for forward mode and recursive fallback. UDP 1.1.1.1:53, DoT tls://…, or DoH https://…'
                 }
               >
+                {/* Route 53 Quick Presets */}
+                <div className="flex flex-wrap items-center gap-2 mb-3">
+                  <span className="text-xs text-[var(--muted)] font-medium">Quick Presets:</span>
+                  <button
+                    type="button"
+                    disabled={busy || !isAdmin}
+                    className="preset-chip-btn"
+                    onClick={() => {
+                      setDraft((d) => ({
+                        ...d,
+                        forwarders: ['127.0.0.1:5353'],
+                      }))
+                      setOk('Preset applied: Local Unbound (127.0.0.1:5353)')
+                    }}
+                  >
+                    + Local Unbound (127.0.0.1:5353)
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || !isAdmin}
+                    className="preset-chip-btn"
+                    onClick={() => {
+                      if (!draft.forwarders?.includes('1.1.1.1:53')) {
+                        setDraft((d) => ({
+                          ...d,
+                          forwarders: [...(d.forwarders || []), '1.1.1.1:53', '1.0.0.1:53'],
+                        }))
+                        setOk('Preset added: Cloudflare 1.1.1.1')
+                      }
+                    }}
+                  >
+                    + Cloudflare (1.1.1.1 / 1.0.0.1)
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || !isAdmin}
+                    className="preset-chip-btn"
+                    onClick={() => {
+                      if (!draft.forwarders?.includes('8.8.8.8:53')) {
+                        setDraft((d) => ({
+                          ...d,
+                          forwarders: [...(d.forwarders || []), '8.8.8.8:53', '8.8.4.4:53'],
+                        }))
+                        setOk('Preset added: Google DNS 8.8.8.8')
+                      }
+                    }}
+                  >
+                    + Google DNS (8.8.8.8)
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || !isAdmin}
+                    className="preset-chip-btn"
+                    onClick={() => {
+                      if (!draft.forwarders?.includes('9.9.9.9:53')) {
+                        setDraft((d) => ({
+                          ...d,
+                          forwarders: [...(d.forwarders || []), '9.9.9.9:53'],
+                        }))
+                        setOk('Preset added: Quad9 (9.9.9.9)')
+                      }
+                    }}
+                  >
+                    + Quad9 (9.9.9.9)
+                  </button>
+                </div>
+
                 {(draft.forwarders || []).length === 0 ? (
-                  <p className="text-xs text-[var(--warn)]">None yet.</p>
+                  <p className="text-xs text-[var(--warn)]">No forwarders configured yet.</p>
                 ) : (
-                  <ul className="settings-list">
-                    {(draft.forwarders || []).map((addr, idx) => (
-                      <li key={`${addr}-${idx}`} className="settings-list-item">
-                        <span className="mono text-sm flex-1 min-w-[8rem]">{addr}</span>
-                        <button type="button" disabled={busy || !isAdmin} onClick={() => editForwarder(idx)} className="btn btn-secondary text-xs min-h-[36px] disabled:opacity-50">
-                          Edit
-                        </button>
-                        <button type="button" disabled={busy || !isAdmin} onClick={() => removeForwarder(idx)} className="btn btn-secondary text-xs min-h-[36px] text-[var(--danger)] disabled:opacity-50">
-                          Delete
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+                  <div className="cf-table-wrap mb-3">
+                    <table className="cf-table">
+                      <thead>
+                        <tr>
+                          <th>Resolver Address</th>
+                          <th>Target Type</th>
+                          <th>Protocol</th>
+                          <th>Status</th>
+                          <th className="text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(draft.forwarders || []).map((addr, idx) => {
+                          const isLoopback = addr.includes('127.0.0.1') || addr.includes('::1')
+                          return (
+                            <tr key={`${addr}-${idx}`}>
+                              <td>
+                                <span className="mono font-semibold text-sm">{addr}</span>
+                              </td>
+                              <td>
+                                <span className={`text-xs px-2 py-0.5 rounded font-mono ${isLoopback ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-medium' : 'bg-[var(--bg-elevated)] text-[var(--muted)]'}`}>
+                                  {isLoopback ? 'Core Loopback (Unbound)' : 'External Upstream'}
+                                </span>
+                              </td>
+                              <td className="text-xs font-mono text-[var(--muted)]">
+                                {addr.startsWith('tls://') ? 'DoT (TCP 853)' : addr.startsWith('https://') ? 'DoH (TCP 443)' : 'DNS (UDP/TCP 53)'}
+                              </td>
+                              <td>
+                                <span className="inline-flex items-center gap-1.5 text-xs text-[var(--ok)] font-medium">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--ok)]" />
+                                  Active Target
+                                </span>
+                              </td>
+                              <td className="text-right space-x-1">
+                                <button type="button" disabled={busy || !isAdmin} onClick={() => editForwarder(idx)} className="btn btn-secondary text-xs min-h-[32px] px-2.5 disabled:opacity-50">
+                                  Edit
+                                </button>
+                                <button type="button" disabled={busy || !isAdmin} onClick={() => removeForwarder(idx)} className="btn btn-secondary text-xs min-h-[32px] px-2.5 text-[var(--danger)] disabled:opacity-50">
+                                  Delete
+                                </button>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
                 <form
                   className="settings-inline-form"
@@ -903,17 +1127,17 @@ export default function Settings({ tools = {} }) {
                   }}
                 >
                   <label className="flex-1 min-w-[12rem] text-xs text-[var(--muted)] space-y-1">
-                    {fwdEditIdx >= 0 ? 'Edit forwarder' : 'Add forwarder'}
+                    {fwdEditIdx >= 0 ? 'Edit forwarder' : 'Add custom forwarder address'}
                     <input
                       value={fwdInput}
                       disabled={busy || !isAdmin}
                       onChange={(e) => setFwdInput(e.target.value)}
-                      placeholder="1.1.1.1:53 or tls://…"
+                      placeholder="1.1.1.1:53, tls://dns.example, or https://…"
                       className="input mono w-full min-h-[44px]"
                     />
                   </label>
                   <button type="submit" disabled={busy || !isAdmin || !fwdInput.trim()} className="btn btn-primary min-h-[44px] disabled:opacity-50">
-                    {fwdEditIdx >= 0 ? 'Update' : 'Add'}
+                    {fwdEditIdx >= 0 ? 'Update' : 'Add Forwarder'}
                   </button>
                   {fwdEditIdx >= 0 ? (
                     <button type="button" disabled={busy} onClick={() => { setFwdInput(''); setFwdEditIdx(-1) }} className="btn btn-secondary min-h-[44px]">
@@ -925,28 +1149,49 @@ export default function Settings({ tools = {} }) {
 
               <SettingSection
                 id="settings-fzone-heading"
-                title="Conditional forward zones"
-                hint="For specific sites/domains — longest-suffix match runs before Unbound, Go recursive, or global forwarders. Example: corp.local → internal AD DNS."
+                title="Conditional Forward Zones (Route 53 Resolver Rules)"
+                hint="Longest-suffix match rules evaluated before general recursor. Forwards internal corporate or AD domains to private servers."
               >
                 {(draft.forward_zones || []).length === 0 ? (
-                  <p className="text-xs text-[var(--muted)]">None configured. Add a zone to stub-forward one domain tree without changing the default backend.</p>
+                  <p className="text-xs text-[var(--muted)]">No conditional forward zones configured. Queries follow default resolution strategy.</p>
                 ) : (
-                  <ul className="settings-list">
-                    {(draft.forward_zones || []).map((z, idx) => (
-                      <li key={`${z.zone}-${idx}`} className="settings-list-item">
-                        <div className="flex-1 min-w-[10rem]">
-                          <div className="mono text-sm">{z.zone}</div>
-                          <div className="text-xs text-[var(--muted)] mono">{(z.forwarders || []).join(', ')}</div>
-                        </div>
-                        <button type="button" disabled={busy || !isAdmin} onClick={() => editForwardZone(idx)} className="btn btn-secondary text-xs min-h-[36px] disabled:opacity-50">
-                          Edit
-                        </button>
-                        <button type="button" disabled={busy || !isAdmin} onClick={() => removeForwardZone(idx)} className="btn btn-secondary text-xs min-h-[36px] text-[var(--danger)] disabled:opacity-50">
-                          Delete
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+                  <div className="cf-table-wrap mb-3">
+                    <table className="cf-table">
+                      <thead>
+                        <tr>
+                          <th>Zone Domain</th>
+                          <th>Forwarder Endpoints</th>
+                          <th>Rule Match</th>
+                          <th className="text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(draft.forward_zones || []).map((z, idx) => (
+                          <tr key={`${z.zone}-${idx}`}>
+                            <td>
+                              <span className="mono font-semibold text-sm text-[var(--accent)]">{z.zone}</span>
+                            </td>
+                            <td>
+                              <span className="mono text-xs text-[var(--muted)]">{(z.forwarders || []).join(', ')}</span>
+                            </td>
+                            <td>
+                              <span className="text-xs px-2 py-0.5 rounded bg-[var(--bg-elevated)] font-mono text-[var(--text)]">
+                                Longest-Suffix
+                              </span>
+                            </td>
+                            <td className="text-right space-x-1">
+                              <button type="button" disabled={busy || !isAdmin} onClick={() => editForwardZone(idx)} className="btn btn-secondary text-xs min-h-[32px] px-2.5 disabled:opacity-50">
+                                Edit
+                              </button>
+                              <button type="button" disabled={busy || !isAdmin} onClick={() => removeForwardZone(idx)} className="btn btn-secondary text-xs min-h-[32px] px-2.5 text-[var(--danger)] disabled:opacity-50">
+                                Delete
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
                 <form
                   className="settings-inline-form"
@@ -956,15 +1201,15 @@ export default function Settings({ tools = {} }) {
                   }}
                 >
                   <label className="min-w-[10rem] flex-1 text-xs text-[var(--muted)] space-y-1">
-                    Zone
-                    <input value={fzZone} disabled={busy || !isAdmin} onChange={(e) => setFzZone(e.target.value)} placeholder="corp.local" className="input mono w-full min-h-[44px]" />
+                    Zone Domain
+                    <input value={fzZone} disabled={busy || !isAdmin} onChange={(e) => setFzZone(e.target.value)} placeholder="corp.local or internal.lan" className="input mono w-full min-h-[44px]" />
                   </label>
                   <label className="min-w-[14rem] flex-[2] text-xs text-[var(--muted)] space-y-1">
-                    Forwarders (comma or newline)
-                    <input value={fzFwd} disabled={busy || !isAdmin} onChange={(e) => setFzFwd(e.target.value)} placeholder="10.0.0.1:53" className="input mono w-full min-h-[44px]" />
+                    Forwarder Endpoints (comma or newline separated)
+                    <input value={fzFwd} disabled={busy || !isAdmin} onChange={(e) => setFzFwd(e.target.value)} placeholder="10.0.0.1:53, 10.0.0.2:53" className="input mono w-full min-h-[44px]" />
                   </label>
                   <button type="submit" disabled={busy || !isAdmin || !fzZone.trim() || !fzFwd.trim()} className="btn btn-primary min-h-[44px] disabled:opacity-50">
-                    {fzEditIdx >= 0 ? 'Update' : 'Add'}
+                    {fzEditIdx >= 0 ? 'Update Rule' : 'Add Rule'}
                   </button>
                   {fzEditIdx >= 0 ? (
                     <button type="button" disabled={busy} onClick={() => { setFzZone(''); setFzFwd(''); setFzEditIdx(-1) }} className="btn btn-secondary min-h-[44px]">
@@ -980,44 +1225,92 @@ export default function Settings({ tools = {} }) {
             <>
               {allowEmpty ? (
                 <SettingCallout tone="warn">
-                  Open resolver: Allow is empty — any client may query. Restrict to customer CIDRs in production.
+                  Open resolver: Allow list is empty — any client on the network may query. Restrict to authorized client CIDRs in production.
                 </SettingCallout>
               ) : null}
               <SettingSection
                 id="settings-access-heading"
-                title="Who can query"
-                hint="Leave Allow empty for everyone. Deny always wins. One IP or CIDR per line."
+                title="Client Access Control List (Cloudflare IP Access)"
+                hint="Specify which IP ranges are permitted to query this resolver. Deny list always takes precedence over Allow list."
               >
-                <label className="block text-xs text-[var(--muted)] space-y-1">
-                  Allow
-                  <textarea
-                    rows={6}
+                <div className="flex flex-wrap items-center gap-2 mb-3">
+                  <span className="text-xs text-[var(--muted)] font-medium">Quick Presets:</span>
+                  <button
+                    type="button"
                     disabled={busy || !isAdmin}
-                    value={draft.allow_query}
-                    onChange={(e) => {
-                      setOk('')
-                      setErr('')
-                      setDraft((d) => ({ ...d, allow_query: e.target.value }))
+                    className="preset-chip-btn"
+                    onClick={() => {
+                      setDraft((d) => ({ ...d, allow_query: '' }))
+                      setOk('Set Allow to open (empty = all allowed)')
                     }}
-                    placeholder={'10.0.0.0/8\n192.168.0.0/16\n127.0.0.1'}
-                    className="input mono w-full min-h-[8rem]"
-                  />
-                </label>
-                <label className="block text-xs text-[var(--muted)] space-y-1 mt-4">
-                  Deny
-                  <textarea
-                    rows={3}
+                  >
+                    Open Resolver (0.0.0.0/0)
+                  </button>
+                  <button
+                    type="button"
                     disabled={busy || !isAdmin}
-                    value={draft.deny_query}
-                    onChange={(e) => {
-                      setOk('')
-                      setErr('')
-                      setDraft((d) => ({ ...d, deny_query: e.target.value }))
+                    className="preset-chip-btn"
+                    onClick={() => {
+                      setDraft((d) => ({ ...d, allow_query: '10.0.0.0/8\n172.16.0.0/12\n192.168.0.0/16' }))
+                      setOk('Added RFC1918 private subnets')
                     }}
-                    placeholder="optional"
-                    className="input mono w-full"
-                  />
-                </label>
+                  >
+                    RFC1918 Private Subnets
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || !isAdmin}
+                    className="preset-chip-btn"
+                    onClick={() => {
+                      setDraft((d) => ({ ...d, allow_query: '127.0.0.1/32\n::1/128' }))
+                      setOk('Added Loopback only')
+                    }}
+                  >
+                    Localhost Loopback
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <label className="block text-xs text-[var(--muted)] space-y-1">
+                    <span className="font-semibold text-[var(--ok)] flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-[var(--ok)]" />
+                      Allow Query CIDRs (one per line)
+                    </span>
+                    <textarea
+                      rows={6}
+                      disabled={busy || !isAdmin}
+                      value={draft.allow_query}
+                      onChange={(e) => {
+                        setOk('')
+                        setErr('')
+                        setDraft((d) => ({ ...d, allow_query: e.target.value }))
+                      }}
+                      placeholder={'# Leave empty to allow any client\n10.0.0.0/8\n192.168.0.0/16\n103.162.17.0/24'}
+                      className="input mono w-full min-h-[9rem]"
+                    />
+                    <span className="text-[10px] text-[var(--muted)] block">Empty = open to all client IPs.</span>
+                  </label>
+
+                  <label className="block text-xs text-[var(--muted)] space-y-1">
+                    <span className="font-semibold text-[var(--danger)] flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-[var(--danger)]" />
+                      Deny Query CIDRs (drops unconditionally)
+                    </span>
+                    <textarea
+                      rows={6}
+                      disabled={busy || !isAdmin}
+                      value={draft.deny_query}
+                      onChange={(e) => {
+                        setOk('')
+                        setErr('')
+                        setDraft((d) => ({ ...d, deny_query: e.target.value }))
+                      }}
+                      placeholder={'# Abusive or scanner CIDRs\n198.51.100.0/24\n203.0.113.5/32'}
+                      className="input mono w-full min-h-[9rem]"
+                    />
+                    <span className="text-[10px] text-[var(--muted)] block">Deny entries always override Allow entries.</span>
+                  </label>
+                </div>
               </SettingSection>
             </>
           ) : null}
@@ -1026,18 +1319,73 @@ export default function Settings({ tools = {} }) {
             <>
               {allowEmpty && !draft.rate_limit ? (
                 <SettingCallout tone="muted">
-                  ACL is open and rate limit is off — consider enabling rate limit for abuse protection.
+                  ACL is open and rate limiting is disabled — we recommend enabling rate limiting to protect against DNS amplification and DoS.
                 </SettingCallout>
               ) : null}
-              <SettingSection id="settings-rl-heading" title="Rate limit" hint="Cap queries per client IP. Whitelist skips the limiter (separate from Access ACL).">
-                <div className="flex justify-end mb-1">
-                  <button type="button" disabled={busy || !isAdmin} onClick={clearRlBlocks} className="btn btn-secondary text-xs min-h-[36px] disabled:opacity-40">
-                    Clear active blocks
+              <SettingSection id="settings-rl-heading" title="Rate Limiting (Cloudflare WAF Grammar)" hint="Limit query bursts per client IP. Whitelist bypasses rate limits.">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-[var(--muted)] font-medium">Quick Profiles:</span>
+                    <button
+                      type="button"
+                      disabled={busy || !isAdmin}
+                      className="preset-chip-btn"
+                      onClick={() => {
+                        setDraft((d) => ({
+                          ...d,
+                          rate_limit: true,
+                          rate_limit_qps: 10000,
+                          rate_limit_burst: 2000,
+                          rate_limit_block_duration: 300,
+                        }))
+                        setOk('Preset: ISP High-Throughput (10k QPS)')
+                      }}
+                    >
+                      ISP High-Throughput (10,000 QPS)
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || !isAdmin}
+                      className="preset-chip-btn"
+                      onClick={() => {
+                        setDraft((d) => ({
+                          ...d,
+                          rate_limit: true,
+                          rate_limit_qps: 2000,
+                          rate_limit_burst: 400,
+                          rate_limit_block_duration: 300,
+                        }))
+                        setOk('Preset: Enterprise Balanced (2,000 QPS)')
+                      }}
+                    >
+                      Enterprise (2,000 QPS)
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || !isAdmin}
+                      className="preset-chip-btn"
+                      onClick={() => {
+                        setDraft((d) => ({
+                          ...d,
+                          rate_limit: true,
+                          rate_limit_qps: 500,
+                          rate_limit_burst: 100,
+                          rate_limit_block_duration: 600,
+                        }))
+                        setOk('Preset: Strict Mitigation (500 QPS)')
+                      }}
+                    >
+                      Strict (500 QPS)
+                    </button>
+                  </div>
+                  <button type="button" disabled={busy || !isAdmin} onClick={clearRlBlocks} className="btn btn-secondary text-xs min-h-[32px] disabled:opacity-40">
+                    Clear active IP blocks
                   </button>
                 </div>
+
                 <SettingToggle
-                  label="Enable rate limit"
-                  hint="Refuse excess queries from a single client IP"
+                  label="Enable Rate Limiting"
+                  hint="Refuse excess queries from an abusive client IP"
                   pressed={!!draft.rate_limit}
                   disabled={busy || !isAdmin}
                   dirty={!!draft.rate_limit !== !!saved.rate_limit}
@@ -1045,17 +1393,20 @@ export default function Settings({ tools = {} }) {
                 />
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4">
                   {[
-                    ['rate_limit_qps', 'QPS', 1],
-                    ['rate_limit_burst', 'Burst', 1],
-                    ['rate_limit_block_duration', 'Block duration (sec)', 1],
-                  ].map(([key, label, min]) => (
-                    <label key={key} className="text-xs text-[var(--muted)] space-y-1 block">
-                      {label}
+                    ['rate_limit_qps', 'Query Rate Limit', 'queries / sec', 1],
+                    ['rate_limit_burst', 'Allowed Burst', 'instant peak', 1],
+                    ['rate_limit_block_duration', 'Block Duration', 'seconds', 1],
+                  ].map(([key, label, unit, min]) => (
+                    <div key={key} className="panel p-3 space-y-1">
+                      <div className="flex items-center justify-between text-xs text-[var(--muted)]">
+                        <span>{label}</span>
+                        <span className="font-mono text-[10px] text-[var(--accent)]">{unit}</span>
+                      </div>
                       <input
                         type="number"
                         min={min}
                         disabled={busy || !isAdmin}
-                        className="input mono w-full"
+                        className="input mono w-full text-base font-semibold"
                         value={draft[key]}
                         onChange={(e) => {
                           setOk('')
@@ -1063,7 +1414,7 @@ export default function Settings({ tools = {} }) {
                           setDraft((d) => ({ ...d, [key]: e.target.value }))
                         }}
                       />
-                    </label>
+                    </div>
                   ))}
                 </div>
                 <div className="mt-5 space-y-2">
