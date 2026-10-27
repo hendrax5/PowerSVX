@@ -105,6 +105,9 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/tproxy/restart", a.withAuth(a.handleTProxyRestart))
 	mux.HandleFunc("/api/v1/conntrack", a.withAuth(a.handleConntrack))
 	mux.HandleFunc("/api/v1/conntrack/apply", a.withAuth(a.handleConntrackApply))
+	mux.HandleFunc("/api/v1/host/network", a.withAuth(a.handleHostNetwork))
+	mux.HandleFunc("/api/v1/host/network/apply", a.withAuth(a.handleHostNetworkApply))
+	mux.HandleFunc("/api/v1/host/network/remove-ip", a.withAuth(a.handleHostNetworkRemoveIP))
 	mux.HandleFunc("/api/v1/secondary", a.withAuth(a.handleSecondary))
 	mux.HandleFunc("/api/v1/secondary/", a.withAuth(a.handleSecondarySub))
 	mux.HandleFunc("/api/v1/kominfo-sync", a.withAuth(a.handleAxfrSync)) // legacy alias

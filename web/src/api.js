@@ -171,6 +171,11 @@ export const api = {
   updateConntrack: (body) =>
     request('/api/v1/conntrack', { method: 'PUT', body: JSON.stringify(body || {}) }),
   applyConntrack: () => request('/api/v1/conntrack/apply', { method: 'POST', body: '{}' }),
+  hostNetwork: () => request('/api/v1/host/network'),
+  applyHostNetwork: (body) =>
+    request('/api/v1/host/network/apply', { method: 'POST', body: JSON.stringify(body || {}) }),
+  removeHostIP: (body) =>
+    request('/api/v1/host/network/remove-ip', { method: 'POST', body: JSON.stringify(body || {}) }),
   events: () => request('/api/v1/events'),
   eventsStreamURL() {
     const token = getToken()

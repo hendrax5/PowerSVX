@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   ChartLine,
+  CheckCircle,
   ClipboardText,
   Cpu,
   Gauge,
   GearSix,
+  GlobeSimple,
   HardDrives,
   LockSimple,
   Network,
@@ -16,6 +18,14 @@ import { useAuth } from './auth'
 import { ErrorBox, LoadingBlock, PageHeader } from './ui'
 
 const ICON = 'regular'
+
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`
+}
 
 function SettingSection({ id, title, hint, children, className = '' }) {
   return (
@@ -74,6 +84,7 @@ function parseHash() {
   if (raw === 'rate_limit' || raw === 'ratelimit') return { section: 'rate-limit', tool: 'axfr' }
   if (raw === 'transparent' || raw === 'intercept') return { section: 'tproxy', tool: 'axfr' }
   if (raw === 'os' || raw === 'kernel' || raw === 'conntrack') return { section: 'conntrack', tool: 'axfr' }
+  if (raw === 'network' || raw === 'nic' || raw === 'hostnet') return { section: 'network', tool: 'axfr' }
   return { section: raw, tool: 'axfr' }
 }
 
@@ -108,6 +119,14 @@ export default function Settings({ tools = {} }) {
   const [conntrack, setConntrack] = useState(null)
   const [ctDraft, setCtDraft] = useState(null)
   const [ctBusy, setCtBusy] = useState(false)
+  const [hostNet, setHostNet] = useState(null)
+  const [hnBusy, setHnBusy] = useState(false)
+  const [hnIface, setHnIface] = useState('')
+  const [hnIP, setHnIP] = useState('')
+  const [hnGateway, setHnGateway] = useState('')
+  const [hnDNS, setHnDNS] = useState('')
+  const [hnKeepOld, setHnKeepOld] = useState(true)
+  const [hnAppliedNotice, setHnAppliedNotice] = useState(null)
 
   const toDraft = (s) => ({
     geodns: !!s.geodns,
@@ -179,8 +198,9 @@ export default function Settings({ tools = {} }) {
       api.rpz(),
       typeof api.tproxy === 'function' ? api.tproxy().catch(() => null) : Promise.resolve(null),
       typeof api.conntrack === 'function' ? api.conntrack().catch(() => null) : Promise.resolve(null),
+      typeof api.hostNetwork === 'function' ? api.hostNetwork().catch(() => null) : Promise.resolve(null),
     ])
-      .then(([s, r, t, ct]) => {
+      .then(([s, r, t, ct, hn]) => {
         setSaved(s)
         setDraft(toDraft(s))
         setRpz(r)
@@ -191,6 +211,16 @@ export default function Settings({ tools = {} }) {
         if (ct) {
           setConntrack(ct)
           setCtDraft(toCtDraft(ct))
+        }
+        if (hn) {
+          setHostNet(hn)
+          if (hn.interfaces?.length) {
+            const def = hn.interfaces.find((i) => i.is_default) || hn.interfaces[0]
+            setHnIface(def.name)
+            setHnIP(def.ipv4?.[0] || '')
+            setHnGateway(def.gateway || hn.default_gateway || '')
+            setHnDNS((hn.system_dns || ['8.8.8.8', '1.1.1.1']).join('\n'))
+          }
         }
       })
       .catch((e) => setErr(e.message))
@@ -627,6 +657,65 @@ export default function Settings({ tools = {} }) {
     }
   }
 
+  const refreshHostNet = async () => {
+    setHnBusy(true)
+    setErr('')
+    try {
+      const hn = await api.hostNetwork()
+      setHostNet(hn)
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setHnBusy(false)
+    }
+  }
+
+  const applyHostNetworkConfig = async (e) => {
+    e?.preventDefault()
+    if (!isAdmin) return
+    setHnBusy(true)
+    setErr('')
+    setOk('')
+    setHnAppliedNotice(null)
+    try {
+      const res = await api.applyHostNetwork({
+        iface: hnIface,
+        ip: hnIP.trim(),
+        gateway: hnGateway.trim(),
+        dns: linesToList(hnDNS),
+        keep_old_ip: hnKeepOld,
+      })
+      setHostNet(res)
+      setOk(`Host network config applied to ${hnIface}`)
+      setHnAppliedNotice({
+        ip: hnIP.trim(),
+        iface: hnIface,
+        keepOld: hnKeepOld,
+      })
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setHnBusy(false)
+    }
+  }
+
+  const removeHostAlias = async (iface, ip) => {
+    if (!isAdmin) return
+    if (!window.confirm(`Hapus alias IP ${ip} dari ${iface}?`)) return
+    setHnBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const res = await api.removeHostIP({ iface, ip })
+      setHostNet(res)
+      setOk(`Alias IP ${ip} removed from ${iface}`)
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setHnBusy(false)
+    }
+  }
+
   const goSection = (id) => {
     setSection(id)
     setOk('')
@@ -702,7 +791,7 @@ export default function Settings({ tools = {} }) {
     {
       id: 'system',
       group: 'System & Dataplane',
-      desc: 'Kernel TPROXY, Conntrack & Tools',
+      desc: 'Kernel TPROXY, Conntrack & Host Network',
       items: [
         {
           id: 'tproxy',
@@ -719,6 +808,14 @@ export default function Settings({ tools = {} }) {
           Icon: Cpu,
           dirty: !!ctDirty,
           pill: conntrack?.status?.count ? `${Math.round(conntrack.status.usage_pct || 0)}%` : 'Linux',
+        },
+        {
+          id: 'network',
+          label: 'Host Network',
+          hint: 'NIC, IP Address & Gateway',
+          Icon: GlobeSimple,
+          dirty: false,
+          pill: hostNet?.default_iface || 'eth0',
         },
         {
           id: 'status',
@@ -1942,6 +2039,296 @@ export default function Settings({ tools = {} }) {
                   <p className="text-[11px] text-[var(--muted)] mt-3 leading-relaxed">{conntrack.note}</p>
                 </SettingSection>
               </>
+            )
+          ) : null}
+
+          {section === 'network' ? (
+            !hostNet ? (
+              <LoadingBlock label="Inspecting host network interfaces..." />
+            ) : (
+              <div className="space-y-4">
+                {/* Notice modal if applied */}
+                {hnAppliedNotice ? (
+                  <div className="protection-hero-banner active">
+                    <div className="flex items-start gap-3">
+                      <div className="w-9 h-9 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
+                        <CheckCircle size={22} weight="bold" />
+                      </div>
+                      <div className="space-y-1">
+                        <h3 className="text-sm font-semibold text-emerald-400">
+                          IP Baru Berhasil Diterapkan ke Interface {hnAppliedNotice.iface}!
+                        </h3>
+                        <p className="text-xs text-[var(--muted)] leading-relaxed">
+                          Alamat IP <span className="font-mono text-white font-semibold">{hnAppliedNotice.ip}</span> aktif di kernel.
+                          {hnAppliedNotice.keepOld ? (
+                            <span> IP lama tetap aktif sebagai alias sekunder sehingga sesi ini aman. Anda dapat membuka portal di IP baru:</span>
+                          ) : (
+                            <span> Silakan muat ulang browser di alamat IP baru:</span>
+                          )}
+                        </p>
+                        <div className="pt-2 flex flex-wrap gap-2">
+                          <a
+                            href={`http://${hnAppliedNotice.ip.split('/')[0]}:5380/settings#network`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="btn btn-primary text-xs"
+                          >
+                            Buka Web UI di http://{hnAppliedNotice.ip.split('/')[0]}:5380
+                          </a>
+                          <button
+                            type="button"
+                            onClick={() => setHnAppliedNotice(null)}
+                            className="btn btn-secondary text-xs"
+                          >
+                            Tutup Notifikasi
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* Interfaces Overview Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {(hostNet.interfaces || []).map((iface) => {
+                    const isSelected = hnIface === iface.name
+                    return (
+                      <div
+                        key={iface.name}
+                        onClick={() => {
+                          setHnIface(iface.name)
+                          setHnIP(iface.ipv4?.[0] || '')
+                          setHnGateway(iface.gateway || hostNet.default_gateway || '')
+                        }}
+                        className={`panel p-3.5 cursor-pointer transition-all border ${
+                          isSelected ? 'border-[var(--accent)] bg-[var(--bg-elevated)] shadow-sm' : 'hover:border-[var(--border-strong)]'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-sm tracking-tight">{iface.name}</span>
+                            <span className={`status-pill ${iface.state === 'UP' ? 'ok' : 'muted'}`}>
+                              {iface.state}
+                            </span>
+                            {iface.is_default ? (
+                              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent)]/30 font-semibold">
+                                Default GW
+                              </span>
+                            ) : null}
+                          </div>
+                          <span className="font-mono text-[11px] text-[var(--muted)]">MTU {iface.mtu}</span>
+                        </div>
+
+                        <div className="space-y-1 text-xs">
+                          <div className="flex justify-between text-[var(--muted)]">
+                            <span>MAC:</span>
+                            <span className="font-mono text-[var(--text)]">{iface.mac || '—'}</span>
+                          </div>
+                          <div className="flex justify-between text-[var(--muted)]">
+                            <span>IPv4:</span>
+                            <span className="font-mono font-medium text-[var(--text)]">
+                              {iface.ipv4?.length ? iface.ipv4.join(', ') : 'none'}
+                            </span>
+                          </div>
+                          {iface.gateway ? (
+                            <div className="flex justify-between text-[var(--muted)]">
+                              <span>Gateway:</span>
+                              <span className="font-mono text-[var(--text)]">{iface.gateway}</span>
+                            </div>
+                          ) : null}
+                          <div className="flex justify-between text-[var(--muted)] pt-1 border-t border-[var(--border)] text-[10px]">
+                            <span>RX: {formatBytes(iface.rx_bytes)}</span>
+                            <span>TX: {formatBytes(iface.tx_bytes)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* Active IP Addresses & Aliases Table */}
+                <SettingSection
+                  id="settings-hostnet-ips"
+                  title="Alamat IP Aktif & Aliases"
+                  hint={`Daftar IP yang sedang aktif di kernel Linux untuk interface ${hnIface}.`}
+                >
+                  <div className="cf-table-wrap">
+                    <table className="cf-table">
+                      <thead>
+                        <tr>
+                          <th>Interface</th>
+                          <th>IP Address / CIDR</th>
+                          <th>Tipe</th>
+                          <th>Gateway</th>
+                          <th className="text-right">Aksi</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const cur = (hostNet.interfaces || []).find((i) => i.name === hnIface)
+                          const ips = cur?.ipv4 || []
+                          if (ips.length === 0) {
+                            return (
+                              <tr>
+                                <td colSpan={5} className="text-center py-4 text-[var(--muted)]">
+                                  Tidak ada IP IPv4 aktif di interface ini.
+                                </td>
+                              </tr>
+                            )
+                          }
+                          return ips.map((ip, idx) => (
+                            <tr key={ip}>
+                              <td className="font-mono font-semibold">{hnIface}</td>
+                              <td>
+                                <span className="font-mono font-bold text-sm text-[var(--text)]">{ip}</span>
+                              </td>
+                              <td>
+                                {idx === 0 ? (
+                                  <span className="status-pill ok">Primary</span>
+                                ) : (
+                                  <span className="status-pill muted">Secondary Alias</span>
+                                )}
+                              </td>
+                              <td className="font-mono text-[var(--muted)]">
+                                {idx === 0 ? cur.gateway || hostNet.default_gateway || '—' : '—'}
+                              </td>
+                              <td className="text-right">
+                                {ips.length > 1 ? (
+                                  <button
+                                    type="button"
+                                    disabled={hnBusy || !isAdmin}
+                                    onClick={() => removeHostAlias(hnIface, ip)}
+                                    className="btn btn-secondary text-xs text-red-400 hover:text-red-300 min-h-[32px] py-1 px-2.5"
+                                  >
+                                    Hapus IP Ini
+                                  </button>
+                                ) : (
+                                  <span className="text-[11px] text-[var(--muted)]">Satu-satunya IP</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                </SettingSection>
+
+                {/* Configuration Form */}
+                <SettingSection
+                  id="settings-hostnet-config"
+                  title={`Ubah Konfigurasi IP (${hnIface})`}
+                  hint="Perubahan diterapkan langsung ke kernel Linux dan disimpan ke Netplan (/etc/netplan/60-powersvx.yaml) agar permanen setelah reboot."
+                >
+                  <form onSubmit={applyHostNetworkConfig} className="space-y-4">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="block text-xs space-y-1">
+                        <span className="text-[var(--muted)] font-medium">Target Interface</span>
+                        <select
+                          className="input w-full"
+                          value={hnIface}
+                          onChange={(e) => {
+                            const n = e.target.value
+                            setHnIface(n)
+                            const ifc = (hostNet.interfaces || []).find((i) => i.name === n)
+                            if (ifc) {
+                              setHnIP(ifc.ipv4?.[0] || '')
+                              setHnGateway(ifc.gateway || hostNet.default_gateway || '')
+                            }
+                          }}
+                          disabled={hnBusy || !isAdmin}
+                        >
+                          {(hostNet.interfaces || []).map((i) => (
+                            <option key={i.name} value={i.name}>
+                              {i.name} ({i.state}) — {i.ipv4?.[0] || 'no ip'}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="block text-xs space-y-1">
+                        <span className="text-[var(--muted)] font-medium">
+                          Alamat IP Baru & Subnet Prefix <span className="text-[var(--accent)]">*</span>
+                        </span>
+                        <input
+                          type="text"
+                          required
+                          placeholder="contoh: 103.162.17.246/28"
+                          className="input mono w-full"
+                          value={hnIP}
+                          onChange={(e) => setHnIP(e.target.value)}
+                          disabled={hnBusy || !isAdmin}
+                        />
+                        <span className="text-[10px] text-[var(--muted)]">Gunakan notasi CIDR (misal /28, /24, /29).</span>
+                      </label>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="block text-xs space-y-1">
+                        <span className="text-[var(--muted)] font-medium">Default Gateway IPv4</span>
+                        <input
+                          type="text"
+                          placeholder="contoh: 103.162.17.241"
+                          className="input mono w-full"
+                          value={hnGateway}
+                          onChange={(e) => setHnGateway(e.target.value)}
+                          disabled={hnBusy || !isAdmin}
+                        />
+                        <span className="text-[10px] text-[var(--muted)]">Kosongkan jika bukan interface default route.</span>
+                      </label>
+
+                      <label className="block text-xs space-y-1">
+                        <span className="text-[var(--muted)] font-medium">DNS Nameservers (1 per baris)</span>
+                        <textarea
+                          rows={2}
+                          placeholder="8.8.8.8&#10;1.1.1.1"
+                          className="input mono w-full"
+                          value={hnDNS}
+                          onChange={(e) => setHnDNS(e.target.value)}
+                          disabled={hnBusy || !isAdmin}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="p-3 bg-[var(--bg-elevated)] border border-[var(--border)] rounded-md space-y-2">
+                      <label className="flex items-center gap-2.5 cursor-pointer text-xs">
+                        <input
+                          type="checkbox"
+                          checked={hnKeepOld}
+                          onChange={(e) => setHnKeepOld(e.target.checked)}
+                          disabled={hnBusy || !isAdmin}
+                          className="rounded text-[var(--accent)]"
+                        />
+                        <span className="font-medium text-[var(--text)]">
+                          Pertahankan IP lama sebagai alias sekunder (Sangat Disarankan)
+                        </span>
+                      </label>
+                      <p className="text-[11px] text-[var(--muted)] leading-relaxed pl-6">
+                        Fitur keamanan: IP lama Anda tidak akan langsung dicabut, sehingga koneksi sesi web ini dan SSH tetap aktif.
+                        Anda dapat menguji akses ke IP baru terlebih dahulu, lalu menghapus IP lama lewat tombol Hapus di tabel atas setelah sukses.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2 pt-2">
+                      <button
+                        type="submit"
+                        disabled={hnBusy || !isAdmin || !hnIP.trim()}
+                        className="btn btn-primary min-h-[40px] px-5 disabled:opacity-40"
+                      >
+                        {hnBusy ? 'Menerapkan ke Kernel...' : 'Terapkan Perubahan IP (Apply)'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={hnBusy}
+                        onClick={refreshHostNet}
+                        className="btn btn-secondary min-h-[40px] disabled:opacity-40"
+                      >
+                        Refresh Network
+                      </button>
+                    </div>
+                  </form>
+                </SettingSection>
+              </div>
             )
           ) : null}
 
