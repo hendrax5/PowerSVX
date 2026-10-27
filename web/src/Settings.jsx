@@ -646,7 +646,9 @@ export default function Settings({ tools = {} }) {
 
   const railGroups = [
     {
+      id: 'routing',
       group: 'Routing & Traffic',
+      desc: 'DNS routing, ACL CIDRs & DDoS caps',
       items: [
         {
           id: 'dns',
@@ -675,7 +677,9 @@ export default function Settings({ tools = {} }) {
       ],
     },
     {
+      id: 'engines',
       group: 'Core Engines',
+      desc: 'RPZ threat feed, ECS & query logs',
       items: [
         {
           id: 'engines',
@@ -696,7 +700,9 @@ export default function Settings({ tools = {} }) {
       ],
     },
     {
+      id: 'system',
       group: 'System & Dataplane',
+      desc: 'Kernel TPROXY, Conntrack & Tools',
       items: [
         {
           id: 'tproxy',
@@ -733,6 +739,14 @@ export default function Settings({ tools = {} }) {
       ],
     },
   ]
+
+  const activeGroup = railGroups.find((g) => g.items.some((i) => i.id === section)) || railGroups[0]
+
+  const selectPillar = (group) => {
+    if (!group.items.some((i) => i.id === section)) {
+      goSection(group.items[0].id)
+    }
+  }
 
   const categories = railGroups.flatMap((g) => g.items)
 
@@ -776,7 +790,7 @@ export default function Settings({ tools = {} }) {
   const ToolRpz = tools.rpz
 
   return (
-    <div className="settings-page space-y-5 max-w-5xl pb-28">
+    <div className="settings-page space-y-5 max-w-[1400px] mx-auto pb-28">
       <PageHeader
         eyebrow="System & Routing"
         title="Routing & Dataplane Architecture"
@@ -852,39 +866,58 @@ export default function Settings({ tools = {} }) {
         </div>
       ) : null}
 
-      <div className="settings-layout">
-        <nav className="settings-rail panel" aria-label="Settings categories">
-          {railGroups.map((g) => (
-            <div key={g.group} className="flex flex-col gap-1 w-full">
-              <div className="settings-rail-group">{g.group}</div>
-              {g.items.map((c) => {
-                const Icon = c.Icon
-                const active = section === c.id
-                return (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => goSection(c.id)}
-                    aria-current={active ? 'page' : undefined}
-                    className={`settings-rail-item ${active ? 'is-active' : ''}`}
-                  >
-                    <Icon weight={ICON} className="settings-rail-icon" aria-hidden />
-                    <span className="settings-rail-text">
-                      <span className="settings-rail-label">
-                        {c.label}
-                        {c.dirty ? <span className="settings-dirty-dot" title="Unsaved" aria-label="Unsaved" /> : null}
-                      </span>
-                      <span className="settings-rail-hint">{c.hint}</span>
-                    </span>
-                    {c.pill ? <span className="settings-rail-pill">{c.pill}</span> : null}
-                  </button>
-                )
-              })}
-            </div>
-          ))}
-        </nav>
+      {/* Tier 1: Segmented Group Pillar Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {railGroups.map((g) => {
+          const isActivePillar = activeGroup.id === g.id
+          const hasDirty = g.items.some((item) => item.dirty)
+          return (
+            <button
+              key={g.id}
+              type="button"
+              onClick={() => selectPillar(g)}
+              className={`settings-pillar-card ${isActivePillar ? 'is-active' : ''}`}
+            >
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span className="font-semibold text-sm tracking-tight flex items-center gap-1.5">
+                  {g.group}
+                  {hasDirty ? <span className="settings-dirty-dot" title="Unsaved changes in this group" /> : null}
+                </span>
+                <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-[var(--bg-elevated)] text-[var(--muted)] border border-[var(--border)]">
+                  {g.items.length} sections
+                </span>
+              </div>
+              <p className="text-xs text-[var(--muted)] line-clamp-1">{g.desc}</p>
+            </button>
+          )
+        })}
+      </div>
 
-        <div key={section} className="settings-main reveal space-y-4">
+      {/* Tier 2: Horizontal Sub-Nav Pill Track (Sticky) */}
+      <div className="settings-subnav-wrap">
+        <nav className="settings-subnav-bar" aria-label={`${activeGroup.group} sections`}>
+          {activeGroup.items.map((c) => {
+            const Icon = c.Icon
+            const active = section === c.id
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => goSection(c.id)}
+                aria-current={active ? 'page' : undefined}
+                className={`settings-subnav-btn ${active ? 'is-active' : ''}`}
+              >
+                <Icon weight={ICON} className="w-4 h-4 shrink-0 text-[var(--muted)]" aria-hidden />
+                <span>{c.label}</span>
+                {c.dirty ? <span className="settings-dirty-dot" title="Unsaved" /> : null}
+                {c.pill ? <span className="settings-subnav-pill">{c.pill}</span> : null}
+              </button>
+            )
+          })}
+        </nav>
+      </div>
+
+      <div key={section} className="settings-main reveal space-y-4">
           {section === 'dns' ? (
             <>
               {/* Route 53 & Cloudflare Dataplane Flow Pipeline */}
@@ -1968,7 +2001,6 @@ export default function Settings({ tools = {} }) {
             </div>
           ) : null}
         </div>
-      </div>
 
       {((dirty && isAdmin) ||
         (tpDirty && isAdmin && section === 'tproxy') ||

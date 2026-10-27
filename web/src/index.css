@@ -1754,4 +1754,111 @@ a:focus-visible {
   background: color-mix(in srgb, var(--accent-soft) 50%, var(--bg-elevated));
 }
 
+/* ——— Settings Segmented Group Pill Top Bar (Ide 2) ——— */
+.settings-pillar-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0.85rem 1rem;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: all 0.2s var(--ease-out);
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  text-align: left;
+}
+
+.settings-pillar-card:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.settings-pillar-card.is-active {
+  background: color-mix(in srgb, var(--accent-soft) 35%, var(--bg-panel));
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 4px 14px -4px var(--shadow);
+}
+
+.settings-pillar-card.is-active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--accent);
+}
+
+.settings-subnav-wrap {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: color-mix(in srgb, var(--bg) 90%, transparent);
+  backdrop-filter: blur(8px);
+  padding: 0.25rem 0;
+}
+
+.settings-subnav-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.settings-subnav-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.settings-subnav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--muted);
+  border-radius: calc(var(--radius) - 2px);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.18s var(--ease-out);
+}
+
+.settings-subnav-btn:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.settings-subnav-btn.is-active {
+  color: var(--text);
+  background: var(--bg-panel);
+  box-shadow: 0 1px 3px var(--shadow);
+  font-weight: 600;
+}
+
+.settings-subnav-pill {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.settings-subnav-btn.is-active .settings-subnav-pill {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+}
+
+
 
