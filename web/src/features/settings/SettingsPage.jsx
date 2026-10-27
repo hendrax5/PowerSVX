@@ -1,4 +1,28 @@
 import { useEffect, useRef, useState } from 'react'
+import {
+  ArrowsClockwise,
+  Broadcast,
+  Certificate,
+  CheckCircle,
+  Clock,
+  CloudArrowDown,
+  CloudArrowUp,
+  Database,
+  DownloadSimple,
+  FileText,
+  GlobeSimple,
+  Key,
+  LockSimple,
+  PencilSimple,
+  Plus,
+  ShieldCheck,
+  SlidersHorizontal,
+  Trash,
+  User,
+  UserGear,
+  Users,
+  WarningCircle,
+} from '@phosphor-icons/react'
 import { api } from '../../api'
 import { useAuth } from '../../auth'
 import Settings from '../../Settings'
@@ -170,59 +194,69 @@ function AxfrSyncPanel({ isAdmin }) {
   const zoneCount = (data.zones || []).length
 
   return (
-    <div className="space-y-5 max-w-[var(--content-max)]" aria-labelledby="tools-axfr-heading">
-      <header className="reveal">
-        <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted)] mb-2">Zone transfer</p>
-        <h2 id="tools-axfr-heading" className="text-2xl md:text-3xl font-semibold tracking-tight leading-none">
-          AXFR
-        </h2>
-        <p className="text-sm text-[var(--muted)] mt-3 max-w-[60ch] leading-relaxed">
-          Two different jobs. The top panel is PowerSVX as <span className="text-[var(--text)]">master</span>{' '}
-          (others pull <em>your</em> zones). The bottom panel is PowerSVX as{' '}
-          <span className="text-[var(--text)]">slave</span> (you pull the Komdigi blocklist into RPZ).
-        </p>
+    <div className="space-y-6 max-w-[var(--content-max)]" aria-labelledby="tools-axfr-heading">
+      <header className="reveal flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[var(--border)]">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="p-1.5 rounded-lg bg-[var(--accent-soft)] text-[var(--accent)]">
+              <Broadcast size={20} weight="bold" />
+            </span>
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">DNS Zone Transfer</span>
+          </div>
+          <h2 id="tools-axfr-heading" className="text-2xl font-bold tracking-tight text-[var(--text)]">
+            AXFR &amp; IXFR Synchronization
+          </h2>
+          <p className="text-xs text-[var(--muted)] mt-1.5 max-w-[65ch] leading-relaxed">
+            Manage dual-mode zone replication: <span className="font-semibold text-[var(--text)]">Master (Outbound)</span> transfers your local authoritative zones to secondary servers, while <span className="font-semibold text-[var(--text)]">Slave (Inbound)</span> synchronizes the national Komdigi blocklist into RPZ.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-mono text-[var(--muted)] bg-[var(--bg-elevated)] border border-[var(--border)] px-3 py-1.5 rounded-[var(--radius)]">
+            {zoneCount} {zoneCount === 1 ? 'Authoritative Zone' : 'Authoritative Zones'}
+          </span>
+        </div>
       </header>
 
       {err ? <ErrorBox msg={err} /> : null}
       {ok ? (
         <div
-          className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2 reveal"
+          className="border border-[var(--ok)]/40 bg-[var(--ok-soft)] text-[var(--ok)] text-xs font-medium px-4 py-3 rounded-[var(--radius)] flex items-center gap-2 reveal"
           role="status"
         >
-          {ok}
+          <CheckCircle size={16} weight="bold" />
+          <span>{ok}</span>
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1.25fr_1fr] gap-4 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-[1.3fr_1fr] gap-5 items-start">
+        {/* Outbound Master Settings */}
         <section className="panel overflow-hidden reveal reveal-delay-1" aria-labelledby="axfr-sources-heading">
-          <div className="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p className="text-[10px] uppercase tracking-[0.12em] text-[var(--muted)] mb-1">Role: master</p>
-              <h3 id="axfr-sources-heading" className="text-sm font-medium">
-                Outbound — secondaries pull from PowerSVX
-              </h3>
-              <p className="text-xs text-[var(--muted)] mt-1 leading-relaxed max-w-[46ch]">
-                Allow these IPs to AXFR <strong className="font-medium text-[var(--text)]">your</strong>{' '}
-                authoritative zones and receive NOTIFY. This is <em>not</em> how you download the TrustPositif
-                blocklist — use Filter feeds below for that.
-              </p>
+          <div className="p-4 border-b border-[var(--border)] bg-[var(--bg-elevated)] flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-[var(--accent)]" />
+              <div>
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--accent)]">Role: Master</span>
+                <h3 id="axfr-sources-heading" className="text-sm font-semibold text-[var(--text)]">
+                  Outbound Zone Transfers
+                </h3>
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2">
               <span
-                className={`inline-flex items-center gap-2 text-xs mono px-2.5 py-1.5 rounded-[var(--radius)] border ${
+                className={`inline-flex items-center gap-1.5 text-xs font-mono px-2.5 py-1 rounded-[var(--radius)] border ${
                   data.enabled
-                    ? 'border-[var(--ok)]/40 text-[var(--ok)] bg-[color-mix(in_srgb,var(--ok)_12%,transparent)]'
-                    : 'border-[var(--border)] text-[var(--muted)]'
+                    ? 'border-[var(--ok)]/40 text-[var(--ok)] bg-[var(--ok-soft)]'
+                    : 'border-[var(--border)] text-[var(--muted)] bg-[var(--bg)]'
                 }`}
               >
                 <span className={`axfr-pulse-dot ${data.enabled ? 'is-on' : ''}`} aria-hidden />
-                {data.enabled ? 'On' : 'Off'}
+                {data.enabled ? 'ACTIVE' : 'DISABLED'}
               </span>
               <button
                 type="button"
                 disabled={busy || !isAdmin}
                 onClick={toggle}
-                className={`btn text-xs min-h-[36px] disabled:opacity-50 ${data.enabled ? 'btn-secondary' : 'btn-primary'}`}
+                className={`btn text-xs min-h-[32px] px-3 py-1 font-medium disabled:opacity-50 ${data.enabled ? 'btn-secondary' : 'btn-primary'}`}
               >
                 {data.enabled ? 'Disable' : 'Enable'}
               </button>
@@ -230,63 +264,76 @@ function AxfrSyncPanel({ isAdmin }) {
                 type="button"
                 disabled={busy || !isAdmin || !data.enabled || p.running}
                 onClick={syncNow}
-                className="btn btn-secondary text-xs min-h-[36px] disabled:opacity-50"
+                className="btn btn-secondary text-xs min-h-[32px] px-3 py-1 font-medium flex items-center gap-1.5 disabled:opacity-50"
               >
-                {p.running ? 'Syncing…' : 'NOTIFY now'}
+                <Broadcast size={14} />
+                <span>{p.running ? 'NOTIFYing…' : 'Send NOTIFY'}</span>
               </button>
             </div>
           </div>
-          <div className="px-4 py-2 border-b border-[var(--border)] flex flex-wrap justify-between gap-2">
-            <p className="text-xs text-[var(--muted)]">Secondary IPs (host or host:port)</p>
+
+          <div className="p-3.5 border-b border-[var(--border)] text-xs text-[var(--muted)] leading-relaxed bg-[var(--bg-panel)]">
+            Authorized secondary nameservers allowed to pull zones via AXFR and receive automated NOTIFY triggers upon serial bump.
+          </div>
+
+          <div className="p-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2 bg-[var(--bg)]/40">
+            <span className="text-xs font-medium text-[var(--muted)]">Authorized Secondary Peers</span>
             <button
               type="button"
               disabled={!isAdmin || busy}
               onClick={resetDefaults}
-              className="btn btn-ghost text-xs min-h-[32px] px-2 disabled:opacity-50"
+              className="btn btn-ghost text-xs min-h-[28px] px-2 text-[var(--accent)] hover:underline flex items-center gap-1 disabled:opacity-50"
             >
-              Fill Komdigi secondary IPs
+              <ArrowsClockwise size={13} />
+              <span>Fill Komdigi Secondary IPs</span>
             </button>
           </div>
+
           <ul className="divide-y divide-[var(--border)]">
             {draftTargets.length === 0 ? (
-              <li className="px-4 py-8 text-sm text-[var(--muted)]">
-                No secondaries. Add IPs that should pull zones from this server, or fill Komdigi secondary IPs.
+              <li className="p-6 text-center text-xs text-[var(--muted)]">
+                No secondary IPs configured. Add IP addresses below or use the Komdigi default preset.
               </li>
             ) : (
               draftTargets.map((addr, i) => (
                 <li
                   key={addr}
-                  className={`flex items-center gap-3 px-4 py-2.5 axfr-row ${
-                    editAddr === addr ? 'bg-[var(--accent-soft)]' : ''
+                  className={`flex items-center justify-between gap-3 px-4 py-2.5 axfr-row ${
+                    editAddr === addr ? 'bg-[var(--accent-soft)]' : 'hover:bg-[var(--bg-elevated)]/50'
                   }`}
                   style={{ '--index': i }}
                 >
-                  <span className="mono text-sm flex-1 break-all">{addr}</span>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--muted)]" />
+                    <span className="mono text-xs font-medium text-[var(--text)] truncate">{addr}</span>
+                  </div>
                   <div className="flex gap-1 shrink-0">
                     <button
                       type="button"
                       disabled={!isAdmin || busy}
                       onClick={() => startEditTarget(addr)}
-                      className="btn btn-ghost text-xs disabled:opacity-40"
+                      className="btn btn-ghost text-xs min-h-[28px] px-2 text-[var(--muted)] hover:text-[var(--text)] disabled:opacity-40"
                     >
-                      Edit
+                      <PencilSimple size={13} />
+                      <span className="sr-only">Edit</span>
                     </button>
                     <button
                       type="button"
                       disabled={!isAdmin || busy}
                       onClick={() => removeTarget(addr)}
-                      className="btn btn-ghost text-xs text-[var(--danger)] disabled:opacity-40"
+                      className="btn btn-ghost text-xs min-h-[28px] px-2 text-[var(--danger)] hover:bg-[var(--danger)]/10 disabled:opacity-40"
                     >
-                      Remove
+                      <Trash size={13} />
+                      <span className="sr-only">Remove</span>
                     </button>
                   </div>
                 </li>
               ))
             )}
           </ul>
-          <div className="px-4 py-3 border-t border-[var(--border)] flex flex-col sm:flex-row gap-2">
-            <label className="flex-1 space-y-1.5">
-              <span className="sr-only">{editAddr != null ? 'Edit source' : 'Add source'}</span>
+
+          <div className="p-3 border-t border-[var(--border)] bg-[var(--bg-elevated)]/60 flex flex-col sm:flex-row gap-2">
+            <div className="relative flex-1">
               <input
                 value={newTarget}
                 onChange={(e) => setNewTarget(e.target.value)}
@@ -297,25 +344,26 @@ function AxfrSyncPanel({ isAdmin }) {
                   }
                 }}
                 disabled={!isAdmin || busy}
-                placeholder="182.23.79.202 or host:53"
-                className="w-full mono text-sm input"
+                placeholder="e.g. 182.23.79.202 or 10.0.0.5:53"
+                className="w-full mono text-xs input min-h-[36px]"
               />
-            </label>
-            <div className="flex gap-2">
+            </div>
+            <div className="flex gap-2 shrink-0">
               <button
                 type="button"
                 disabled={!isAdmin || busy || !newTarget.trim()}
                 onClick={addOrUpdateTarget}
-                className="btn btn-secondary min-h-[44px] disabled:opacity-50"
+                className="btn btn-secondary text-xs min-h-[36px] px-3 disabled:opacity-50 flex items-center gap-1.5"
               >
-                {editAddr != null ? 'Save' : 'Add'}
+                <Plus size={14} weight="bold" />
+                <span>{editAddr != null ? 'Update' : 'Add'}</span>
               </button>
               {editAddr != null ? (
                 <button
                   type="button"
                   disabled={!isAdmin || busy}
                   onClick={cancelEditTarget}
-                  className="btn btn-ghost min-h-[44px] disabled:opacity-50"
+                  className="btn btn-ghost text-xs min-h-[36px] px-2.5 disabled:opacity-50"
                 >
                   Cancel
                 </button>
@@ -324,93 +372,125 @@ function AxfrSyncPanel({ isAdmin }) {
                 type="button"
                 disabled={!isAdmin || busy || !targetsDirty}
                 onClick={saveTargets}
-                className="btn btn-primary min-h-[44px] disabled:opacity-50"
+                className="btn btn-primary text-xs min-h-[36px] px-4 font-semibold disabled:opacity-50"
               >
-                Save sources
+                Save Sources
               </button>
             </div>
           </div>
         </section>
 
+        {/* Sync Progress & Telemetry */}
         <section className="panel overflow-hidden reveal reveal-delay-2" aria-labelledby="axfr-progress-heading">
-          <div className="px-4 py-3 border-b border-[var(--border)]">
-            <h3 id="axfr-progress-heading" className="text-sm font-medium">
-              Sync progress
-            </h3>
-            <p className="text-xs text-[var(--muted)] mt-1">NOTIFY then remote SOA check per zone.</p>
-          </div>
-          <div className="px-4 py-5 space-y-4">
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="text-3xl font-semibold tracking-tight mono tabular-nums">{pct}%</span>
-              <span className="text-xs text-[var(--muted)] text-right">
-                {p.done || 0}/{p.total || 0} zones
-                {zoneCount ? ` · ${zoneCount} tracked` : ''}
+          <div className="p-4 border-b border-[var(--border)] bg-[var(--bg-elevated)] flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="p-1 rounded bg-[var(--bg)] border border-[var(--border)] text-[var(--muted)]">
+                <SlidersHorizontal size={16} />
               </span>
-            </div>
-            <div className="h-2 bg-[var(--bg)] border border-[var(--border)] rounded-[var(--radius-sm)] overflow-hidden">
-              <div
-                className={`h-full bg-[var(--accent)] transition-[width] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
-                  p.running ? 'axfr-bar-shimmer' : ''
-                }`}
-                style={{ width: `${p.running || p.total ? pct : 0}%` }}
-              />
-            </div>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
               <div>
-                <dt className="text-[var(--muted)]">Phase</dt>
-                <dd className="mono mt-0.5">{p.phase || (p.running ? '…' : 'idle')}</dd>
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">Outbound Queue</span>
+                <h3 id="axfr-progress-heading" className="text-sm font-semibold text-[var(--text)]">
+                  Replication Status
+                </h3>
               </div>
-              <div>
-                <dt className="text-[var(--muted)]">Current</dt>
-                <dd className="mono mt-0.5 truncate">{p.current_zone || '—'}</dd>
+            </div>
+            <span className="text-xs font-mono font-bold text-[var(--text)]">{pct}%</span>
+          </div>
+
+          <div className="p-5 space-y-4">
+            <div>
+              <div className="flex items-center justify-between text-xs mb-1.5">
+                <span className="text-[var(--muted)] font-medium">Replication Cycle</span>
+                <span className="font-mono text-xs text-[var(--text)]">
+                  {p.done || 0} / {p.total || 0} zones {zoneCount ? `(${zoneCount} tracked)` : ''}
+                </span>
               </div>
-              <div className="col-span-2">
-                <dt className="text-[var(--muted)]">Last finished</dt>
-                <dd className="mono mt-0.5">{p.finished_at || '—'}</dd>
+              <div className="h-2 bg-[var(--bg)] border border-[var(--border)] rounded-[var(--radius-sm)] overflow-hidden">
+                <div
+                  className={`h-full bg-[var(--accent)] transition-[width] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                    p.running ? 'axfr-bar-shimmer' : ''
+                  }`}
+                  style={{ width: `${p.running || p.total ? pct : 0}%` }}
+                />
               </div>
-            </dl>
-            {p.last_error ? <p className="text-xs text-[var(--danger)]">{p.last_error}</p> : null}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-2 border-t border-[var(--border)]">
+              <div className="p-2.5 rounded-[var(--radius)] bg-[var(--bg)] border border-[var(--border)]">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--muted)] font-semibold block">Phase</span>
+                <span className="font-mono text-xs font-semibold text-[var(--text)] mt-0.5 block truncate">
+                  {p.phase || (p.running ? 'Running…' : 'Idle')}
+                </span>
+              </div>
+              <div className="p-2.5 rounded-[var(--radius)] bg-[var(--bg)] border border-[var(--border)]">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--muted)] font-semibold block">Current Zone</span>
+                <span className="font-mono text-xs font-semibold text-[var(--text)] mt-0.5 block truncate">
+                  {p.current_zone || '—'}
+                </span>
+              </div>
+              <div className="col-span-2 p-2.5 rounded-[var(--radius)] bg-[var(--bg)] border border-[var(--border)]">
+                <span className="text-[10px] uppercase tracking-wider text-[var(--muted)] font-semibold block">Last Completed</span>
+                <span className="font-mono text-xs text-[var(--muted)] mt-0.5 block truncate">
+                  {p.finished_at || 'Never run or completed'}
+                </span>
+              </div>
+            </div>
+
+            {p.last_error ? (
+              <div className="p-2.5 rounded-[var(--radius)] bg-[var(--danger)]/10 border border-[var(--danger)]/30 text-[var(--danger)] text-xs flex items-center gap-1.5">
+                <WarningCircle size={14} weight="bold" />
+                <span>{p.last_error}</span>
+              </div>
+            ) : null}
           </div>
         </section>
       </div>
 
+      {/* Authoritative Zones Status Table */}
       <section className="panel overflow-hidden reveal reveal-delay-3" aria-labelledby="axfr-zones-heading">
-        <div className="px-4 py-3 border-b border-[var(--border)] flex items-baseline justify-between gap-3">
+        <div className="p-4 border-b border-[var(--border)] bg-[var(--bg-elevated)] flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h3 id="axfr-zones-heading" className="text-sm font-medium">
-              Zone status
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">Status Directory</span>
+            <h3 id="axfr-zones-heading" className="text-sm font-semibold text-[var(--text)]">
+              Authoritative Zones State
             </h3>
-            <p className="text-xs text-[var(--muted)] mt-1">Per-source notify / SOA / pull state.</p>
           </div>
+          <span className="text-xs text-[var(--muted)]">Per-source NOTIFY / SOA / transfer state</span>
         </div>
+
         {(data.zones || []).length === 0 ? (
-          <div className="px-4 py-10 text-left">
-            <p className="text-base font-semibold tracking-tight">No authoritative zones</p>
-            <p className="text-sm text-[var(--muted)] mt-2 max-w-md leading-relaxed">
-              Create a zone first, then enable AXFR sync and run Sync now.
+          <div className="p-8 text-center">
+            <p className="text-sm font-semibold text-[var(--text)]">No authoritative zones configured</p>
+            <p className="text-xs text-[var(--muted)] mt-1.5 max-w-sm mx-auto leading-relaxed">
+              Create an authoritative DNS zone in DNS Management first, then configure secondary transfer peers.
             </p>
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-xs">
               <thead>
-                <tr className="text-left text-xs text-[var(--muted)] border-b border-[var(--border)]">
-                  <th className="px-4 py-2 font-medium">Zone</th>
-                  <th className="px-4 py-2 font-medium">Serial</th>
-                  <th className="px-4 py-2 font-medium">Source</th>
-                  <th className="px-4 py-2 font-medium">Status</th>
-                  <th className="px-4 py-2 font-medium">Detail</th>
+                <tr className="text-left text-[11px] font-semibold text-[var(--muted)] border-b border-[var(--border)] bg-[var(--bg)]/50">
+                  <th className="px-4 py-2.5">Zone Name</th>
+                  <th className="px-4 py-2.5">SOA Serial</th>
+                  <th className="px-4 py-2.5">Secondary Peer</th>
+                  <th className="px-4 py-2.5">Transfer Status</th>
+                  <th className="px-4 py-2.5">Details</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="divide-y divide-[var(--border)]">
                 {(data.zones || []).flatMap((z) =>
                   (z.targets || []).map((t, i) => (
-                    <tr key={`${z.zone}-${t.addr}`} className="border-b border-[var(--border)]/70 axfr-row">
-                      <td className="px-4 py-2 mono">{i === 0 ? z.zone : ''}</td>
-                      <td className="px-4 py-2 mono">{i === 0 ? z.serial : ''}</td>
-                      <td className="px-4 py-2 mono text-xs">{t.addr}</td>
-                      <td className={`px-4 py-2 mono text-xs ${statusTone(t.status)}`}>{t.status}</td>
-                      <td className="px-4 py-2 text-xs text-[var(--muted)]">
+                    <tr key={`${z.zone}-${t.addr}`} className="hover:bg-[var(--bg-elevated)]/40 axfr-row">
+                      <td className="px-4 py-2.5 font-mono font-medium text-[var(--text)]">{i === 0 ? z.zone : ''}</td>
+                      <td className="px-4 py-2.5 font-mono text-[var(--muted)]">{i === 0 ? z.serial : ''}</td>
+                      <td className="px-4 py-2.5 font-mono text-[var(--text)]">{t.addr}</td>
+                      <td className="px-4 py-2.5">
+                        <span className={`inline-flex items-center gap-1 font-mono font-semibold uppercase text-[10px] ${statusTone(t.status)}`}>
+                          <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                          {t.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 font-mono text-[11px] text-[var(--muted)]">
                         {t.error ||
                           (t.remote_serial ? `remote ${t.remote_serial}` : '') ||
                           (t.axfr_pull_at ? `pull ${t.axfr_pull_at}` : '') ||
@@ -423,13 +503,15 @@ function AxfrSyncPanel({ isAdmin }) {
             </table>
           </div>
         )}
+
         {data.note ? (
-          <p className="px-4 py-3 text-[11px] text-[var(--muted)] border-t border-[var(--border)] leading-relaxed">
+          <div className="p-3 bg-[var(--bg)]/50 border-t border-[var(--border)] text-[11px] text-[var(--muted)] leading-relaxed">
             {data.note}
-          </p>
+          </div>
         ) : null}
       </section>
 
+      {/* Slave Filter Feeds (Kominfo Inbound RPZ sync) */}
       <AxfrFilterFeedsPanel isAdmin={isAdmin} />
     </div>
   )
@@ -724,314 +806,380 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
 
   return (
     <section className="panel overflow-hidden reveal reveal-delay-3" aria-labelledby="axfr-filter-heading">
-      <div className="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-[10px] uppercase tracking-[0.12em] text-[var(--muted)] mb-1">Role: slave</p>
-          <h3 id="axfr-filter-heading" className="text-sm font-medium">
-            Filter feeds — pull blocklist (PowerSVX as slave)
-          </h3>
-          <p className="text-xs text-[var(--muted)] mt-1 leading-relaxed max-w-[56ch]">
-            Default: AXFR zone <span className="mono text-[var(--text)]">trustpositifkominfo</span> (enabled).
-            First install can bootstrap CDB from the GitHub seed release; later updates use IXFR. Disable a feed
-            without deleting it.
-          </p>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-            <span className={`inline-flex items-center px-2 py-0.5 border mono ${toneClass}`}>{syncState.label}</span>
-            {dirty ? (
-              <span className="inline-flex items-center px-2 py-0.5 border border-amber-500/40 text-amber-800 bg-amber-500/10">
-                Unsaved draft
-              </span>
-            ) : null}
-            <span className="text-[var(--muted)]">
-              {status ? `${Number(status.entries ?? 0).toLocaleString()} RPZ entries total` : '…'}
-              {status?.last_loaded ? ` · engine ${status.last_loaded}` : ''}
+      {/* Header Banner */}
+      <div className="p-4 border-b border-[var(--border)] bg-[var(--bg-elevated)] flex flex-wrap items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="p-1 rounded bg-[var(--accent-soft)] text-[var(--accent)]">
+              <ShieldCheck size={18} weight="bold" />
+            </span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--accent)]">
+              Role: Slave · National Filtering Dataplane
             </span>
           </div>
+          <h3 id="axfr-filter-heading" className="text-base font-bold text-[var(--text)] tracking-tight">
+            Kominfo &amp; TrustPositif Filter Feeds
+          </h3>
+          <p className="text-xs text-[var(--muted)] leading-relaxed max-w-[62ch]">
+            Pulls authoritative blocklists (<span className="mono text-[var(--text)] font-medium">trustpositifkominfo</span>) directly into PowerSVX zero-copy CDB engine. First start bootstraps from seed data; continuous updates use incremental IXFR.
+          </p>
+          <div className="pt-1 flex flex-wrap items-center gap-2 text-xs">
+            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-[var(--radius)] text-xs font-mono font-medium border ${toneClass}`}>
+              <span className="w-1.5 h-1.5 rounded-full bg-current" />
+              {syncState.label}
+            </span>
+            {dirty ? (
+              <span className="inline-flex items-center px-2 py-0.5 rounded-[var(--radius)] text-[11px] font-semibold uppercase tracking-wide border border-amber-500/40 text-amber-800 bg-amber-500/10">
+                Unsaved Changes
+              </span>
+            ) : null}
+            <span className="text-xs font-mono font-semibold text-[var(--text)]">
+              {status ? `${Number(status.entries ?? 0).toLocaleString()} RPZ rules active in CDB` : 'Loading rules…'}
+            </span>
+            {status?.last_loaded ? (
+              <span className="text-xs text-[var(--muted)]">· engine {status.last_loaded}</span>
+            ) : null}
+          </div>
         </div>
-        <div className="flex gap-2">
+
+        <div className="flex items-center gap-2">
           <button
             type="button"
             disabled={!isAdmin || busy || loading}
             onClick={resync}
-            className="btn btn-secondary text-xs min-h-[36px] disabled:opacity-50"
+            className="btn btn-secondary text-xs min-h-[36px] px-3 font-medium flex items-center gap-1.5 disabled:opacity-50"
           >
-            Re-sync
+            <ArrowsClockwise size={14} className={loading ? 'animate-spin' : ''} />
+            <span>Re-sync</span>
           </button>
           <button
             type="button"
             disabled={!isAdmin || busy || loading}
             onClick={saveSync}
-            className="btn btn-primary text-xs min-h-[36px] disabled:opacity-50"
+            className="btn btn-primary text-xs min-h-[36px] px-4 font-semibold disabled:opacity-50"
           >
-            {busy ? 'Saving…' : loading ? 'Syncing…' : 'Save & sync filters'}
+            {busy ? 'Saving…' : loading ? 'Syncing…' : 'Save & Sync Filters'}
           </button>
         </div>
       </div>
 
-      <div className="px-4 py-3 space-y-3">
+      <div className="p-4 space-y-4">
+        {/* Sync Status Callout */}
         <div
-          className={`border text-sm px-3 py-2 ${
+          className={`border rounded-[var(--radius)] text-xs p-3.5 flex items-start gap-2.5 ${
             syncState.tone === 'ok'
-              ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-800'
+              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-900'
               : syncState.tone === 'danger'
-                ? 'border-[var(--danger)]/40 bg-[var(--danger)]/10 text-[var(--danger)]'
+                ? 'border-[var(--danger)]/30 bg-[var(--danger)]/10 text-[var(--danger)]'
                 : syncState.tone === 'warn'
-                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-900'
-                  : 'border-[var(--border)] text-[var(--muted)]'
+                  ? 'border-amber-500/30 bg-amber-500/10 text-amber-900'
+                  : 'border-[var(--border)] text-[var(--muted)] bg-[var(--bg)]'
           }`}
           role="status"
         >
-          {loading ? (
-            <p>Sync in progress — large zones can take several minutes. Status updates every few seconds.</p>
-          ) : anyFailed ? (
-            <p>
-              Filter sync failed
-              {status?.error ? `: ${status.error}` : err ? `: ${err}` : '.'}{' '}
-              {Number(status?.entries ?? 0) > 0
-                ? `DNS still resolves; serving last CDB (${Number(status.entries).toLocaleString()} entries).`
-                : 'Check feed rows and the log below.'}
-            </p>
-          ) : anySynced ? (
-            <p>
-              Last sync OK
-              {feedStates
-                .filter((f) => f.st?.updated_at)
-                .map((f) => ` · ${f.policy.name} serial ${f.st.serial} (${modeLabel(f.st.last_mode)}) at ${f.st.updated_at}`)
-                .join('') || '.'}
-            </p>
-          ) : policies.length ? (
-            <p>Feeds configured but not synced yet — click Save & sync filters or Re-sync.</p>
+          {syncState.tone === 'ok' ? (
+            <CheckCircle size={18} weight="bold" className="shrink-0 text-emerald-700 mt-0.5" />
+          ) : syncState.tone === 'danger' ? (
+            <WarningCircle size={18} weight="bold" className="shrink-0 text-[var(--danger)] mt-0.5" />
           ) : (
-            <p>No filter feeds configured.</p>
+            <ArrowsClockwise size={18} weight="bold" className="shrink-0 text-amber-800 mt-0.5" />
           )}
+          <div className="leading-relaxed">
+            {loading ? (
+              <p className="font-medium">Sync in progress — downloading and compiling zones to CDB. Real-time updates occur every few seconds.</p>
+            ) : anyFailed ? (
+              <p>
+                <strong className="font-semibold">Filter sync failed:</strong>{' '}
+                {status?.error || err || 'Check logs below.'}{' '}
+                {Number(status?.entries ?? 0) > 0
+                  ? `DNS resolve path remains active with last good CDB snapshot (${Number(status.entries).toLocaleString()} entries).`
+                  : 'Verify upstream Komdigi master IPs connectivity.'}
+              </p>
+            ) : anySynced ? (
+              <p>
+                <strong className="font-semibold">Last sync verified:</strong>{' '}
+                {feedStates
+                  .filter((f) => f.st?.updated_at)
+                  .map((f) => `${f.policy.name} (Serial ${f.st.serial}, ${modeLabel(f.st.last_mode)}) at ${f.st.updated_at}`)
+                  .join(' · ') || 'CDB engine synced and healthy.'}
+              </p>
+            ) : policies.length ? (
+              <p>Feeds configured in draft. Click <strong>Save &amp; Sync Filters</strong> to pull authoritative zone transfer.</p>
+            ) : (
+              <p>No filter feeds configured.</p>
+            )}
+          </div>
         </div>
 
         {err || (status?.error && !(Number(status?.entries ?? 0) > 0)) ? (
           <ErrorBox msg={err || `Engine error: ${status.error}`} />
         ) : null}
         {status?.error && Number(status?.entries ?? 0) > 0 && !err ? (
-          <div className="border border-amber-500/40 bg-amber-500/10 text-amber-900 text-sm px-3 py-2">
-            Sync warning: {status.error} — serving last-good filter CDB ({Number(status.entries).toLocaleString()}{' '}
-            entries). Resolve path stays up.
+          <div className="border border-amber-500/40 bg-amber-500/10 text-amber-900 text-xs px-3.5 py-2.5 rounded-[var(--radius)]">
+            Warning: {status.error} — serving last-good filter CDB ({Number(status.entries).toLocaleString()}{' '}
+            entries). Resolving operations unaffected.
           </div>
         ) : null}
         {ok ? (
-          <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
+          <div className="border border-[var(--ok)]/40 bg-[var(--ok-soft)] text-[var(--ok)] text-xs px-3.5 py-2.5 rounded-[var(--radius)] font-medium">
             {ok}
           </div>
         ) : null}
 
-        <label className="text-xs text-[var(--muted)] space-y-1 block max-w-xs">
-          AXFR auto-refresh interval (seconds, 0 = off · default 86400 = 24h)
-          <input
-            type="number"
-            min={0}
-            step={3600}
-            className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
-            value={axfrIntervalSec}
-            onChange={(e) => setAxfrIntervalSec(e.target.value)}
-            disabled={!isAdmin || busy}
-          />
-        </label>
+        {/* Schedule & Auto-refresh Config Card */}
+        <div className="p-3.5 rounded-[var(--radius)] bg-[var(--bg-panel)] border border-[var(--border)] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <label htmlFor="axfr-interval-input" className="text-xs font-semibold text-[var(--text)] block">
+              AXFR Auto-Refresh Interval
+            </label>
+            <p className="text-[11px] text-[var(--muted)] mt-0.5">
+              Frequency for SOA checks and incremental IXFR sync. 0 disables automatic sync (default: 86400s = 24h).
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <input
+              id="axfr-interval-input"
+              type="number"
+              min={0}
+              step={3600}
+              className="w-32 bg-[var(--bg)] border border-[var(--border)] px-3 py-1.5 text-xs mono text-[var(--text)] rounded-[var(--radius)]"
+              value={axfrIntervalSec}
+              onChange={(e) => setAxfrIntervalSec(e.target.value)}
+              disabled={!isAdmin || busy}
+            />
+            <span className="text-xs text-[var(--muted)]">seconds</span>
+          </div>
+        </div>
 
-        <ul className="space-y-2 text-sm">
-          {policies.length ? (
-            policies.map((p) => {
-              const st = axfrFeeds[p.name]
-              const rowTone = !st
-                ? 'text-[var(--muted)]'
-                : st.ok === false || st.last_mode === 'failed'
-                  ? 'text-[var(--danger)]'
-                  : 'text-emerald-700'
-              return (
-                <li
-                  key={p.name}
-                  className={`flex flex-wrap items-start justify-between gap-2 border-b border-[var(--border)]/60 pb-2 ${
-                    editName === p.name ? 'bg-[var(--accent-soft)] -mx-2 px-2 rounded-[var(--radius)]' : ''
-                  }`}
-                >
-                  <div className="min-w-0">
-                    <div className="font-medium flex flex-wrap items-center gap-2">
-                      <span>{p.name}</span>
-                      <span
-                        className={`text-[10px] uppercase tracking-wide mono ${
-                          p.enabled === false ? 'text-[var(--muted)]' : 'text-emerald-700'
-                        }`}
-                      >
-                        {p.enabled === false ? 'disabled' : 'enabled'}
-                      </span>
-                      <span className={`text-[10px] uppercase tracking-wide mono ${rowTone}`}>
-                        {st ? modeLabel(st.last_mode) : 'never synced'}
-                      </span>
-                    </div>
-                    <div className="mono text-xs text-[var(--muted)] break-all">zone {p.zone || p.source}</div>
-                    <div className="mono text-xs text-[var(--muted)] break-all">
-                      masters {(p.masters || []).join(', ') || '—'}
-                    </div>
-                    <div className="text-xs text-[var(--muted)] mt-0.5">
-                      axfr · {p.action || 'nxdomain'}
-                      {p.target ? ` → ${p.target}` : ''}
-                    </div>
-                    {st ? (
-                      <div className={`text-xs mt-1 mono ${rowTone}`}>
-                        serial {st.serial ?? 0}
-                        {st.last_master ? ` · via ${st.last_master}` : ''}
-                        {st.updated_at ? ` · ${st.updated_at}` : ''}
-                        {st.last_error ? ` · ${st.last_error}` : ''}
+        {/* Feeds List Cards */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+              Active Inbound Feeds ({policies.length})
+            </h4>
+          </div>
+
+          <div className="space-y-2.5">
+            {policies.length ? (
+              policies.map((p) => {
+                const st = axfrFeeds[p.name]
+                const rowTone = !st
+                  ? 'text-[var(--muted)]'
+                  : st.ok === false || st.last_mode === 'failed'
+                    ? 'text-[var(--danger)]'
+                    : 'text-emerald-700'
+                return (
+                  <div
+                    key={p.name}
+                    className={`p-3.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-elevated)] flex flex-col md:flex-row md:items-center justify-between gap-3 transition-colors ${
+                      editName === p.name ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]' : ''
+                    }`}
+                  >
+                    <div className="space-y-1.5 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-semibold text-xs text-[var(--text)]">{p.name}</span>
+                        <span
+                          className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
+                            p.enabled === false
+                              ? 'border-[var(--border)] text-[var(--muted)] bg-[var(--bg)]'
+                              : 'border-emerald-500/30 text-emerald-700 bg-emerald-500/10'
+                          }`}
+                        >
+                          {p.enabled === false ? 'DISABLED' : 'ENABLED'}
+                        </span>
+                        <span className={`text-[10px] font-mono font-medium px-2 py-0.5 rounded border border-[var(--border)] bg-[var(--bg)] ${rowTone}`}>
+                          {st ? modeLabel(st.last_mode) : 'NEVER SYNCED'}
+                        </span>
+                        <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent)]/30">
+                          {p.action || 'nxdomain'} {p.target ? `→ ${p.target}` : ''}
+                        </span>
                       </div>
-                    ) : (
-                      <div className="text-xs mt-1 text-[var(--muted)]">No sync status yet</div>
-                    )}
-                  </div>
-                  <div className="flex gap-1 shrink-0">
-                    <button
-                      type="button"
-                      disabled={!isAdmin || busy || loading}
-                      onClick={() => toggleEnabled(p.name)}
-                      className="btn btn-ghost text-xs disabled:opacity-40"
-                    >
-                      {p.enabled === false ? 'Enable' : 'Disable'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!isAdmin || busy || loading}
-                      onClick={() => startEdit(p)}
-                      className="btn btn-ghost text-xs disabled:opacity-40"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!isAdmin || busy || loading}
-                      onClick={() => remove(p.name)}
-                      className="btn btn-ghost text-xs text-[var(--danger)] disabled:opacity-40"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </li>
-              )
-            })
-          ) : (
-            <li className="text-sm text-[var(--muted)]">No slave filter feeds yet — add one below, then Save & sync.</li>
-          )}
-        </ul>
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--muted)] mono">
+                        <span>Zone: <strong className="text-[var(--text)]">{p.zone || p.source}</strong></span>
+                        <span>Masters: <strong className="text-[var(--text)]">{(p.masters || []).join(', ') || '—'}</strong></span>
+                      </div>
+                      {st ? (
+                        <div className={`text-[11px] mono ${rowTone}`}>
+                          Serial: {st.serial ?? 0}
+                          {st.last_master ? ` · via ${st.last_master}` : ''}
+                          {st.updated_at ? ` · ${st.updated_at}` : ''}
+                          {st.last_error ? ` · ${st.last_error}` : ''}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-[var(--muted)]">Pending first sync</div>
+                      )}
+                    </div>
 
-        <div className="border border-[var(--border)] rounded-[var(--radius)] overflow-hidden">
-          <div className="px-3 py-2 border-b border-[var(--border)] text-xs font-medium flex justify-between gap-2">
-            <span>Sync log</span>
-            <span className="text-[var(--muted)] font-normal">latest {Math.min(axfrEvents.length, 20)} events</span>
+                    <div className="flex items-center gap-2 shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-[var(--border)]">
+                      <button
+                        type="button"
+                        disabled={!isAdmin || busy || loading}
+                        onClick={() => toggleEnabled(p.name)}
+                        className="btn btn-secondary text-xs min-h-[30px] px-2.5 disabled:opacity-40"
+                      >
+                        {p.enabled === false ? 'Enable' : 'Disable'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!isAdmin || busy || loading}
+                        onClick={() => startEdit(p)}
+                        className="btn btn-ghost text-xs min-h-[30px] px-2.5 text-[var(--muted)] hover:text-[var(--text)] disabled:opacity-40"
+                      >
+                        <PencilSimple size={13} className="mr-1 inline" />
+                        <span>Edit</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!isAdmin || busy || loading}
+                        onClick={() => remove(p.name)}
+                        className="btn btn-ghost text-xs min-h-[30px] px-2.5 text-[var(--danger)] hover:bg-[var(--danger)]/10 disabled:opacity-40"
+                      >
+                        <Trash size={13} className="mr-1 inline" />
+                        <span>Remove</span>
+                      </button>
+                    </div>
+                  </div>
+                )
+              })
+            ) : (
+              <div className="p-6 text-center text-xs text-[var(--muted)] border border-dashed border-[var(--border)] rounded-[var(--radius)]">
+                No slave filter feeds configured. Add the official Kominfo AXFR feed below.
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Sync Telemetry Log */}
+        <div className="border border-[var(--border)] rounded-[var(--radius)] overflow-hidden bg-[var(--bg)]">
+          <div className="px-3.5 py-2.5 border-b border-[var(--border)] bg-[var(--bg-elevated)] text-xs font-semibold flex items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5 text-[var(--text)]">
+              <Database size={14} />
+              <span>Dataplane Transfer Log</span>
+            </span>
+            <span className="text-[11px] text-[var(--muted)] font-mono font-normal">
+              Latest {Math.min(axfrEvents.length, 20)} events
+            </span>
           </div>
           {axfrEvents.length ? (
-            <ul className="max-h-48 overflow-y-auto divide-y divide-[var(--border)]/60 text-xs mono">
+            <ul className="max-h-44 overflow-y-auto divide-y divide-[var(--border)]/40 text-xs mono p-1">
               {[...axfrEvents].reverse().slice(0, 20).map((ev, i) => (
                 <li
                   key={`${ev.time}-${i}`}
-                  className={`px-3 py-1.5 ${
+                  className={`px-3 py-1.5 flex items-start gap-2 ${
                     ev.level === 'error' ? 'text-[var(--danger)]' : 'text-[var(--muted)]'
                   }`}
                 >
-                  <span className="text-[var(--text)]/70">{ev.time || '—'}</span>
-                  {ev.feed ? ` · ${ev.feed}` : ''}
-                  {' · '}
-                  {ev.message}
+                  <span className="text-[var(--text)]/60 shrink-0 font-medium">{ev.time || '—'}</span>
+                  {ev.feed ? <span className="text-[var(--accent)] font-semibold shrink-0">[{ev.feed}]</span> : null}
+                  <span className="break-all">{ev.message}</span>
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="px-3 py-4 text-xs text-[var(--muted)]">
-              No sync events yet. After the next Re-sync / Save & sync, results appear here.
+            <p className="px-4 py-6 text-center text-xs text-[var(--muted)]">
+              No recent sync events logged. Trigger a Re-sync or Save &amp; Sync to inspect live transfer details.
             </p>
           )}
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-2">
-          <label className="text-xs text-[var(--muted)] space-y-1">
-            Name
-            <input
-              className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm text-[var(--text)]"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={!isAdmin || busy}
-              placeholder="trustpositif-axfr"
-            />
-          </label>
-          <label className="text-xs text-[var(--muted)] space-y-1">
-            Zone
-            <input
-              className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
-              value={zone}
-              onChange={(e) => setZone(e.target.value)}
-              disabled={!isAdmin || busy}
-              placeholder="trustpositifkominfo"
-            />
-          </label>
-          <label className="text-xs text-[var(--muted)] space-y-1 sm:col-span-2">
-            Komdigi masters (one per line)
-            <textarea
-              className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)] min-h-[4.5rem]"
-              value={mastersText}
-              onChange={(e) => setMastersText(e.target.value)}
-              disabled={!isAdmin || busy}
-              placeholder={DEFAULT_AXFR_FILTER_MASTERS.join('\n')}
-            />
-          </label>
-          <label className="text-xs text-[var(--muted)] space-y-1">
-            Action
-            <select
-              className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm text-[var(--text)]"
-              value={action}
-              onChange={(e) => setAction(e.target.value)}
-              disabled={!isAdmin || busy}
-            >
-              <option value="nxdomain">nxdomain</option>
-              <option value="nodata">nodata</option>
-              <option value="pass">pass</option>
-              <option value="redirect">redirect (sinkhole IP)</option>
-              <option value="cname">cname (landing host)</option>
-            </select>
-            {action === 'redirect' ? (
-              <p className="text-[11px] text-[var(--muted)] leading-relaxed">
-                Sinkhole IP breaks many Indonesian banking apps (they treat it as DNS hijack). The
-                website still loads. PowerSVX answers NXDOMAIN instead of the landing IP for
-                bank-branded names; gambling/porn redirect is unchanged.
-              </p>
+        {/* Add/Edit Feed Form */}
+        <div className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-panel)] space-y-3">
+          <div className="flex items-center justify-between pb-2 border-b border-[var(--border)]">
+            <h4 className="text-xs font-bold text-[var(--text)] uppercase tracking-wider">
+              {editName != null ? `Edit Feed: ${editName}` : 'Add Inbound Filter Feed'}
+            </h4>
+            {editName != null ? (
+              <span className="text-[11px] text-[var(--warn)] font-medium">Drafting changes</span>
             ) : null}
-          </label>
-          {action === 'redirect' || action === 'cname' ? (
-            <label className="text-xs text-[var(--muted)] space-y-1">
-              {action === 'redirect' ? 'Landing IP' : 'Landing hostname'}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="text-xs font-medium text-[var(--muted)] space-y-1 block">
+              <span>Feed Identifier</span>
               <input
-                className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
-                value={target}
-                onChange={(e) => setTarget(e.target.value)}
+                className="w-full input text-xs font-mono"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
                 disabled={!isAdmin || busy}
-                placeholder={action === 'redirect' ? defaultRedirectTarget : 'block.corp.local'}
+                placeholder="e.g. trustpositif-axfr"
               />
             </label>
-          ) : (
-            <div />
-          )}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            disabled={!isAdmin || busy || loading}
-            onClick={addOrUpdate}
-            className="btn btn-secondary disabled:opacity-50"
-          >
-            {editName != null ? 'Save changes' : 'Add feed to list'}
-          </button>
-          {editName != null ? (
+            <label className="text-xs font-medium text-[var(--muted)] space-y-1 block">
+              <span>Authoritative Zone Name</span>
+              <input
+                className="w-full input text-xs font-mono"
+                value={zone}
+                onChange={(e) => setZone(e.target.value)}
+                disabled={!isAdmin || busy}
+                placeholder="trustpositifkominfo"
+              />
+            </label>
+            <label className="text-xs font-medium text-[var(--muted)] space-y-1 block sm:col-span-2">
+              <span>Master DNS Servers (one per line, host:port)</span>
+              <textarea
+                className="w-full input text-xs font-mono min-h-[4rem]"
+                value={mastersText}
+                onChange={(e) => setMastersText(e.target.value)}
+                disabled={!isAdmin || busy}
+                placeholder={DEFAULT_AXFR_FILTER_MASTERS.join('\n')}
+              />
+            </label>
+            <label className="text-xs font-medium text-[var(--muted)] space-y-1 block">
+              <span>Filter Policy Action</span>
+              <select
+                className="w-full input text-xs"
+                value={action}
+                onChange={(e) => setAction(e.target.value)}
+                disabled={!isAdmin || busy}
+              >
+                <option value="nxdomain">NXDOMAIN (Recommended · Zero banking disruption)</option>
+                <option value="nodata">NODATA</option>
+                <option value="pass">PASS (Bypass rule)</option>
+                <option value="redirect">REDIRECT (Sinkhole IP)</option>
+                <option value="cname">CNAME (Landing hostname)</option>
+              </select>
+              {action === 'redirect' ? (
+                <p className="text-[11px] text-[var(--warn)] leading-relaxed pt-1">
+                  Sinkhole redirection may trigger security warnings in Indonesian mobile banking apps. PowerSVX automatically maintains NXDOMAIN protection for sensitive financial services.
+                </p>
+              ) : null}
+            </label>
+            {action === 'redirect' || action === 'cname' ? (
+              <label className="text-xs font-medium text-[var(--muted)] space-y-1 block">
+                <span>{action === 'redirect' ? 'Sinkhole Landing IP' : 'Landing Hostname'}</span>
+                <input
+                  className="w-full input text-xs font-mono"
+                  value={target}
+                  onChange={(e) => setTarget(e.target.value)}
+                  disabled={!isAdmin || busy}
+                  placeholder={action === 'redirect' ? defaultRedirectTarget : 'block.local'}
+                />
+              </label>
+            ) : (
+              <div />
+            )}
+          </div>
+
+          <div className="pt-2 flex items-center gap-2">
             <button
               type="button"
               disabled={!isAdmin || busy || loading}
-              onClick={cancelEdit}
-              className="btn btn-ghost disabled:opacity-50"
+              onClick={addOrUpdate}
+              className="btn btn-secondary text-xs min-h-[34px] px-4 font-medium disabled:opacity-50"
             >
-              Cancel
+              {editName != null ? 'Update Feed' : 'Add Feed to Draft'}
             </button>
-          ) : null}
+            {editName != null ? (
+              <button
+                type="button"
+                disabled={!isAdmin || busy || loading}
+                onClick={cancelEdit}
+                className="btn btn-ghost text-xs min-h-[34px] px-3 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
     </section>
@@ -1220,206 +1368,292 @@ function RPZPanel({ initial, onChange }) {
   const loading = !!status?.loading
 
   return (
-    <section className="panel p-4 space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <div className="space-y-6 max-w-[var(--content-max)]" aria-labelledby="tools-rpz-heading">
+      {/* Header Banner */}
+      <header className="reveal flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[var(--border)]">
         <div>
-          <h2 className="text-sm font-medium">RPZ feeds (Hosts / Files)</h2>
-          <p className="text-xs text-[var(--muted)] mt-1">
-            HTTP URL or local file · hosts format (disabled by default; primary filter feed is Kominfo AXFR under Tools → AXFR).
-          </p>
-          <p className="text-sm mt-2">
-            {policies.length > 0 ? (
-              <>
-                <span className="text-[var(--text)] font-medium">
-                  {policies.length} {policies.length === 1 ? 'hosts feed' : 'hosts feeds'} configured
-                </span>
-                {intervalSec > 0 ? ` · auto-reload every ${intervalSec}s` : ' · auto-reload off'}
-              </>
-            ) : (
-              <span className="text-[var(--muted)]">
-                Disabled · No hosts feeds active (using official Kominfo AXFR filter)
-              </span>
-            )}
-            {loading ? ' · syncing…' : null}
-            {status?.from_disk ? ' · from disk' : null}
-            {status?.last_loaded ? (
-              <span className="text-[var(--muted)]"> · last {status.last_loaded}</span>
-            ) : null}
+          <div className="flex items-center gap-2 mb-1">
+            <span className="p-1.5 rounded-lg bg-[var(--accent-soft)] text-[var(--accent)]">
+              <ShieldCheck size={20} weight="bold" />
+            </span>
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">Domain Filtering Engine</span>
+          </div>
+          <h2 id="tools-rpz-heading" className="text-2xl font-bold tracking-tight text-[var(--text)]">
+            RPZ Feeds &amp; Custom Blocklists
+          </h2>
+          <p className="text-xs text-[var(--muted)] mt-1.5 max-w-[65ch] leading-relaxed">
+            Attach supplementary plain-text hosts files or URLs for ad-blocking and custom blacklists. Rules are indexed into the PowerSVX high-performance CDB dataplane.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
           <button
             type="button"
             disabled={busy || loading}
             onClick={resync}
-            className="btn btn-secondary"
+            className="btn btn-secondary text-xs min-h-[36px] px-3 font-medium flex items-center gap-1.5 disabled:opacity-50"
           >
-            Re-sync
+            <ArrowsClockwise size={14} className={loading ? 'animate-spin' : ''} />
+            <span>Re-sync</span>
           </button>
           <button
             type="button"
             disabled={busy || loading}
             onClick={saveSync}
-            className="btn btn-primary"
+            className="btn btn-primary text-xs min-h-[36px] px-4 font-semibold disabled:opacity-50"
           >
-            {busy ? 'Saving…' : 'Save & sync'}
+            {busy ? 'Saving…' : 'Save & Sync'}
           </button>
+        </div>
+      </header>
+
+      {/* Metrics Row (AdGuard Home Style) */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="p-4 rounded-[var(--radius)] bg-[var(--bg-panel)] border border-[var(--border)] flex items-center gap-3">
+          <span className="p-2 rounded bg-[var(--bg)] border border-[var(--border)] text-[var(--accent)]">
+            <FileText size={20} />
+          </span>
+          <div>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)] block">Custom Feeds</span>
+            <span className="text-base font-bold text-[var(--text)] font-mono">{policies.length} Active</span>
+          </div>
+        </div>
+
+        <div className="p-4 rounded-[var(--radius)] bg-[var(--bg-panel)] border border-[var(--border)] flex items-center gap-3">
+          <span className="p-2 rounded bg-[var(--bg)] border border-[var(--border)] text-emerald-700">
+            <Clock size={20} />
+          </span>
+          <div>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)] block">Auto-Reload</span>
+            <span className="text-base font-bold text-[var(--text)] font-mono truncate">
+              {updateAt ? `Daily at ${updateAt}` : intervalSec > 0 ? `Every ${intervalSec}s` : 'Manual only'}
+            </span>
+          </div>
+        </div>
+
+        <div className="p-4 rounded-[var(--radius)] bg-[var(--bg-panel)] border border-[var(--border)] flex items-center gap-3">
+          <span className="p-2 rounded bg-[var(--bg)] border border-[var(--border)] text-[var(--muted)]">
+            <Database size={20} />
+          </span>
+          <div>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)] block">Total CDB Engine</span>
+            <span className="text-base font-bold text-[var(--text)] font-mono">
+              {status?.entries ? `${Number(status.entries).toLocaleString()} rules` : 'Ready'}
+            </span>
+          </div>
         </div>
       </div>
 
-      <div className="border border-[var(--border)] bg-[var(--card)] text-xs text-[var(--muted)] p-3 rounded leading-relaxed">
-        <strong>Default filtering policy:</strong> PowerSVX uses direct slave AXFR synchronization with Kominfo masters (managed under <strong>Tools → AXFR</strong>) using the bundled repository seed dataset. RPZ web scraping feeds are optional and disabled by default with zero automatic web scraping.
+      {/* Info Callout */}
+      <div className="p-3.5 rounded-[var(--radius)] bg-[var(--bg-elevated)] border border-[var(--border)] text-xs text-[var(--muted)] leading-relaxed flex items-start gap-2.5">
+        <ShieldCheck size={18} weight="bold" className="text-[var(--accent)] shrink-0 mt-0.5" />
+        <div>
+          <strong className="text-[var(--text)]">Standard Filtering Policy:</strong> PowerSVX utilizes authoritative Kominfo AXFR/IXFR synchronization (managed under <strong className="text-[var(--text)]">Tools → AXFR Sync</strong>) as its primary national blocklist. Adding external web hosts feeds is optional; zero automatic scraping is enabled by default.
+        </div>
       </div>
 
       {err ? <ErrorBox msg={err} /> : null}
       {ok ? (
-        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
-          {ok}
+        <div className="border border-[var(--ok)]/40 bg-[var(--ok-soft)] text-[var(--ok)] text-xs px-4 py-3 rounded-[var(--radius)] font-medium flex items-center gap-2">
+          <CheckCircle size={16} weight="bold" />
+          <span>{ok}</span>
         </div>
       ) : null}
       {loading ? (
-        <div className="border border-[var(--warn)]/40 bg-[var(--warn)]/10 text-[var(--warn)] text-sm px-3 py-2">
-          Large feeds can take several minutes. Snapshot is written to data/rpz-store for faster restarts.
+        <div className="border border-amber-500/40 bg-amber-500/10 text-amber-900 text-xs px-4 py-3 rounded-[var(--radius)] flex items-center gap-2">
+          <ArrowsClockwise size={16} className="animate-spin text-amber-800" />
+          <span>Large hosts lists are compiling to disk snapshot in background. Resolving operations remain active.</span>
         </div>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 max-w-lg">
-        <label className="text-xs text-[var(--muted)] space-y-1 block">
-          Hosts interval (seconds, 0 = off · 86400 = 24h)
-          <input
-            type="number"
-            min={0}
-            step={60}
-            className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
-            value={intervalSec}
-            onChange={(e) => setIntervalSec(e.target.value)}
-          />
-        </label>
-        <label className="text-xs text-[var(--muted)] space-y-1 block">
-          Daily at (local HH:MM, empty = interval from start)
-          <input
-            type="time"
-            className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
-            value={updateAt || ''}
-            onChange={(e) => setUpdateAt(e.target.value)}
-          />
-        </label>
-      </div>
-      <p className="text-xs text-[var(--muted)]">
-        With a daily time set, hosts reload runs at that clock each day (process TZ, e.g. Asia/Jakarta).
-        AXFR filter interval is under Tools → AXFR (default 24h · IXFR after first pull).
-      </p>
+      {/* Schedule Configuration Card */}
+      <section className="panel p-4 space-y-3">
+        <div className="border-b border-[var(--border)] pb-2.5">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--text)]">
+            Refresh Schedule
+          </h3>
+          <p className="text-[11px] text-[var(--muted)] mt-0.5">
+            Configure periodic re-downloading and compilation for hosts file sources.
+          </p>
+        </div>
 
-      <ul className="space-y-2 text-sm">
-        {policies.length ? (
-          policies.map((p) => (
-            <li
-              key={p.name}
-              className={`flex flex-wrap items-start justify-between gap-2 border-b border-[var(--border)]/60 pb-2 ${
-                editName === p.name ? 'bg-[var(--accent-soft)] -mx-2 px-2 rounded-[var(--radius)]' : ''
-              }`}
-            >
-              <div className="min-w-0">
-                <div className="font-medium">{p.name}</div>
-                <div className="mono text-xs text-[var(--muted)] break-all">{p.source}</div>
-                <div className="text-xs text-[var(--muted)] mt-0.5">
-                  {p.format || 'hosts'} · {p.action || 'nxdomain'}
-                  {p.target ? ` → ${p.target}` : ''}
+        <div className="grid gap-4 sm:grid-cols-2 max-w-xl">
+          <label className="text-xs text-[var(--muted)] space-y-1 block">
+            <span className="font-medium text-[var(--text)]">Reload Interval (seconds)</span>
+            <input
+              type="number"
+              min={0}
+              step={60}
+              className="w-full input text-xs font-mono"
+              value={intervalSec}
+              onChange={(e) => setIntervalSec(e.target.value)}
+              placeholder="0 = disabled, 86400 = 24h"
+            />
+            <span className="text-[10px] text-[var(--muted)] block">Set to 0 to disable periodic interval pulls.</span>
+          </label>
+          <label className="text-xs text-[var(--muted)] space-y-1 block">
+            <span className="font-medium text-[var(--text)]">Fixed Daily Time (HH:MM)</span>
+            <input
+              type="time"
+              className="w-full input text-xs font-mono"
+              value={updateAt || ''}
+              onChange={(e) => setUpdateAt(e.target.value)}
+            />
+            <span className="text-[10px] text-[var(--muted)] block">Executes once per day at server clock (e.g. Asia/Jakarta).</span>
+          </label>
+        </div>
+      </section>
+
+      {/* Feeds List Cards */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--muted)]">
+            Configured Hosts Feeds ({policies.length})
+          </h3>
+        </div>
+
+        <div className="space-y-2.5">
+          {policies.length ? (
+            policies.map((p) => (
+              <div
+                key={p.name}
+                className={`p-3.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-panel)] flex flex-col md:flex-row md:items-center justify-between gap-3 transition-colors ${
+                  editName === p.name ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]' : ''
+                }`}
+              >
+                <div className="space-y-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold text-xs text-[var(--text)]">{p.name}</span>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--muted)]">
+                      {p.format || 'hosts'}
+                    </span>
+                    <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent)]/30 font-semibold">
+                      {p.action || 'nxdomain'} {p.target ? `→ ${p.target}` : ''}
+                    </span>
+                  </div>
+                  <div className="mono text-xs text-[var(--muted)] break-all flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--muted)]" />
+                    <span>{p.source}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-[var(--border)]">
+                  <button
+                    type="button"
+                    disabled={busy || loading}
+                    onClick={() => startEdit(p)}
+                    className="btn btn-ghost text-xs min-h-[30px] px-2.5 text-[var(--muted)] hover:text-[var(--text)] disabled:opacity-40"
+                  >
+                    <PencilSimple size={13} className="mr-1 inline" />
+                    <span>Edit</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || loading}
+                    onClick={() => remove(p.name)}
+                    className="btn btn-ghost text-xs min-h-[30px] px-2.5 text-[var(--danger)] hover:bg-[var(--danger)]/10 disabled:opacity-40"
+                  >
+                    <Trash size={13} className="mr-1 inline" />
+                    <span>Remove</span>
+                  </button>
                 </div>
               </div>
-              <div className="flex gap-1 shrink-0">
-                <button
-                  type="button"
-                  disabled={busy || loading}
-                  onClick={() => startEdit(p)}
-                  className="btn btn-ghost text-xs disabled:opacity-40"
-                >
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  disabled={busy || loading}
-                  onClick={() => remove(p.name)}
-                  className="btn btn-ghost text-xs text-[var(--danger)] disabled:opacity-40"
-                >
-                  Remove
-                </button>
-              </div>
-            </li>
-          ))
-        ) : (
-          <li className="text-sm text-[var(--muted)]">No feeds yet — add one below.</li>
-        )}
-      </ul>
+            ))
+          ) : (
+            <div className="p-8 text-center border border-dashed border-[var(--border)] rounded-[var(--radius)] bg-[var(--bg)]/40">
+              <ShieldCheck size={28} className="mx-auto text-[var(--muted)] mb-2" />
+              <p className="text-xs font-semibold text-[var(--text)]">No custom hosts feeds configured</p>
+              <p className="text-[11px] text-[var(--muted)] mt-1 max-w-md mx-auto leading-relaxed">
+                National censorship &amp; malware protection is actively handled by Kominfo AXFR. To add additional domain blocklists or internal hostfiles, use the form below.
+              </p>
+            </div>
+          )}
+        </div>
+      </section>
 
-      <div className="grid gap-2 sm:grid-cols-2">
-        <label className="text-xs text-[var(--muted)] space-y-1">
-          Name
-          <input
-            className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm text-[var(--text)]"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. adblock-custom"
-          />
-        </label>
-        <label className="text-xs text-[var(--muted)] space-y-1">
-          Action
-          <select
-            className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm text-[var(--text)]"
-            value={action}
-            onChange={(e) => setAction(e.target.value)}
-          >
-            <option value="nxdomain">nxdomain</option>
-            <option value="nodata">nodata</option>
-            <option value="pass">pass</option>
-            <option value="redirect">redirect (sinkhole IP)</option>
-            <option value="cname">cname (landing host)</option>
-          </select>
-          {action === 'redirect' ? (
-            <p className="text-[11px] text-[var(--muted)] leading-relaxed">
-              Sinkhole IP breaks many Indonesian banking apps (they treat it as DNS hijack). The
-              website still loads. PowerSVX answers NXDOMAIN instead of the landing IP for
-              bank-branded names; gambling/porn redirect is unchanged.
-            </p>
+      {/* Add / Edit Feed Form */}
+      <section className="panel p-4 space-y-3">
+        <div className="border-b border-[var(--border)] pb-2.5 flex items-center justify-between">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--text)]">
+            {editName != null ? `Edit Feed: ${editName}` : 'Add Custom Hosts Feed'}
+          </h3>
+          {editName != null ? (
+            <span className="text-[11px] text-[var(--warn)] font-medium">Drafting changes</span>
           ) : null}
-        </label>
-        {action === 'redirect' || action === 'cname' ? (
-          <label className="text-xs text-[var(--muted)] space-y-1 sm:col-span-2">
-            {action === 'redirect' ? 'Landing IP' : 'Landing hostname'}
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="text-xs font-medium text-[var(--muted)] space-y-1 block">
+            <span>Feed Name</span>
             <input
-              className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-              placeholder={action === 'redirect' ? defaultRedirectTarget : 'block.corp.local'}
+              className="w-full input text-xs"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. adblock-malware"
             />
           </label>
-        ) : null}
-        <label className="text-xs text-[var(--muted)] space-y-1 sm:col-span-2">
-          Source (HTTPS URL or file path)
-          <input
-            className="w-full bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm mono text-[var(--text)]"
-            value={source}
-            onChange={(e) => setSource(e.target.value)}
-            placeholder="e.g. /etc/powersvx/custom-hosts.txt or https://example.com/hosts"
-          />
-        </label>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled={busy || loading}
-          onClick={addOrUpdate}
-          className="btn btn-secondary"
-        >
-          {editName != null ? 'Save changes' : 'Add feed to list'}
-        </button>
-        {editName != null ? (
-          <button type="button" disabled={busy || loading} onClick={cancelEdit} className="btn btn-ghost">
-            Cancel
+          <label className="text-xs font-medium text-[var(--muted)] space-y-1 block">
+            <span>Filter Action</span>
+            <select
+              className="w-full input text-xs"
+              value={action}
+              onChange={(e) => setAction(e.target.value)}
+            >
+              <option value="nxdomain">NXDOMAIN (Drop / Non-existent)</option>
+              <option value="nodata">NODATA (Empty response)</option>
+              <option value="pass">PASS (Bypass rule)</option>
+              <option value="redirect">REDIRECT (Sinkhole IP)</option>
+              <option value="cname">CNAME (Landing hostname)</option>
+            </select>
+            {action === 'redirect' ? (
+              <p className="text-[11px] text-[var(--warn)] leading-relaxed pt-1">
+                Sinkhole redirection breaks some Indonesian banking apps. PowerSVX will reply with NXDOMAIN for bank-branded queries.
+              </p>
+            ) : null}
+          </label>
+          {action === 'redirect' || action === 'cname' ? (
+            <label className="text-xs font-medium text-[var(--muted)] space-y-1 block sm:col-span-2">
+              <span>{action === 'redirect' ? 'Sinkhole Landing IP' : 'Landing Hostname'}</span>
+              <input
+                className="w-full input text-xs font-mono"
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+                placeholder={action === 'redirect' ? defaultRedirectTarget : 'block.corp.local'}
+              />
+            </label>
+          ) : null}
+          <label className="text-xs font-medium text-[var(--muted)] space-y-1 block sm:col-span-2">
+            <span>Source URL or File Path</span>
+            <input
+              className="w-full input text-xs font-mono"
+              value={source}
+              onChange={(e) => setSource(e.target.value)}
+              placeholder="e.g. /etc/powersvx/custom-hosts.txt or https://example.com/hosts.txt"
+            />
+          </label>
+        </div>
+
+        <div className="pt-2 flex items-center gap-2">
+          <button
+            type="button"
+            disabled={busy || loading}
+            onClick={addOrUpdate}
+            className="btn btn-secondary text-xs min-h-[34px] px-4 font-medium"
+          >
+            {editName != null ? 'Save Changes' : 'Add Feed to List'}
           </button>
-        ) : null}
-      </div>
-    </section>
+          {editName != null ? (
+            <button
+              type="button"
+              disabled={busy || loading}
+              onClick={cancelEdit}
+              className="btn btn-ghost text-xs min-h-[34px] px-3"
+            >
+              Cancel
+            </button>
+          ) : null}
+        </div>
+      </section>
+    </div>
   )
 }
 
@@ -1491,7 +1725,7 @@ function UsersPanel() {
     setOk('')
     try {
       await api.upsertUser({ name, password, role })
-      setOk(editing ? `Updated ${name}` : `Created ${name}`)
+      setOk(editing ? `Updated user ${name}` : `Created user ${name}`)
       resetForm()
       await load()
     } catch (ex) {
@@ -1502,6 +1736,7 @@ function UsersPanel() {
   }
 
   const remove = async (n) => {
+    if (!window.confirm(`Delete user account "${n}"?`)) return
     setErr('')
     try {
       await api.deleteUser(n)
@@ -1513,84 +1748,165 @@ function UsersPanel() {
   }
 
   return (
-    <section className="panel p-4 space-y-3">
-      <h2 className="text-sm font-medium">Local users</h2>
-      <p className="text-xs text-[var(--muted)]">
-        Click Edit to change role or password (leave password blank to keep). API tokens stay in TOML.
-      </p>
-      {err ? <ErrorBox msg={err} /> : null}
-      {ok ? (
-        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
-          {ok}
+    <div className="space-y-4 max-w-4xl">
+      <div className="panel p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] pb-4">
+          <div>
+            <h3 className="text-base font-semibold flex items-center gap-2">
+              <Users weight="bold" className="w-5 h-5 text-[var(--accent)]" />
+              Local Access & User Accounts (RBAC)
+            </h3>
+            <p className="text-xs text-[var(--muted)] mt-1">
+              Manage operators and administrators stored in local authentication storage.
+            </p>
+          </div>
+          <span className="text-xs font-mono px-2.5 py-1 rounded-full bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--muted)]">
+            {users.length} {users.length === 1 ? 'Account' : 'Accounts'}
+          </span>
         </div>
-      ) : null}
-      <ul className="text-sm divide-y divide-[var(--border)]">
-        {users.map((u) => (
-          <li key={u.name} className="flex justify-between gap-2 py-2 items-center">
-            <span className="mono">
-              {u.name} <span className="text-[var(--muted)]">· {u.role}</span>
-            </span>
-            <span className="flex gap-2 shrink-0">
-              <button
-                type="button"
-                className="text-xs text-[var(--accent)] hover:underline"
-                onClick={() => startEdit(u)}
-              >
-                Edit
-              </button>
-              <button
-                type="button"
-                className="text-xs text-[var(--muted)] hover:text-[var(--warn)]"
-                onClick={() => remove(u.name)}
-              >
-                Delete
-              </button>
-            </span>
-          </li>
-        ))}
-      </ul>
-      <form onSubmit={save} className="grid grid-cols-1 md:grid-cols-3 gap-2">
-        <input
-          className="bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm"
-          placeholder="username"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          required
-          disabled={editing}
-        />
-        <input
-          type="password"
-          className="bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm"
-          placeholder={editing ? 'new password (optional)' : 'password'}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required={!editing}
-        />
-        <select
-          className="bg-[var(--bg)] border border-[var(--border)] px-2 py-1.5 text-sm"
-          value={role}
-          onChange={(e) => setRole(e.target.value)}
-        >
-          <option value="admin">admin</option>
-          <option value="operator">operator</option>
-          <option value="readonly">readonly</option>
-        </select>
-        <div className="md:col-span-3 flex flex-wrap gap-2">
-          <button
-            type="submit"
-            disabled={busy}
-            className="btn btn-primary"
-          >
-            {busy ? 'Saving…' : editing ? 'Update user' : 'Add user'}
-          </button>
-          {editing ? (
-            <button type="button" onClick={resetForm} className="border border-[var(--border)] px-4 py-2 text-sm">
-              Cancel edit
-            </button>
-          ) : null}
+
+        {err ? <ErrorBox msg={err} /> : null}
+        {ok ? (
+          <div className="border border-[var(--ok)]/40 bg-[var(--ok-soft)] text-[var(--ok)] text-sm px-3.5 py-2.5 rounded-[var(--radius)] font-medium">
+            {ok}
+          </div>
+        ) : null}
+
+        {/* Cloudflare Style Users Table */}
+        <div className="cf-table-wrap">
+          <table className="cf-table">
+            <thead>
+              <tr>
+                <th>User Account</th>
+                <th>Role &amp; Permissions</th>
+                <th>Status</th>
+                <th className="text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) => {
+                const isSelf = me?.user === u.name
+                const roleTone =
+                  u.role === 'admin'
+                    ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-semibold'
+                    : u.role === 'operator'
+                      ? 'bg-[var(--info-soft)] text-[var(--info)] font-semibold'
+                      : 'bg-[var(--bg-elevated)] text-[var(--muted)]'
+                return (
+                  <tr key={u.name}>
+                    <td>
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-7 h-7 rounded-full bg-[var(--bg-elevated)] border border-[var(--border)] flex items-center justify-center font-bold text-xs uppercase text-[var(--accent)]">
+                          {u.name.slice(0, 2)}
+                        </div>
+                        <div>
+                          <span className="mono font-semibold text-sm">{u.name}</span>
+                          {isSelf ? (
+                            <span className="ml-2 text-[10px] uppercase font-bold text-[var(--ok)] bg-[var(--ok-soft)] px-1.5 py-0.5 rounded">
+                              Current
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`text-xs px-2.5 py-0.5 rounded font-mono ${roleTone}`}>
+                        {u.role || 'operator'}
+                      </span>
+                    </td>
+                    <td>
+                      <span className="inline-flex items-center gap-1.5 text-xs text-[var(--ok)] font-medium">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[var(--ok)]" />
+                        Active
+                      </span>
+                    </td>
+                    <td className="text-right space-x-1">
+                      <button
+                        type="button"
+                        onClick={() => startEdit(u)}
+                        className="btn btn-secondary text-xs min-h-[32px] px-2.5"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isSelf}
+                        onClick={() => remove(u.name)}
+                        className="btn btn-secondary text-xs min-h-[32px] px-2.5 text-[var(--danger)] disabled:opacity-30"
+                        title={isSelf ? 'Cannot delete your own account' : 'Remove user'}
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
-      </form>
-    </section>
+
+        {/* Add / Edit Form Card */}
+        <div className="mt-4 p-4 rounded-[var(--radius)] bg-[var(--bg-elevated)] border border-[var(--border)]">
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--text)] mb-3">
+            {editing ? `Update Credentials for "${name}"` : 'Add New Local Account'}
+          </h4>
+          <form onSubmit={save} className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label className="text-xs text-[var(--muted)] space-y-1">
+              <span>Username</span>
+              <input
+                className="input mono w-full"
+                placeholder="username"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                disabled={editing}
+              />
+            </label>
+            <label className="text-xs text-[var(--muted)] space-y-1">
+              <span>Password {editing ? '(leave blank to keep current)' : ''}</span>
+              <input
+                type="password"
+                className="input mono w-full"
+                placeholder={editing ? '•••••••• (unchanged)' : 'Enter secure password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required={!editing}
+              />
+            </label>
+            <label className="text-xs text-[var(--muted)] space-y-1">
+              <span>Role Assignment</span>
+              <select
+                className="input w-full font-medium"
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+              >
+                <option value="admin">Administrator (Full Control)</option>
+                <option value="operator">Operator (Zones &amp; Feeds)</option>
+                <option value="readonly">Read-Only (Viewer)</option>
+              </select>
+            </label>
+            <div className="md:col-span-3 flex items-center gap-2 pt-2">
+              <button
+                type="submit"
+                disabled={busy}
+                className="btn btn-primary min-h-[40px] px-5"
+              >
+                {busy ? 'Saving…' : editing ? 'Update User Account' : 'Create User Account'}
+              </button>
+              {editing ? (
+                <button
+                  type="button"
+                  onClick={resetForm}
+                  className="btn btn-secondary min-h-[40px] px-4"
+                >
+                  Cancel Edit
+                </button>
+              ) : null}
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -1614,7 +1930,7 @@ function BackupPanel() {
       a.download = `powersvx-backup-${new Date().toISOString().slice(0, 10)}.json`
       a.click()
       URL.revokeObjectURL(url)
-      setOk('Backup downloaded')
+      setOk('Backup downloaded successfully as JSON manifest')
     } catch (ex) {
       setErr(ex.message)
     } finally {
@@ -1633,7 +1949,7 @@ function BackupPanel() {
       const text = await file.text()
       const body = JSON.parse(text)
       await api.restoreBackup(body)
-      setOk('Backup restored — reload zones if needed')
+      setOk('Backup restored successfully — authoritative zones reloaded')
     } catch (ex) {
       setErr(ex.message)
     } finally {
@@ -1642,38 +1958,78 @@ function BackupPanel() {
   }
 
   return (
-    <section className="panel p-4 space-y-3">
-      <h2 className="text-sm font-medium">Zone backup</h2>
-      <p className="text-xs text-[var(--muted)]">
-        Export authoritative zones as JSON, or restore from a previous backup. See docs/PRODUCTION.md.
-      </p>
+    <div className="space-y-4 max-w-4xl">
       {err ? <ErrorBox msg={err} /> : null}
       {ok ? (
-        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
+        <div className="border border-[var(--ok)]/40 bg-[var(--ok-soft)] text-[var(--ok)] text-sm px-3.5 py-2.5 rounded-[var(--radius)] font-medium">
           {ok}
         </div>
       ) : null}
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled={busy}
-          onClick={download}
-          className="btn btn-primary"
-        >
-          Download backup
-        </button>
-        <button
-          type="button"
-          disabled={busy || !isAdmin}
-          onClick={() => fileRef.current?.click()}
-          className="btn btn-secondary"
-        >
-          Restore from file
-        </button>
-        <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={restore} />
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Export Card */}
+        <div className="panel p-5 flex flex-col justify-between">
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-lg bg-[var(--accent-soft)] text-[var(--accent)]">
+                <CloudArrowDown weight="bold" className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold">Download Configuration Backup</h3>
+                <span className="text-[10px] text-[var(--muted)] font-mono">Format: JSON Manifest</span>
+              </div>
+            </div>
+            <p className="text-xs text-[var(--muted)] leading-relaxed">
+              Generates a snapshot containing all authoritative DNS zones, resource records,
+              forwarding rules, rate-limiting policies, and access control masks.
+            </p>
+          </div>
+          <div className="mt-5 pt-4 border-t border-[var(--border)]">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={download}
+              className="btn btn-primary w-full min-h-[42px] flex items-center justify-center gap-2"
+            >
+              <DownloadSimple weight="bold" className="w-4 h-4" />
+              {busy ? 'Preparing Download…' : 'Export JSON Backup'}
+            </button>
+          </div>
+        </div>
+
+        {/* Restore Card */}
+        <div className="panel p-5 flex flex-col justify-between">
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-lg bg-[var(--info-soft)] text-[var(--info)]">
+                <CloudArrowUp weight="bold" className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold">Restore Configuration</h3>
+                <span className="text-[10px] text-[var(--muted)] font-mono">Replaces local database zones</span>
+              </div>
+            </div>
+            <p className="text-xs text-[var(--muted)] leading-relaxed">
+              Upload and apply a previously exported PowerSVX JSON configuration file.
+              All existing zones with matching names will be safely updated.
+            </p>
+          </div>
+          <div className="mt-5 pt-4 border-t border-[var(--border)]">
+            <button
+              type="button"
+              disabled={busy || !isAdmin}
+              onClick={() => fileRef.current?.click()}
+              className="btn btn-secondary w-full min-h-[42px] flex items-center justify-center gap-2 disabled:opacity-40"
+            >
+              <CloudArrowUp weight="bold" className="w-4 h-4" />
+              {busy ? 'Applying Backup…' : 'Select Backup JSON File…'}
+            </button>
+            <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={restore} />
+            {!isAdmin ? <p className="text-[10px] text-[var(--warn)] text-center mt-1.5">Restoring requires Administrator permissions.</p> : null}
+          </div>
+        </div>
       </div>
-      {!isAdmin ? <p className="text-xs text-[var(--muted)]">Restore requires admin</p> : null}
-    </section>
+    </div>
   )
 }
 
@@ -1694,7 +2050,7 @@ function ACMEPanel() {
     try {
       const s = await api.acmeObtain()
       setSt(s)
-      setOk('Certificate obtained — point [server.tls] at certs/acme and restart if needed')
+      setOk('Certificate obtained successfully — point [server.tls] at certs/acme and restart if needed')
     } catch (ex) {
       setErr(ex.message)
     } finally {
@@ -1703,33 +2059,91 @@ function ACMEPanel() {
   }
 
   if (!st) return null
+
+  const isCertActive = !!st.cert_present
+
   return (
-    <section className="panel p-4 space-y-3">
-      <h2 className="text-sm font-medium">ACME DNS-01</h2>
-      <p className="text-xs text-[var(--muted)]">
-        Issues TLS certs via Let&apos;s Encrypt DNS-01 using this server&apos;s TXT answers.
-        Domain must resolve publicly to this PowerSVX.
-      </p>
-      <dl className="text-sm space-y-1 mono">
-        <div className="flex justify-between"><dt className="text-[var(--muted)]">enabled</dt><dd>{String(st.enabled)}</dd></div>
-        <div className="flex justify-between"><dt className="text-[var(--muted)]">staging</dt><dd>{String(st.staging)}</dd></div>
-        <div className="flex justify-between"><dt className="text-[var(--muted)]">cert</dt><dd>{st.cert_present ? 'present' : 'missing'}</dd></div>
-      </dl>
-      {err ? <ErrorBox msg={err} /> : null}
-      {ok ? (
-        <div className="border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)] text-sm px-3 py-2">
-          {ok}
+    <div className="space-y-4 max-w-4xl">
+      {/* Hero Certificate Status Card */}
+      <div className="panel p-5 relative overflow-hidden">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className={`p-3 rounded-xl ${isCertActive ? 'bg-[var(--ok-soft)] text-[var(--ok)]' : 'bg-[var(--accent-soft)] text-[var(--accent)]'}`}>
+              <Certificate weight="bold" className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-semibold">Let's Encrypt Automated TLS (ACME DNS-01)</h3>
+                <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full ${isCertActive ? 'bg-[var(--ok-soft)] text-[var(--ok)]' : 'bg-[var(--warn-soft)] text-[var(--warn)]'}`}>
+                  {isCertActive ? 'Certificate Active' : 'No Certificate Issued'}
+                </span>
+              </div>
+              <p className="text-xs text-[var(--muted)] mt-1 max-w-xl leading-relaxed">
+                Issues and verifies TLS certificates using DNS-01 TXT challenges answered natively by PowerSVX.
+                Zero port 80/443 HTTP validation required.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={busy || !st.enabled}
+            onClick={obtain}
+            className="btn btn-primary min-h-[42px] px-5"
+          >
+            {busy ? (
+              <span className="flex items-center gap-2">
+                <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                Obtaining Certificate…
+              </span>
+            ) : isCertActive ? 'Renew Certificate' : 'Issue Certificate'}
+          </button>
         </div>
-      ) : null}
-      <button
-        type="button"
-        disabled={busy || !st.enabled}
-        onClick={obtain}
-        className="btn btn-primary"
-      >
-        {busy ? 'Obtaining…' : 'Obtain certificate'}
-      </button>
-    </section>
+
+        {/* Certificate Properties Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-5 pt-4 border-t border-[var(--border)]">
+          <div className="p-3 rounded-[var(--radius)] bg-[var(--bg-elevated)] border border-[var(--border)]">
+            <span className="text-[10px] uppercase tracking-wider text-[var(--muted)] font-semibold block">DNS-01 ACME Engine</span>
+            <span className="font-mono text-sm font-semibold mt-1 flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${st.enabled ? 'bg-[var(--ok)]' : 'bg-[var(--danger)]'}`} />
+              {st.enabled ? 'Enabled' : 'Disabled in Config'}
+            </span>
+          </div>
+
+          <div className="p-3 rounded-[var(--radius)] bg-[var(--bg-elevated)] border border-[var(--border)]">
+            <span className="text-[10px] uppercase tracking-wider text-[var(--muted)] font-semibold block">Environment Target</span>
+            <span className="font-mono text-sm font-semibold mt-1 flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${st.staging ? 'bg-[var(--info)]' : 'bg-[var(--accent)]'}`} />
+              {st.staging ? "Let's Encrypt Staging" : "Let's Encrypt Production"}
+            </span>
+          </div>
+
+          <div className="p-3 rounded-[var(--radius)] bg-[var(--bg-elevated)] border border-[var(--border)]">
+            <span className="text-[10px] uppercase tracking-wider text-[var(--muted)] font-semibold block">Disk Presence</span>
+            <span className="font-mono text-sm font-semibold mt-1 flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${isCertActive ? 'bg-[var(--ok)]' : 'bg-[var(--warn)]'}`} />
+              {isCertActive ? 'certs/acme present' : 'missing on disk'}
+            </span>
+          </div>
+        </div>
+
+        {err ? <div className="mt-4"><ErrorBox msg={err} /></div> : null}
+        {ok ? (
+          <div className="mt-4 border border-[var(--ok)]/40 bg-[var(--ok-soft)] text-[var(--ok)] text-sm px-3.5 py-2.5 rounded-[var(--radius)] font-medium">
+            {ok}
+          </div>
+        ) : null}
+      </div>
+
+      {/* Instructional Guidance Card */}
+      <div className="panel p-4 bg-[var(--bg-elevated)] text-xs text-[var(--muted)] space-y-2">
+        <h4 className="text-xs font-semibold text-[var(--text)] uppercase tracking-wider">How Automated DNS-01 Verification Works</h4>
+        <ul className="list-disc list-inside space-y-1 pl-1">
+          <li>PowerSVX creates an in-memory TXT record for <code className="mono text-[var(--accent)]">_acme-challenge.&lt;your-domain&gt;</code>.</li>
+          <li>Let's Encrypt verifies authoritative response on UDP/TCP port 53.</li>
+          <li>Once validated, the keypair is written to <code className="mono text-[var(--accent)]">certs/acme/fullchain.pem</code> &amp; <code className="mono text-[var(--accent)]">privkey.pem</code>.</li>
+        </ul>
+      </div>
+    </div>
   )
 }
 

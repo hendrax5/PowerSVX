@@ -737,11 +737,11 @@ export default function Settings({ tools = {} }) {
   const categories = railGroups.flatMap((g) => g.items)
 
   const toolTabs = [
-    { id: 'axfr', label: 'AXFR' },
-    { id: 'acme', label: 'ACME' },
-    { id: 'backup', label: 'Backup' },
-    { id: 'users', label: 'Users' },
-    { id: 'rpz', label: 'RPZ' },
+    { id: 'axfr', label: 'AXFR Sync', hint: 'Master NOTIFY & Slave Sync' },
+    { id: 'rpz', label: 'RPZ Feeds', hint: 'Blocklists & Hosts Feeds' },
+    { id: 'acme', label: 'ACME DNS-01', hint: 'TLS Certificates' },
+    { id: 'backup', label: 'Backup & Restore', hint: 'JSON Configuration' },
+    { id: 'users', label: 'Access & Users', hint: 'RBAC Directory' },
   ]
 
   const sectionMeta = categories.find((c) => c.id === section)
@@ -1946,24 +1946,25 @@ export default function Settings({ tools = {} }) {
 
           {section === 'tools' ? (
             <div className="space-y-4 w-full" aria-label="Tools">
-              <nav className="tool-tabs settings-tool-tabs" aria-label="Tool menus">
+              <nav className="cf-tabs mb-2" aria-label="Tool menus">
                 {toolTabs.map((t) => (
                   <button
                     key={t.id}
                     type="button"
                     onClick={() => setTool(t.id)}
-                    className={`tool-tab ${tool === t.id ? 'is-active' : ''}`}
+                    className={`cf-tab-btn flex items-center gap-2 ${tool === t.id ? 'is-active' : ''}`}
                     aria-current={tool === t.id ? 'page' : undefined}
                   >
-                    {t.label}
+                    <span>{t.label}</span>
+                    <span className="text-[10px] text-[var(--muted)] hidden md:inline">· {t.hint}</span>
                   </button>
                 ))}
               </nav>
               {tool === 'axfr' && ToolAxfr ? <ToolAxfr isAdmin={isAdmin} /> : null}
+              {tool === 'rpz' && ToolRpz ? <ToolRpz initial={rpz} onChange={setRpz} /> : null}
               {tool === 'acme' && ToolAcme ? <ToolAcme /> : null}
               {tool === 'backup' && ToolBackup ? <ToolBackup /> : null}
               {tool === 'users' && ToolUsers ? <ToolUsers /> : null}
-              {tool === 'rpz' && ToolRpz ? <ToolRpz initial={rpz} onChange={setRpz} /> : null}
             </div>
           ) : null}
         </div>
