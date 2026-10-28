@@ -25,6 +25,8 @@ func StartSession() (*Session, io.ReadWriteCloser, error) {
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
 		"LANG=C.UTF-8",
+		"LC_ALL=C.UTF-8",
+		"LC_CTYPE=C.UTF-8",
 		"PS1=\\[\\e[1;38;5;208m\\]powersvx\\[\\e[0m\\]:\\[\\e[1;34m\\]\\w\\[\\e[0m\\]# ",
 	)
 

@@ -125,6 +125,7 @@ export default function TerminalPage() {
     const wsUrl = `${proto}//${window.location.host}/api/v1/terminal/ws${token ? `?token=${encodeURIComponent(token)}` : ''}`
 
     const ws = new WebSocket(wsUrl)
+    ws.binaryType = 'arraybuffer'
     wsRef.current = ws
 
     ws.onopen = () => {
@@ -139,7 +140,11 @@ export default function TerminalPage() {
     }
 
     ws.onmessage = (event) => {
-      term.write(event.data)
+      if (event.data instanceof ArrayBuffer) {
+        term.write(new Uint8Array(event.data))
+      } else {
+        term.write(event.data)
+      }
     }
 
     ws.onerror = () => {
