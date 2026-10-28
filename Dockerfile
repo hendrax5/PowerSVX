@@ -38,7 +38,10 @@ RUN npm run build
 FROM debian:bookworm-slim
 RUN set -eux; \
     for i in 1 2 3 4 5; do \
-      apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata wget gzip nftables iproute2 \
+      apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates tzdata wget gzip nftables iproute2 \
+        procps net-tools htop curl dnsutils iputils-ping \
+        traceroute mtr-tiny tcpdump nano less jq ethtool iperf3 \
         && break; \
       echo "apt retry $i"; sleep 3; \
     done; \

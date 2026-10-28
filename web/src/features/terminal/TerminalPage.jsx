@@ -21,14 +21,16 @@ import { useAuth } from '../../auth'
 import { ICON_WEIGHT } from '../../ui'
 
 const QUICK_COMMANDS = [
+  { label: 'ifconfig', cmd: 'ifconfig\n', icon: Network },
+  { label: 'top', cmd: 'top\n', icon: Cpu },
+  { label: 'htop', cmd: 'htop\n', icon: Cpu },
+  { label: 'btop', cmd: 'btop\n', icon: Cpu },
   { label: 'DNS Query (Local)', cmd: 'dig @127.0.0.1 -p 53 google.com +time=2 +tries=1\n', icon: Network },
   { label: 'IP Interfaces', cmd: 'ip -br a\n', icon: Network },
   { label: 'IP Route', cmd: 'ip route show\n', icon: Network },
   { label: 'DNS Services', cmd: "ps aux | grep -E 'powersvx|dnsdist|unbound' | grep -v grep\n", icon: Cpu },
-  { label: 'Netplan Status', cmd: 'netplan status\n', icon: Network },
-  { label: 'Resolv Conf', cmd: 'cat /etc/resolv.conf\n', icon: Network },
+  { label: 'Ping 8.8.8.8', cmd: 'ping -c 3 8.8.8.8\n', icon: Network },
   { label: 'Disk Space', cmd: 'df -h /\n', icon: HardDrives },
-  { label: 'System Uptime', cmd: 'uptime\n', icon: Cpu },
 ]
 
 export default function TerminalPage() {
