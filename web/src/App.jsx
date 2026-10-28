@@ -14,6 +14,7 @@ const Lookup = lazy(() => import('./features/lookup/Lookup'))
 const Analytics = lazy(() => import('./features/analytics/Analytics'))
 const AuditLog = lazy(() => import('./features/audit/AuditLog'))
 const SettingsPage = lazy(() => import('./features/settings/SettingsPage'))
+const TerminalPage = lazy(() => import('./features/terminal/TerminalPage'))
 
 function UpdateWatcher() {
   const [pending, setPending] = useState(false)
@@ -125,6 +126,7 @@ export default function App() {
                           <Route path="/logs" element={<Navigate to="/analytics" replace />} />
                           <Route path="/audit" element={<AuditLog />} />
                           <Route path="/settings" element={<SettingsPage />} />
+                          <Route path="/terminal" element={<TerminalPage />} />
                           <Route path="/analytics" element={<Analytics />} />
                         </Routes>
                       </Suspense>

@@ -124,6 +124,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/audit", a.withAuth(a.handleAudit))
 	mux.HandleFunc("/api/v1/acme", a.withAuth(a.handleACME))
 	mux.HandleFunc("/api/v1/backup", a.withAuth(a.handleBackup))
+	mux.HandleFunc("/api/v1/terminal/ws", a.handleTerminalWS)
 	mux.HandleFunc("/api/v1/auth/", a.handleAuth)
 	if a.webFS != nil {
 		mux.Handle("/", a.spaHandler())

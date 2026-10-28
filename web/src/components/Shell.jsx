@@ -9,6 +9,7 @@ import {
   MagnifyingGlass,
   Moon,
   Sun,
+  TerminalWindow,
 } from '@phosphor-icons/react'
 import { api, setToken } from '../api'
 import { useAuth } from '../auth'
@@ -64,7 +65,10 @@ export default function Shell({ children }) {
     },
     {
       label: 'System & Routing',
-      links: [['/settings', 'Settings', GearSix]],
+      links: [
+        ['/settings', 'Settings', GearSix],
+        ['/terminal', 'Live Terminal', TerminalWindow],
+      ],
     },
   ]
   const hereLabel =
