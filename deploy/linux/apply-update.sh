@@ -66,7 +66,7 @@ fi
 echo "==> recreate stack (logging limits + retention)"
 export GIT_COMMIT="${GIT_COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-export POWERSVX_VERSION="${POWERSVX_VERSION:-1.7.0}"
+export POWERSVX_VERSION="${POWERSVX_VERSION:-1.7.1}"
 export GOGC="${GOGC:-50}"
 echo "build stamp VERSION=$POWERSVX_VERSION GIT_COMMIT=$GIT_COMMIT DATAPLANE=$POWERSVX_DNS_DATAPLANE"
 # Dataplane default mem_percent=30 via calc-mem-env (leave RAM for Unbound).
@@ -75,7 +75,7 @@ if [ -f "$ROOT/deploy/linux/calc-mem-env.sh" ]; then
   eval "$("$ROOT/deploy/linux/calc-mem-env.sh")"
   export POWERSVX_MEM_LIMIT GOMEMLIMIT POWERSVX_MEM_PERCENT
 fi
-# Prefer short blip: rebuild powersvx + recreate unbound/dnsdist/powersvx only (not postgres).
+# Prefer short blip: rebuild/pull powersvx + recreate unbound/dnsdist/powersvx only (not postgres).
 COMPOSE=(docker compose -f docker-compose.yml)
 if docker inspect powersvx --format '{{.HostConfig.NetworkMode}}' 2>/dev/null | grep -q host; then
   echo "detected host networking"
@@ -83,7 +83,11 @@ if docker inspect powersvx --format '{{.HostConfig.NetworkMode}}' 2>/dev/null | 
 elif [ -f "$ROOT/deploy/linux/docker-compose.linux.yml" ]; then
   COMPOSE+=(-f deploy/linux/docker-compose.linux.yml)
 fi
-"${COMPOSE[@]}" build powersvx
+if [ "${POWERSVX_PULL_IMAGE:-0}" = "1" ]; then
+  "${COMPOSE[@]}" pull powersvx || "${COMPOSE[@]}" build powersvx
+else
+  "${COMPOSE[@]}" build powersvx
+fi
 if [ "$POWERSVX_DNS_DATAPLANE" = "dnsdist" ] || [ "$POWERSVX_DNS_DATAPLANE" = "cdb" ]; then
   "${COMPOSE[@]}" up -d --no-deps --force-recreate unbound dnsdist powersvx
 else
@@ -92,8 +96,8 @@ else
   "${COMPOSE[@]}" up -d --no-deps --force-recreate unbound powersvx
 fi
 
-echo "==> metrics stack (node-exporter + prometheus + grafana)"
-"${COMPOSE[@]}" up -d --no-deps --force-recreate node-exporter prometheus grafana || true
+echo "==> metrics & auto-update stack (node-exporter + prometheus + grafana + watchtower)"
+"${COMPOSE[@]}" up -d --no-deps --force-recreate node-exporter prometheus grafana watchtower || true
 
 echo "==> prune docker build cache + unused images"
 chmod +x "$ROOT/deploy/linux/docker-prune-after-update.sh" 2>/dev/null || true

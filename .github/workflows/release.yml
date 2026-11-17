@@ -1,0 +1,138 @@
+name: Release & Docker CD
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      promote_latest:
+        description: "Also tag pushed image as :latest"
+        type: boolean
+        required: false
+        default: true
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: Go test
+        run: go test -v -timeout 5m ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Web build check
+        working-directory: web
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute build metadata
+        id: buildmeta
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF_NAME#v}"
+          else
+            VER="edge-${GITHUB_SHA::7}"
+          fi
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "git_commit=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/hendrax5/powersvx
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.promote_latest) }}
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+            type=sha,prefix=sha-
+
+      - name: Build and push multi-arch Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.buildmeta.outputs.version }}
+            GIT_COMMIT=${{ steps.buildmeta.outputs.git_commit }}
+            BUILD_TIME=${{ steps.buildmeta.outputs.build_time }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    needs: docker
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build release binaries & web bundle
+        run: |
+          mkdir -p dist
+          VER="${GITHUB_REF_NAME#v}"
+          GIT_COMMIT="${GITHUB_SHA::7}"
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-w -s -X github.com/powersvx/powersvx/internal/api.Version=${VER} -X github.com/powersvx/powersvx/internal/api.GitCommit=${GIT_COMMIT} -X github.com/powersvx/powersvx/internal/api.BuildTime=${BUILD_TIME}"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/powersvx-linux-amd64 ./cmd/powersvx
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/powersvx-linux-arm64 ./cmd/powersvx
+          (cd web && npm install --no-audit --no-fund && npm run build && tar -czf ../dist/web-dist.tgz -C dist .)
+          (cd dist && sha256sum powersvx-linux-amd64 powersvx-linux-arm64 web-dist.tgz > SHA256SUMS.txt)
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          # Keep filter-seed release as /releases/latest so legacy /releases/latest/download/blocklist-seed.tgz stays intact.
+          make_latest: false
+          files: |
+            dist/powersvx-linux-amd64
+            dist/powersvx-linux-arm64
+            dist/web-dist.tgz
+            dist/SHA256SUMS.txt

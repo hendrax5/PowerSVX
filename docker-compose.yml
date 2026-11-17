@@ -1,5 +1,6 @@
 services:
   powersvx:
+    image: ${POWERSVX_IMAGE:-ghcr.io/hendrax5/powersvx}:${POWERSVX_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -7,10 +8,12 @@ services:
       # make Alpine/Debian package mirrors look "temporarily" unavailable.
       network: host
       args:
-        VERSION: ${POWERSVX_VERSION:-1.7.0}
+        VERSION: ${POWERSVX_VERSION:-1.7.1}
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: powersvx
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     env_file:
       - path: .env
         required: false
@@ -130,6 +133,21 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  watchtower:
+    image: nickfedor/watchtower:latest
+    container_name: powersvx-watchtower
+    logging: *powersvx-log
+    environment:
+      - TZ=${TZ:-Asia/Jakarta}
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_INCLUDE_RESTARTING=true
+      # Daily auto-update check at 03:15 WIB (off-peak, avoids :00 registry burst).
+      - WATCHTOWER_SCHEDULE=${WATCHTOWER_SCHEDULE:-0 15 3 * * *}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 
 volumes:

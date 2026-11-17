@@ -1,5 +1,7 @@
 # Stage 1: Go build (Debian — avoids Alpine CDN, often blocked in some networks)
-FROM golang:1.26-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
+ARG TARGETOS
+ARG TARGETARCH
 RUN set -eux; \
     for i in 1 2 3 4 5; do \
       apt-get update && apt-get install -y --no-install-recommends git ca-certificates openssl && break; \
@@ -10,10 +12,10 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-ARG VERSION=1.7.0
+ARG VERSION=1.7.1
 ARG GIT_COMMIT=unknown
 ARG BUILD_TIME=unknown
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} ${TARGETARCH:+GOARCH=$TARGETARCH} go build \
     -ldflags="-w -s -X github.com/powersvx/powersvx/internal/api.Version=${VERSION} -X github.com/powersvx/powersvx/internal/api.GitCommit=${GIT_COMMIT} -X github.com/powersvx/powersvx/internal/api.BuildTime=${BUILD_TIME}" \
     -o /build/powersvx ./cmd/powersvx
 # Self-signed TLS for first boot (DoT/DoH); replace in production via volume/ACME.
@@ -24,8 +26,8 @@ RUN mkdir -p /build/certs \
          -subj "/CN=powersvx" \
          -addext "subjectAltName=DNS:localhost,DNS:powersvx,IP:127.0.0.1"
 
-# Stage 2: Web UI
-FROM node:22-bookworm-slim AS web-builder
+# Stage 2: Web UI (static assets are arch-independent)
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web-builder
 WORKDIR /web
 COPY web/package.json web/package-lock.json* ./
 # npm install (not ci): lockfile is often regenerated on Windows and omits

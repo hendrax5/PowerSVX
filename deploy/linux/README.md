@@ -205,11 +205,20 @@ Common causes:
 - **Host port 53 busy** (`systemd-resolved`) — free it with the steps above
 - **Grafana bind-mount permissions** — compose now uses named volume `grafana-data`
 
-Recreate cleanly:
+### Auto-Update (Docker CD via GHCR + Watchtower)
+
+Release tags (`v*`) automatically publish multi-arch images to `ghcr.io/hendrax5/powersvx:latest`.
+The compose stack includes `powersvx-watchtower` (`nickfedor/watchtower:latest`), scoped via `WATCHTOWER_LABEL_ENABLE=true` **only** to the `powersvx` control-plane container (`dnsdist`, `unbound`, and `postgres` are never restarted automatically), scheduled at **03:15 WIB** (`WATCHTOWER_SCHEDULE=0 15 3 * * *`).
+
+Manual pull or local build anytime:
 
 ```bash
+# Pull prebuilt image from GHCR (fastest):
+POWERSVX_PULL_IMAGE=1 bash deploy/linux/apply-update.sh
+
+# Or build locally from git checkout:
 git pull origin main
-docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --build --force-recreate
+bash deploy/linux/apply-update.sh
 docker ps
 ss -ulnp | grep ':53'
 dig @127.0.0.1 example.com

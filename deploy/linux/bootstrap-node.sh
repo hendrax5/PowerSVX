@@ -137,14 +137,19 @@ if [[ -f "$ROOT/deploy/linux/calc-mem-env.sh" ]]; then
   export POWERSVX_MEM_LIMIT GOMEMLIMIT POWERSVX_MEM_PERCENT
 fi
 
-# 6. Build and Start Full Docker Stack (including Grafana & Prometheus)
+# 6. Pull (or Build) and Start Full Docker Stack (including Watchtower, Grafana & Prometheus)
 echo "==> [6/7] Starting Docker Compose stack (Host Networking)..."
 export GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-export POWERSVX_VERSION="1.7.0"
+export POWERSVX_VERSION="${POWERSVX_VERSION:-1.7.1}"
 export GOGC=50
 
-docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml build powersvx
+if [[ "${POWERSVX_BUILD_LOCAL:-0}" == "1" ]]; then
+  docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml build powersvx
+else
+  docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml pull powersvx \
+    || docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml build powersvx
+fi
 docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d
 
 # 7. Verification & Health Summary

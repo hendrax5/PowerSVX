@@ -81,7 +81,7 @@ const DefaultKomdigiPolicyName = "trustpositifkominfo"
 
 // DefaultFilterSeedURL is the GitHub Release asset for first-boot CDB bootstrap
 // (published from a synced host such as JMG). Override with POWERSVX_FILTER_SEED_URL.
-const DefaultFilterSeedURL = "https://github.com/hendrax5/PowerSVX/releases/latest/download/blocklist-seed.tgz"
+const DefaultFilterSeedURL = "https://github.com/hendrax5/PowerSVX/releases/download/filter-seed/blocklist-seed.tgz"
 
 // PolicyEnabled reports whether a policy should sync (nil/omitted = enabled).
 func PolicyEnabled(p RPZPolicyTOML) bool {

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.7.1] - 2026-11-17
+
+### Added
+- **Docker CD Pipeline (`.github/workflows/release.yml`)**:
+  - Automatic multi-arch (`linux/amd64`, `linux/arm64`) image build & push to `ghcr.io/hendrax5/powersvx` gated on passing tests (`:latest`, `:<version>`, `:<major>.<minor>` on `v*` tags; `:edge` on `main`).
+  - Automatic GitHub Release creation on `v*` tags attaching standalone `powersvx-linux-amd64`, `powersvx-linux-arm64`, `web-dist.tgz`, and `SHA256SUMS.txt` (`make_latest: false` preserves `filter-seed` asset URLs).
+  - Multi-arch native cross-compilation support in [`Dockerfile`](Dockerfile) using `$BUILDPLATFORM` + `$TARGETOS`/`$TARGETARCH`.
+- **Scheduled Auto-Update via Watchtower (`docker-compose.yml`)**:
+  - Added `nickfedor/watchtower:latest` (`powersvx-watchtower`, Docker Engine API ≥ 1.44 compatible) with `WATCHTOWER_LABEL_ENABLE=true`, `WATCHTOWER_CLEANUP=true`, and `WATCHTOWER_SCHEDULE=0 15 3 * * *` (`TZ=Asia/Jakarta`, 03:15 WIB daily).
+  - Scoped exclusively to the `powersvx` control-plane container (`com.centurylinklabs.watchtower.enable=true`) so `dnsdist`, `Unbound`, and `Postgres` are never auto-restarted.
+  - Updated [`deploy/linux/bootstrap-node.sh`](deploy/linux/bootstrap-node.sh) (pull-first with build fallback) and [`deploy/linux/apply-update.sh`](deploy/linux/apply-update.sh) (`POWERSVX_PULL_IMAGE=1` option + Watchtower lifecycle).
+
+### Fixed
+- Pinned `config.DefaultFilterSeedURL` directly to `/releases/download/filter-seed/blocklist-seed.tgz` so app releases never break first-boot filter seed downloads.
+- Fixed test alignment in `internal/api/cdb_sync_test.go`, `internal/rpz/axfr_test.go`, `internal/server/update_test.go`, and skipped self-bumping SOA serial on `TypeSOA` insertion in `internal/authoritative/store.go`.
+
+---
+
 ## [1.7.0] - 2026-11-17
 
 ### Added
