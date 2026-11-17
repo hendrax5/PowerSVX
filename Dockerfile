@@ -15,7 +15,9 @@ COPY . .
 ARG VERSION=1.7.1
 ARG GIT_COMMIT=unknown
 ARG BUILD_TIME=unknown
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} ${TARGETARCH:+GOARCH=$TARGETARCH} go build \
+RUN export CGO_ENABLED=0 GOOS="${TARGETOS:-linux}"; \
+    if [ -n "${TARGETARCH:-}" ]; then export GOARCH="${TARGETARCH}"; fi; \
+    go build \
     -ldflags="-w -s -X github.com/powersvx/powersvx/internal/api.Version=${VERSION} -X github.com/powersvx/powersvx/internal/api.GitCommit=${GIT_COMMIT} -X github.com/powersvx/powersvx/internal/api.BuildTime=${BUILD_TIME}" \
     -o /build/powersvx ./cmd/powersvx
 # Self-signed TLS for first boot (DoT/DoH); replace in production via volume/ACME.
