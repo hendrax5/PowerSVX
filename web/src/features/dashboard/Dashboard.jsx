@@ -264,12 +264,12 @@ export default function Dashboard() {
   const cacheHits = Number(unboundStats['total.num.cachehits'] ?? s.cache_hits ?? 0)
   const cacheMisses = Number(unboundStats['total.num.cachemiss'] ?? s.cache_misses ?? 0)
   const totalCacheReqs = cacheHits + cacheMisses
-  const cacheHitRatio = totalCacheReqs > 0 ? ((cacheHits / totalCacheReqs) * 100).toFixed(1) : '99.8'
+  const cacheHitRatio = totalCacheReqs > 0 ? ((cacheHits / totalCacheReqs) * 100).toFixed(1) : '0.0'
   const avgLatencyMs = unboundStats['total.recursion.time.avg']
     ? (Number(unboundStats['total.recursion.time.avg']) * 1000).toFixed(1)
     : lat.p50_ms != null
       ? Number(lat.p50_ms).toFixed(1)
-      : '0.2'
+      : null
 
   // Top blocked items with proportional fill calculation (AdGuard Home grammar)
   const topBlocked = mon.top_blocked || []
@@ -296,33 +296,33 @@ export default function Dashboard() {
       name: 'Unbound Recursive Core',
       target: '127.0.0.1:5353',
       role: 'Recursive DNS Resolver & DNSSEC',
-      status: checks.unbound?.status || (isUnboundBackend ? 'pass' : 'disabled'),
-      latency: `${avgLatencyMs} ms`,
+      status: checks.unbound?.status || (isUnboundBackend ? 'unknown' : 'disabled'),
+      latency: avgLatencyMs != null ? `${avgLatencyMs} ms` : '—',
       detail: `${cacheHits.toLocaleString()} cache hits · ${cacheHitRatio}% hit ratio`,
     },
     {
       name: 'Edge Dataplane (dnsdist)',
       target: checks.dns_udp?.addr || '0.0.0.0:53',
       role: 'High-throughput UDP/TCP Listener & DoH/DoT',
-      status: checks.dns_udp?.status || 'pass',
-      latency: checks.dns_udp?.latency_ms != null ? `${checks.dns_udp.latency_ms} ms` : '< 1 ms',
+      status: checks.dns_udp?.status || 'unknown',
+      latency: checks.dns_udp?.latency_ms != null ? `${checks.dns_udp.latency_ms} ms` : '—',
       detail: planeLabel,
     },
     {
       name: 'Kominfo AXFR / RPZ Filter',
       target: '182.23.79.202:53',
       role: 'Official National Blocklist & CDB Fast Spoofing',
-      status: checks.rpz?.status || 'pass',
-      latency: 'Instant (CDB)',
+      status: checks.rpz?.status || (cdbEntries > 0 ? 'pass' : 'disabled'),
+      latency: cdbEntries > 0 ? 'Instant (CDB)' : '—',
       detail: `${Number(cdbEntries).toLocaleString()} domains synced`,
     },
     {
       name: 'PostgreSQL Relational DB',
       target: '127.0.0.1:5432',
-      role: 'Authoritative Zones & Query Logs Storage',
-      status: checks.database?.status || 'pass',
-      latency: checks.database?.latency_ms != null ? `${checks.database.latency_ms} ms` : '0 ms',
-      detail: 'Connection pool active',
+      role: 'Authoritative Zones & Config Storage',
+      status: checks.database?.status || 'disabled',
+      latency: checks.database?.latency_ms != null ? `${checks.database.latency_ms} ms` : '—',
+      detail: checks.database?.status === 'pass' ? 'Connection pool active' : checks.database?.status || 'not enabled',
     },
   ]
 
@@ -388,7 +388,7 @@ export default function Dashboard() {
           </div>
           <div className="mt-4 pt-3 border-t border-[var(--border)]/60 flex items-center justify-between text-[11px] text-[var(--muted)]">
             <span>Uptime: {formatUptime(s.uptime_seconds)}</span>
-            <span className="mono">v{s.version || '1.6.3'}</span>
+            <span className="mono">v{s.version || '—'}</span>
           </div>
         </div>
 
@@ -405,7 +405,7 @@ export default function Dashboard() {
               {blockedTotal.toLocaleString()}
             </div>
             <div className="text-xs text-[var(--muted)] mt-1">
-              Threats & unauthorized domains spoofed to NXDOMAIN
+              Threats &amp; unauthorized domains spoofed to NXDOMAIN
             </div>
           </div>
           <div className="mt-4 pt-3 border-t border-[var(--border)]/60 flex items-center justify-between text-[11px] text-[var(--muted)]">
@@ -419,36 +419,36 @@ export default function Dashboard() {
           <div className="flex items-center justify-between">
             <span className="label-quiet">Average Latency</span>
             <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-[var(--ok)]/10 text-[var(--ok)] font-semibold border border-[var(--ok)]/30">
-              SUB-MILLISECOND
+              {avgLatencyMs != null && Number(avgLatencyMs) < 1 ? 'SUB-MILLISECOND' : 'RESOLVER RTT'}
             </span>
           </div>
           <div className="mt-3">
             <div className="text-3xl font-bold mono tracking-tight text-[var(--text)] tabular-nums">
-              {avgLatencyMs}{' '}
-              <span className="text-lg font-normal text-[var(--muted)]">ms</span>
+              {avgLatencyMs != null ? avgLatencyMs : '—'}{' '}
+              {avgLatencyMs != null ? <span className="text-lg font-normal text-[var(--muted)]">ms</span> : null}
             </div>
             <div className="text-xs text-[var(--muted)] mt-1">
-              Recursive resolve & CDB memory lookup latency
+              Recursive resolve &amp; CDB memory lookup latency
             </div>
           </div>
           <div className="mt-4 pt-3 border-t border-[var(--border)]/60 flex items-center justify-between text-[11px] text-[var(--muted)]">
             <span>P95 latency</span>
-            <span className="font-mono text-[var(--text)]">{Number(lat.p95_ms || 14).toFixed(0)} ms</span>
+            <span className="font-mono text-[var(--text)]">{lat.p95_ms != null ? `${Number(lat.p95_ms).toFixed(0)} ms` : '—'}</span>
           </div>
         </div>
 
         {/* Metric 4: Cache & System Load */}
         <div className="stat-card p-4 flex flex-col justify-between relative overflow-hidden border border-[var(--border)]">
           <div className="flex items-center justify-between">
-            <span className="label-quiet">Cache & Host Resources</span>
+            <span className="label-quiet">Cache &amp; Host Resources</span>
             <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-[var(--info)]/10 text-[var(--info)] font-semibold border border-[var(--info)]/30">
               {cacheHitRatio}% HITS
             </span>
           </div>
           <div className="mt-3">
             <div className="text-3xl font-bold mono tracking-tight text-[var(--text)] tabular-nums">
-              {hostAvailGiB > 0 ? `${hostAvailGiB.toFixed(1)}` : '10.9'}{' '}
-              <span className="text-lg font-normal text-[var(--muted)]">GiB free</span>
+              {hostAvailGiB > 0 ? `${hostAvailGiB.toFixed(1)}` : '—'}{' '}
+              {hostAvailGiB > 0 ? <span className="text-lg font-normal text-[var(--muted)]">GiB free</span> : null}
             </div>
             <div className="text-xs text-[var(--muted)] mt-1">
               Host RAM: {memUsed.toFixed(0)}% used · Load: {Number(res.load1 || 0).toFixed(2)}
@@ -642,7 +642,7 @@ export default function Dashboard() {
             </p>
           </div>
           <span className="text-xs font-mono px-2 py-0.5 rounded bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--muted)]">
-            4 / 4 Active Targets
+            {upstreamItems.filter((u) => u.status === 'pass' || u.status === 'healthy').length} / {upstreamItems.length} Active Targets
           </span>
         </div>
 

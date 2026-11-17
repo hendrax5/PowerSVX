@@ -164,6 +164,7 @@ export default function TerminalPage() {
 
   // Handle ResizeObserver & window resize
   useEffect(() => {
+    if (!isAdmin) return undefined
     const handleResize = () => {
       if (fitAddonRef.current && termInstanceRef.current) {
         try {
@@ -175,7 +176,7 @@ export default function TerminalPage() {
       }
     }
 
-    const timer = setTimeout(handleResize, 100)
+    const timer = setTimeout(handleResize, 120)
     window.addEventListener('resize', handleResize)
 
     let observer = null
@@ -191,10 +192,11 @@ export default function TerminalPage() {
       window.removeEventListener('resize', handleResize)
       if (observer) observer.disconnect()
     }
-  }, [sendResize, isFullscreen])
+  }, [sendResize, isFullscreen, isAdmin])
 
-  // Initialize terminal on mount
+  // Initialize terminal on mount (admins only)
   useEffect(() => {
+    if (!isAdmin) return undefined
     connect()
 
     return () => {
@@ -210,7 +212,7 @@ export default function TerminalPage() {
         termInstanceRef.current = null
       }
     }
-  }, [connect])
+  }, [connect, isAdmin])
 
   const sendCommand = (cmd) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -230,18 +232,23 @@ export default function TerminalPage() {
 
   const toggleFullscreen = () => {
     setIsFullscreen((prev) => !prev)
-    setTimeout(() => {
-      if (fitAddonRef.current && termInstanceRef.current) {
-        try {
-          fitAddonRef.current.fit()
-          sendResize(termInstanceRef.current.cols, termInstanceRef.current.rows)
-          termInstanceRef.current.focus()
-        } catch {
-          /* ignore */
-        }
-      }
-    }, 150)
   }
+
+  if (!isAdmin) {
+    return (
+      <div className="panel p-6 max-w-xl space-y-2 border border-rose-500/30 bg-rose-500/5">
+        <div className="flex items-center gap-2 text-rose-400 font-semibold text-sm">
+          <WarningCircle size={18} weight={ICON_WEIGHT} />
+          <span>Administrator Access Required</span>
+        </div>
+        <p className="text-xs text-[var(--muted)]">
+          Live interactive PTY terminal access is restricted to users with the <code className="mono">admin</code> role.
+        </p>
+      </div>
+    )
+  }
+
+  const hostLabel = `${me?.name || 'powersvx'}@${window.location.hostname || 'node'}:~#`
 
   return (
     <div className={`space-y-4 ${isFullscreen ? 'fixed inset-0 z-50 bg-[var(--bg)] p-4 flex flex-col' : ''}`}>
@@ -274,7 +281,7 @@ export default function TerminalPage() {
               )}
             </div>
             <p className="text-xs text-[var(--muted)]">
-              Direct interactive PTY shell running in PowerSVX container runtime (Debian host / bash).
+              Direct interactive PTY shell running in PowerSVX host runtime.
             </p>
           </div>
         </div>
@@ -326,7 +333,7 @@ export default function TerminalPage() {
       {/* Quick Snippets Bar */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-3 shadow-sm">
         <div className="text-xs font-medium text-[var(--muted)] mb-2 flex items-center justify-between">
-          <span>Quick Diagnostics & Commands:</span>
+          <span>Quick Diagnostics &amp; Commands:</span>
           <span className="hidden sm:inline text-[11px] opacity-75 font-mono">Click snippet to execute</span>
         </div>
         <div className="flex flex-wrap gap-1.5">
@@ -357,7 +364,7 @@ export default function TerminalPage() {
             <span className="w-3 h-3 rounded-full bg-[#ff5f56]" />
             <span className="w-3 h-3 rounded-full bg-[#ffbd2e]" />
             <span className="w-3 h-3 rounded-full bg-[#27c93f]" />
-            <span className="ml-2 font-mono text-xs text-[#8b949e]">powersvx@hostnet1:~#</span>
+            <span className="ml-2 font-mono text-xs text-[#8b949e]">{hostLabel}</span>
           </div>
           <div className="text-[11px] font-mono text-[#8b949e] flex items-center gap-3">
             <span>xterm-256color</span>
@@ -383,7 +390,7 @@ export default function TerminalPage() {
             className="ml-auto underline hover:text-white"
             onClick={connect}
           >
-            Hubungkan ulang
+            Reconnect
           </button>
         </div>
       )}

@@ -51,3 +51,29 @@ func TestApplyOpportunisticNoAD(t *testing.T) {
 	}
 	_ = res
 }
+
+func TestForgedADRejectedOnTamperedRRSIG(t *testing.T) {
+	v := New(ModeValidate)
+	s := NewSigner(t.TempDir())
+	if err := s.Ensure("example.com."); err != nil {
+		t.Fatal(err)
+	}
+	req := new(dns.Msg)
+	req.SetQuestion("www.example.com.", dns.TypeA)
+	req.SetEdns0(1232, true)
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	resp.Answer = []dns.RR{
+		&dns.A{Hdr: dns.RR_Header{Name: "www.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: []byte{1, 2, 3, 4}},
+	}
+	s.SignResponse("example.com.", req, resp)
+	// Attach DNSKEY and tamper A record while setting upstream AD=true
+	resp.Extra = append(resp.Extra, s.DNSKEYs("example.com.")...)
+	resp.Answer[0].(*dns.A).A = []byte{9, 9, 9, 9}
+	resp.AuthenticatedData = true
+
+	sf, res := v.Apply(resp)
+	if !sf || !res.Bogus {
+		t.Fatalf("expected SERVFAIL bogus on tampered RRSIG even with AD=true, got sf=%v res=%+v", sf, res)
+	}
+}

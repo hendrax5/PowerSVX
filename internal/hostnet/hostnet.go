@@ -57,13 +57,47 @@ type RemoveIPRequest struct {
 	IP    string `json:"ip"` // e.g. "103.162.17.246/28"
 }
 
-var mu sync.Mutex
+var (
+	mu          sync.Mutex
+	ifaceNameRe = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,15}$`)
+)
+
+func validateIfaceName(iface string) error {
+	if iface == "" || !ifaceNameRe.MatchString(iface) || strings.Contains(iface, "..") {
+		return fmt.Errorf("invalid interface name: %q", iface)
+	}
+	return nil
+}
+
+func sanitizeDNSList(dns []string) ([]string, error) {
+	var clean []string
+	seen := make(map[string]struct{}, len(dns))
+	for _, raw := range dns {
+		d := strings.TrimSpace(raw)
+		if d == "" {
+			continue
+		}
+		ip := net.ParseIP(d)
+		if ip == nil {
+			return nil, fmt.Errorf("invalid DNS IP address: %q", raw)
+		}
+		s := ip.String()
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			clean = append(clean, s)
+		}
+	}
+	return clean, nil
+}
 
 // ListInterfaces inspects the host network stack and returns active interfaces.
 func ListInterfaces() (*HostNetworkPayload, error) {
 	mu.Lock()
 	defer mu.Unlock()
+	return listInterfacesLocked()
+}
 
+func listInterfacesLocked() (*HostNetworkPayload, error) {
 	defaultGw, defaultIface := getDefaultRoute()
 	dnsServers := getSystemDNS()
 
@@ -149,9 +183,15 @@ func ApplyConfig(req ApplyRequest) (*HostNetworkPayload, error) {
 	req.IP = strings.TrimSpace(req.IP)
 	req.Gateway = strings.TrimSpace(req.Gateway)
 
-	if req.Iface == "" {
-		return nil, fmt.Errorf("interface name is required")
+	if err := validateIfaceName(req.Iface); err != nil {
+		return nil, err
 	}
+
+	cleanDNS, err := sanitizeDNSList(req.DNS)
+	if err != nil {
+		return nil, err
+	}
+	req.DNS = cleanDNS
 
 	// Validate IP / CIDR format
 	ip, ipNet, err := net.ParseCIDR(req.IP)
@@ -161,8 +201,12 @@ func ApplyConfig(req ApplyRequest) (*HostNetworkPayload, error) {
 		if parsedIP == nil || parsedIP.To4() == nil {
 			return nil, fmt.Errorf("invalid IPv4 address or CIDR format: %s (example: 103.162.17.246/28)", req.IP)
 		}
-		req.IP = req.IP + "/24"
+		req.IP = parsedIP.String() + "/24"
 		ip, ipNet, _ = net.ParseCIDR(req.IP)
+	} else {
+		req.IP = ipNet.String()
+		ones, _ := ipNet.Mask.Size()
+		req.IP = fmt.Sprintf("%s/%d", ip.To4().String(), ones)
 	}
 
 	if ip.To4() == nil {
@@ -175,6 +219,7 @@ func ApplyConfig(req ApplyRequest) (*HostNetworkPayload, error) {
 		if gwIP == nil || gwIP.To4() == nil {
 			return nil, fmt.Errorf("invalid IPv4 gateway format: %s", req.Gateway)
 		}
+		req.Gateway = gwIP.To4().String()
 		if !ipNet.Contains(gwIP) {
 			// Gateway is outside subnet; warn but continue if /32 or point-to-point
 		}
@@ -233,10 +278,15 @@ func ApplyConfig(req ApplyRequest) (*HostNetworkPayload, error) {
 	}
 
 	// 5. Write Netplan YAML for persistent boot config
-	_ = writeNetplanConfig(req)
+	addrsForBoot := []string{req.IP}
+	if req.KeepOldIP {
+		addrsForBoot = append(addrsForBoot, oldIPv4...)
+	}
+	if err := writeNetplanConfig(req, addrsForBoot); err != nil {
+		return nil, fmt.Errorf("kernel updated but netplan persist failed: %w", err)
+	}
 
-	mu.Unlock()
-	return ListInterfaces()
+	return listInterfacesLocked()
 }
 
 // RemoveIP removes a secondary or old IP address from the interface.
@@ -247,8 +297,19 @@ func RemoveIP(req RemoveIPRequest) (*HostNetworkPayload, error) {
 	req.Iface = strings.TrimSpace(req.Iface)
 	req.IP = strings.TrimSpace(req.IP)
 
-	if req.Iface == "" || req.IP == "" {
-		return nil, fmt.Errorf("interface and IP are required")
+	if err := validateIfaceName(req.Iface); err != nil {
+		return nil, err
+	}
+	if req.IP == "" {
+		return nil, fmt.Errorf("IP is required")
+	}
+	if ip, ipNet, err := net.ParseCIDR(req.IP); err != nil || ip.To4() == nil {
+		parsed := net.ParseIP(req.IP)
+		if parsed == nil || parsed.To4() == nil {
+			return nil, fmt.Errorf("invalid IPv4 address or CIDR format: %s", req.IP)
+		}
+	} else if ones, _ := ipNet.Mask.Size(); ones > 0 {
+		req.IP = fmt.Sprintf("%s/%d", ip.To4().String(), ones)
 	}
 
 	out, err := execCommand("ip", "addr", "del", req.IP, "dev", req.Iface)
@@ -256,11 +317,62 @@ func RemoveIP(req RemoveIPRequest) (*HostNetworkPayload, error) {
 		return nil, fmt.Errorf("failed to remove IP %s from %s: %s (%w)", req.IP, req.Iface, out, err)
 	}
 
-	mu.Unlock()
-	return ListInterfaces()
+	// Refresh persistent netplan config if managed by PowerSVX
+	if netplanDir := getNetplanDir(); dirExists(netplanDir) {
+		cfgFile := filepath.Join(netplanDir, "60-powersvx.yaml")
+		if _, statErr := os.Stat(cfgFile); statErr == nil {
+			if payload, listErr := listInterfacesLocked(); listErr == nil {
+				for _, iface := range payload.Interfaces {
+					if iface.Name == req.Iface && len(iface.IPv4) > 0 {
+						syncReq := ApplyRequest{
+							Iface:   iface.Name,
+							IP:      iface.IPv4[0],
+							Gateway: iface.Gateway,
+							DNS:     iface.DNS,
+						}
+						if err := writeNetplanConfig(syncReq, iface.IPv4); err != nil {
+							return nil, fmt.Errorf("IP removed from kernel, but failed updating netplan: %w", err)
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return listInterfacesLocked()
 }
 
-func writeNetplanConfig(req ApplyRequest) error {
+func writeNetplanConfig(req ApplyRequest, addresses []string) error {
+	if err := validateIfaceName(req.Iface); err != nil {
+		return err
+	}
+	cleanDNS, err := sanitizeDNSList(req.DNS)
+	if err != nil {
+		return err
+	}
+	if req.Gateway != "" {
+		gwIP := net.ParseIP(req.Gateway)
+		if gwIP == nil || gwIP.To4() == nil {
+			return fmt.Errorf("invalid gateway IP: %q", req.Gateway)
+		}
+	}
+
+	var validAddrs []string
+	for _, a := range addresses {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(a); err != nil {
+			return fmt.Errorf("invalid CIDR address for netplan: %q", a)
+		}
+		validAddrs = append(validAddrs, fmt.Sprintf("      - %q", a))
+	}
+	if len(validAddrs) == 0 {
+		return fmt.Errorf("at least one valid CIDR address is required for netplan")
+	}
+
 	netplanDir := getNetplanDir()
 	if !dirExists(netplanDir) {
 		return nil
@@ -270,17 +382,12 @@ func writeNetplanConfig(req ApplyRequest) error {
 	filePath := filepath.Join(netplanDir, "60-powersvx.yaml")
 
 	var dnsLines string
-	if len(req.DNS) > 0 {
+	if len(cleanDNS) > 0 {
 		var list []string
-		for _, d := range req.DNS {
-			d = strings.TrimSpace(d)
-			if d != "" {
-				list = append(list, fmt.Sprintf("        - %s", d))
-			}
+		for _, d := range cleanDNS {
+			list = append(list, fmt.Sprintf("        - %s", d))
 		}
-		if len(list) > 0 {
-			dnsLines = "      nameservers:\n        addresses:\n" + strings.Join(list, "\n") + "\n"
-		}
+		dnsLines = "      nameservers:\n        addresses:\n" + strings.Join(list, "\n") + "\n"
 	} else {
 		dnsLines = "      nameservers:\n        addresses:\n        - 8.8.8.8\n        - 1.1.1.1\n"
 	}
@@ -296,11 +403,10 @@ network:
   ethernets:
     %s:
       addresses:
-      - "%s"
-%s%s`, req.Iface, req.IP, dnsLines, routeLines)
+%s
+%s%s`, req.Iface, strings.Join(validAddrs, "\n"), dnsLines, routeLines)
 
-	err := os.WriteFile(filePath, []byte(content), 0600)
-	if err != nil {
+	if err := os.WriteFile(filePath, []byte(content), 0600); err != nil {
 		return err
 	}
 

@@ -15,7 +15,6 @@ import (
 
 	"github.com/powersvx/powersvx/internal/acme"
 	"github.com/powersvx/powersvx/internal/allowlist"
-	"github.com/powersvx/powersvx/internal/denylist"
 	"github.com/powersvx/powersvx/internal/analytics"
 	"github.com/powersvx/powersvx/internal/anomaly"
 	"github.com/powersvx/powersvx/internal/api"
@@ -26,6 +25,7 @@ import (
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/database"
+	"github.com/powersvx/powersvx/internal/denylist"
 	"github.com/powersvx/powersvx/internal/dnssec"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
@@ -35,6 +35,7 @@ import (
 	"github.com/powersvx/powersvx/internal/monitor"
 	"github.com/powersvx/powersvx/internal/otelx"
 	"github.com/powersvx/powersvx/internal/plugin"
+	"github.com/powersvx/powersvx/internal/queryring"
 	"github.com/powersvx/powersvx/internal/ratelimit"
 	"github.com/powersvx/powersvx/internal/resolver"
 	"github.com/powersvx/powersvx/internal/rpz"
@@ -237,12 +238,29 @@ func main() {
 	} else {
 		log.Info("blacklist ready", "entries", bl.Count())
 	}
+	tsigStore := tsig.New()
+	if cfg.TSIG.Enabled {
+		for _, k := range cfg.TSIG.Keys {
+			if err := tsigStore.Set(k.Name, k.Secret); err != nil {
+				log.Warn("tsig key", "name", k.Name, "err", err)
+			}
+		}
+		log.Info("tsig keys loaded", "count", tsigStore.Len())
+	}
+
 	var policies []rpz.PolicyConfig
 	for _, p := range cfg.RPZ.Policies {
-		policies = append(policies, rpz.PolicyConfig{
+		pc := rpz.PolicyConfig{
 			Name: p.Name, Source: p.Source, Format: p.Format, Action: rpz.Action(p.Action), Target: p.Target,
-			Zone: p.Zone, Masters: append([]string(nil), p.Masters...), Enabled: p.Enabled,
-		})
+			Zone: p.Zone, Masters: append([]string(nil), p.Masters...), TSIGKey: p.TSIGKey, Enabled: p.Enabled,
+		}
+		if p.TSIGKey != "" {
+			if fqdn, sec, ok := tsigStore.Get(p.TSIGKey); ok {
+				pc.TSIGKey = fqdn
+				pc.TSIGSecret = sec
+			}
+		}
+		policies = append(policies, pc)
 	}
 	if len(policies) > 0 {
 		if config.UnboundDataplane() {
@@ -291,16 +309,6 @@ func main() {
 				}
 			}()
 		}
-	}
-
-	tsigStore := tsig.New()
-	if cfg.TSIG.Enabled {
-		for _, k := range cfg.TSIG.Keys {
-			if err := tsigStore.Set(k.Name, k.Secret); err != nil {
-				log.Warn("tsig key", "name", k.Name, "err", err)
-			}
-		}
-		log.Info("tsig keys loaded", "count", tsigStore.Len())
 	}
 
 	viewMap := map[string][]string{}
@@ -363,6 +371,7 @@ func main() {
 	stats := analytics.New(200)
 	anom := anomaly.New(50)
 	mon := monitor.New()
+	qring := queryring.New(0)
 	res.OnForwarder = func(addr string, ok bool, latencyMS int64, errMsg string) {
 		mon.RecordForwarder(addr, ok, latencyMS, errMsg)
 		if ok {
@@ -388,17 +397,18 @@ func main() {
 		Cache: tier, Res: res, Auth: auth, DNSSEC: sec, Signer: signer,
 		Limiter: limiter, RPZ: rpzEng, Allow: wl, Deny: bl, TSIG: tsigStore,
 		Views: views, Geo: geoRes, TLS: tlsCfg, Events: bus,
-		ACME: acmeStore, Stats: stats, Anomaly: anom, Monitor: mon, Plugins: plugins, QLog: qlog,
+		ACME: acmeStore, Stats: stats, Anomaly: anom, Monitor: mon, Ring: qring, Plugins: plugins, QLog: qlog,
 	}, log)
 
 	secMgr := secondary.New(secondary.DefaultPath(*dataDir), auth, log)
+	secMgr.SetTSIGStore(tsigStore)
+	secLoaded := false
 	if err := secMgr.Load(); err != nil {
 		log.Warn("secondary zones load failed", "err", err)
 	} else {
+		secLoaded = true
 		dnsSrv.SetSecondary(secMgr)
-		secMgr.Start(context.Background())
-		defer secMgr.Stop()
-		log.Info("secondary manager ready", "zones", len(secMgr.List()))
+		log.Info("secondary manager loaded", "zones", len(secMgr.List()))
 	}
 	kominfoMgr := kominfo.New(auth, log, cfg.KominfoSync.Targets)
 	kominfoMgr.SetEnabled(cfg.KominfoSync.Enabled)
@@ -410,8 +420,19 @@ func main() {
 	rest.SetEvents(bus)
 	rest.SetACME(acmeMgr)
 	dnsSrv.SetRPZNotifyHandler(rest.HandleRPZNotify)
+	if secLoaded {
+		secMgr.SetOnChange(func(zone string) { rest.SyncSecondaryDataplane(zone) })
+		secMgr.Start(context.Background())
+		defer secMgr.Stop()
+		log.Info("secondary refresh worker started")
+	}
 	auditLog := audit.New(500, log)
 	rest.SetAudit(auditLog)
+	if tokStore, err := apiauth.NewTokenStore(*dataDir); err != nil {
+		log.Warn("api token store unavailable", "err", err)
+	} else {
+		rest.SetTokenStore(tokStore)
+	}
 	if userStore != nil {
 		rest.SetUserStore(userStore)
 	}
@@ -419,9 +440,12 @@ func main() {
 		rest.SetSessionStore(sessStore)
 	}
 	rest.StartRPZAutoUpdate()
+	rest.StartLiveQuerySampler()
+	if config.FilterDataplane() {
+		rest.SyncAllDataplanes()
+	}
 	if config.DNSDistDataplane() {
 		rest.RefreshUnboundEntryCount()
-		rest.SyncDNSDistACL()
 		rest.StartDNSDistStatsBridge()
 		rest.StartUnboundStatsBridge() // backend Unbound :5353 (Prometheus only; UI QPS from dnsdist)
 		if ok, err := rest.TryBootstrapFilterSeed(); err != nil {

@@ -38,4 +38,3 @@ func TestL2RoundTripAndPromote(t *testing.T) {
 		t.Fatal("expected promote to L1")
 	}
 }
-

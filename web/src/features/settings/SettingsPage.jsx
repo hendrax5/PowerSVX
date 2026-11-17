@@ -3,10 +3,12 @@ import {
   ArrowsClockwise,
   Broadcast,
   Certificate,
+  Check,
   CheckCircle,
   Clock,
   CloudArrowDown,
   CloudArrowUp,
+  Copy,
   Database,
   DownloadSimple,
   FileText,
@@ -513,6 +515,9 @@ function AxfrSyncPanel({ isAdmin }) {
 
       {/* Slave Filter Feeds (Kominfo Inbound RPZ sync) */}
       <AxfrFilterFeedsPanel isAdmin={isAdmin} />
+
+      {/* Slave Authoritative Zones (RFC 1995 IXFR / AXFR / TSIG / SOA) */}
+      <SecondaryZonesPanel isAdmin={isAdmin} />
     </div>
   )
 }
@@ -530,6 +535,7 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
   const [name, setName] = useState('')
   const [zone, setZone] = useState('')
   const [mastersText, setMastersText] = useState(DEFAULT_AXFR_FILTER_MASTERS.join('\n'))
+  const [tsigKey, setTsigKey] = useState('')
   const [action, setAction] = useState('nxdomain')
   const [target, setTarget] = useState('')
   const [editName, setEditName] = useState(null)
@@ -618,6 +624,7 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
     setName('')
     setZone('')
     setMastersText(DEFAULT_AXFR_FILTER_MASTERS.join('\n'))
+    setTsigKey('')
     setAction('nxdomain')
     setTarget('')
     setEditName(null)
@@ -630,6 +637,7 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
     setName(p.name || '')
     setZone(p.zone || p.source || '')
     setMastersText((p.masters && p.masters.length ? p.masters : DEFAULT_AXFR_FILTER_MASTERS).join('\n'))
+    setTsigKey(p.tsig_key || '')
     setAction(p.action || 'nxdomain')
     setTarget(p.target || '')
   }
@@ -675,6 +683,7 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
       source: z,
       zone: z,
       masters,
+      tsig_key: tsigKey.trim() || undefined,
       format: 'axfr',
       action,
       target: action === 'redirect' || action === 'cname' ? t : '',
@@ -997,6 +1006,12 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
                       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--muted)] mono">
                         <span>Zone: <strong className="text-[var(--text)]">{p.zone || p.source}</strong></span>
                         <span>Masters: <strong className="text-[var(--text)]">{(p.masters || []).join(', ') || '—'}</strong></span>
+                        {p.tsig_key ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] text-[var(--accent)]">
+                            <Key size={11} weight="bold" />
+                            <span>TSIG: {p.tsig_key}</span>
+                          </span>
+                        ) : null}
                       </div>
                       {st ? (
                         <div className={`text-[11px] mono ${rowTone}`}>
@@ -1125,6 +1140,22 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
               />
             </label>
             <label className="text-xs font-medium text-[var(--muted)] space-y-1 block">
+              <span>TSIG Key Name (optional RFC 2845 auth)</span>
+              <input
+                list="rpz-tsig-keys-list"
+                className="w-full input text-xs font-mono"
+                value={tsigKey}
+                onChange={(e) => setTsigKey(e.target.value)}
+                disabled={!isAdmin || busy}
+                placeholder="Leave blank if master allows IP ACL"
+              />
+              <datalist id="rpz-tsig-keys-list">
+                {(status?.tsig_keys || []).map((k) => (
+                  <option key={k} value={k} />
+                ))}
+              </datalist>
+            </label>
+            <label className="text-xs font-medium text-[var(--muted)] space-y-1 block">
               <span>Filter Policy Action</span>
               <select
                 className="w-full input text-xs"
@@ -1145,7 +1176,7 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
               ) : null}
             </label>
             {action === 'redirect' || action === 'cname' ? (
-              <label className="text-xs font-medium text-[var(--muted)] space-y-1 block">
+              <label className="text-xs font-medium text-[var(--muted)] space-y-1 block sm:col-span-2">
                 <span>{action === 'redirect' ? 'Sinkhole Landing IP' : 'Landing Hostname'}</span>
                 <input
                   className="w-full input text-xs font-mono"
@@ -1155,9 +1186,7 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
                   placeholder={action === 'redirect' ? defaultRedirectTarget : 'block.local'}
                 />
               </label>
-            ) : (
-              <div />
-            )}
+            ) : null}
           </div>
 
           <div className="pt-2 flex items-center gap-2">
@@ -1181,6 +1210,368 @@ function AxfrFilterFeedsPanel({ isAdmin }) {
             ) : null}
           </div>
         </div>
+      </div>
+    </section>
+  )
+}
+
+function SecondaryZonesPanel({ isAdmin }) {
+  const [zones, setZones] = useState([])
+  const [tsigKeys, setTsigKeys] = useState([])
+  const [name, setName] = useState('')
+  const [mastersText, setMastersText] = useState('')
+  const [tsigKey, setTsigKey] = useState('')
+  const [refreshSec, setRefreshSec] = useState(0)
+  const [editZone, setEditZone] = useState(null)
+  const [syncingZone, setSyncingZone] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
+
+  const applyPayload = (r) => {
+    setZones(r?.zones || [])
+    setTsigKeys(r?.tsig_keys || [])
+  }
+
+  const load = () =>
+    api
+      .secondary()
+      .then(applyPayload)
+      .catch((e) => setErr(e.message))
+
+  useEffect(() => {
+    load()
+  }, [])
+
+  const parseMasters = (text) =>
+    text
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => (s.includes(':') ? s : `${s}:53`))
+
+  const resetForm = () => {
+    setName('')
+    setMastersText('')
+    setTsigKey('')
+    setRefreshSec(0)
+    setEditZone(null)
+  }
+
+  const startEdit = (z) => {
+    setErr('')
+    setOk('')
+    setEditZone(z.name)
+    setName(z.name || '')
+    setMastersText((z.masters || []).join('\n'))
+    setTsigKey(z.tsig_key || '')
+    setRefreshSec(Number(z.refresh_seconds) || 0)
+  }
+
+  const submitForm = async (e) => {
+    e.preventDefault()
+    setErr('')
+    setOk('')
+    const zName = name.trim()
+    const masters = parseMasters(mastersText)
+    if (!zName) {
+      setErr('Zone name is required')
+      return
+    }
+    if (!masters.length) {
+      setErr('At least one primary master server (IP or host:port) is required')
+      return
+    }
+    const payload = {
+      name: zName,
+      masters,
+      tsig_key: tsigKey.trim() || undefined,
+      refresh_seconds: Math.max(0, Number(refreshSec) || 0),
+    }
+    setBusy(true)
+    try {
+      let r
+      if (editZone) {
+        r = await api.updateSecondary(editZone, payload)
+        setOk(`Updated slave zone ${editZone}`)
+      } else {
+        r = await api.upsertSecondary(payload)
+        setOk(`Added slave zone ${r?.zone || zName} — initial SOA/AXFR sync started`)
+      }
+      applyPayload(r)
+      resetForm()
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleSync = async (zName) => {
+    setErr('')
+    setOk('')
+    setSyncingZone(zName)
+    try {
+      const r = await api.transferSecondary(zName)
+      applyPayload(r)
+      const updated = (r?.zones || []).find((z) => z.name === zName)
+      setOk(
+        `Sync ${zName}: mode=${updated?.last_mode || 'ok'} · serial=${updated?.serial || 0} · records=${updated?.record_count ?? 0}`,
+      )
+    } catch (ex) {
+      setErr(`Sync failed for ${zName}: ${ex.message}`)
+      load()
+    } finally {
+      setSyncingZone('')
+    }
+  }
+
+  const handleDelete = async (zName) => {
+    if (!window.confirm(`Remove secondary zone "${zName}" and delete its local replicated records?`)) {
+      return
+    }
+    setErr('')
+    setOk('')
+    setBusy(true)
+    try {
+      await api.deleteSecondary(zName)
+      setZones((prev) => prev.filter((z) => z.name !== zName))
+      if (editZone === zName) resetForm()
+      setOk(`Deleted secondary zone ${zName}`)
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const modeBadgeTone = (mode) => {
+    switch (mode) {
+      case 'ixfr':
+      case 'axfr':
+        return 'border-emerald-500/30 text-emerald-700 bg-emerald-500/10'
+      case 'skipped':
+        return 'border-sky-500/30 text-sky-700 bg-sky-500/10'
+      case 'failed':
+        return 'border-[var(--danger)]/30 text-[var(--danger)] bg-[var(--danger)]/10'
+      default:
+        return 'border-[var(--border)] text-[var(--muted)] bg-[var(--bg)]'
+    }
+  }
+
+  return (
+    <section className="panel overflow-hidden reveal reveal-delay-3" aria-labelledby="secondary-zones-heading">
+      <div className="p-4 border-b border-[var(--border)] bg-[var(--bg-elevated)] flex flex-wrap items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="p-1 rounded bg-[var(--accent-soft)] text-[var(--accent)]">
+              <GlobeSimple size={18} weight="bold" />
+            </span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--accent)]">
+              Role: Slave · Authoritative Zone Replication
+            </span>
+          </div>
+          <h3 id="secondary-zones-heading" className="text-base font-bold text-[var(--text)] tracking-tight">
+            Secondary (Slave) Authoritative Zones
+          </h3>
+          <p className="text-xs text-[var(--muted)] leading-relaxed max-w-[66ch]">
+            Replicates upstream authoritative zones into PowerSVX via RFC 1995 <span className="mono text-[var(--text)]">IXFR</span> / <span className="mono text-[var(--text)]">AXFR</span>,
+            honors master <span className="mono text-[var(--text)]">SOA Refresh/Retry</span> timers &amp; signed <span className="mono text-[var(--text)]">NOTIFY</span>, and persists zone records to disk across restarts.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={load}
+            className="btn btn-secondary text-xs min-h-[34px] px-3 font-medium flex items-center gap-1.5"
+          >
+            <ArrowsClockwise size={14} />
+            <span>Refresh</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="p-4 space-y-4">
+        {err ? <ErrorBox msg={err} /> : null}
+        {ok ? (
+          <div className="border border-[var(--ok)]/40 bg-[var(--ok-soft)] text-[var(--ok)] text-xs px-3.5 py-2.5 rounded-[var(--radius)] font-medium">
+            {ok}
+          </div>
+        ) : null}
+
+        <div className="space-y-2.5">
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+            Replicated Slave Zones ({zones.length})
+          </h4>
+          {zones.length ? (
+            zones.map((z) => {
+              const isSyncing = syncingZone === z.name
+              return (
+                <div
+                  key={z.name}
+                  className={`p-3.5 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-elevated)] flex flex-col md:flex-row md:items-center justify-between gap-3 ${
+                    editZone === z.name ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]' : ''
+                  }`}
+                >
+                  <div className="space-y-1.5 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono font-semibold text-xs text-[var(--text)]">{z.name}</span>
+                      <span className={`text-[10px] font-mono font-semibold uppercase px-2 py-0.5 rounded border ${modeBadgeTone(z.last_mode)}`}>
+                        {z.last_mode || 'pending'}
+                      </span>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded border border-[var(--border)] bg-[var(--bg)] text-[var(--text)]">
+                        Serial {z.serial ?? 0}
+                      </span>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded border border-[var(--border)] bg-[var(--bg)] text-[var(--muted)]">
+                        {z.record_count ?? 0} RRs
+                      </span>
+                      {z.tsig_key ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded border border-[var(--accent)]/30 bg-[var(--accent-soft)] text-[var(--accent)]">
+                          <Key size={10} weight="bold" />
+                          <span>TSIG: {z.tsig_key}</span>
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--muted)] mono">
+                      <span>Masters: <strong className="text-[var(--text)]">{(z.masters || []).join(', ')}</strong></span>
+                      <span>
+                        Refresh:{' '}
+                        <strong className="text-[var(--text)]">
+                          {z.refresh_seconds > 0
+                            ? `${z.refresh_seconds}s (override)`
+                            : z.soa_refresh
+                              ? `${z.soa_refresh}s (SOA)`
+                              : '3600s (default)'}
+                        </strong>
+                      </span>
+                      {z.soa_retry ? <span>Retry: {z.soa_retry}s</span> : null}
+                      {z.soa_expire ? <span>Expire: {z.soa_expire}s</span> : null}
+                    </div>
+                    <div className={`text-[11px] mono ${z.last_error ? 'text-[var(--danger)]' : 'text-[var(--muted)]'}`}>
+                      {z.last_master ? `via ${z.last_master}` : 'not pulled yet'}
+                      {z.last_check ? ` · checked ${z.last_check}` : ''}
+                      {z.last_pull ? ` · synced ${z.last_pull}` : ''}
+                      {z.last_error ? ` · error: ${z.last_error}` : ''}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-[var(--border)]">
+                    <button
+                      type="button"
+                      disabled={!isAdmin || busy || isSyncing}
+                      onClick={() => handleSync(z.name)}
+                      className="btn btn-secondary text-xs min-h-[30px] px-2.5 flex items-center gap-1 disabled:opacity-40"
+                    >
+                      <ArrowsClockwise size={13} className={isSyncing ? 'animate-spin' : ''} />
+                      <span>{isSyncing ? 'Syncing…' : 'Sync Now'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!isAdmin || busy || isSyncing}
+                      onClick={() => startEdit(z)}
+                      className="btn btn-ghost text-xs min-h-[30px] px-2.5 text-[var(--muted)] hover:text-[var(--text)] disabled:opacity-40"
+                    >
+                      <PencilSimple size={13} className="mr-1 inline" />
+                      <span>Edit</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!isAdmin || busy || isSyncing}
+                      onClick={() => handleDelete(z.name)}
+                      className="btn btn-ghost text-xs min-h-[30px] px-2.5 text-[var(--danger)] hover:bg-[var(--danger)]/10 disabled:opacity-40"
+                    >
+                      <Trash size={13} className="mr-1 inline" />
+                      <span>Delete</span>
+                    </button>
+                  </div>
+                </div>
+              )
+            })
+          ) : (
+            <div className="p-6 text-center text-xs text-[var(--muted)] border border-dashed border-[var(--border)] rounded-[var(--radius)]">
+              No secondary authoritative zones configured. Add a slave zone below to replicate records from an upstream primary server.
+            </div>
+          )}
+        </div>
+
+        <form onSubmit={submitForm} className="p-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-panel)] space-y-3">
+          <div className="flex items-center justify-between pb-2 border-b border-[var(--border)]">
+            <h4 className="text-xs font-bold text-[var(--text)] uppercase tracking-wider">
+              {editZone ? `Edit Slave Zone: ${editZone}` : 'Add Secondary (Slave) Zone'}
+            </h4>
+            {editZone ? (
+              <button
+                type="button"
+                onClick={resetForm}
+                className="text-[11px] text-[var(--muted)] hover:text-[var(--text)] underline"
+              >
+                Cancel Edit
+              </button>
+            ) : null}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="text-xs font-medium text-[var(--muted)] space-y-1 block">
+              <span>Zone FQDN</span>
+              <input
+                className="w-full input text-xs font-mono"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                disabled={!isAdmin || busy || !!editZone}
+                placeholder="e.g. corp.example.id"
+              />
+            </label>
+            <label className="text-xs font-medium text-[var(--muted)] space-y-1 block">
+              <span>Refresh Interval Override (seconds, 0 = use SOA)</span>
+              <input
+                type="number"
+                min={0}
+                className="w-full input text-xs font-mono"
+                value={refreshSec}
+                onChange={(e) => setRefreshSec(e.target.value)}
+                disabled={!isAdmin || busy}
+              />
+            </label>
+            <label className="text-xs font-medium text-[var(--muted)] space-y-1 block sm:col-span-2">
+              <span>Primary Master Servers (one per line or comma-separated, host:port)</span>
+              <textarea
+                className="w-full input text-xs font-mono min-h-[3.5rem]"
+                value={mastersText}
+                onChange={(e) => setMastersText(e.target.value)}
+                disabled={!isAdmin || busy}
+                placeholder="10.10.1.10:53"
+              />
+            </label>
+            <label className="text-xs font-medium text-[var(--muted)] space-y-1 block sm:col-span-2">
+              <span>TSIG Key Name (optional RFC 2845 auth)</span>
+              <input
+                list="secondary-tsig-keys-list"
+                className="w-full input text-xs font-mono"
+                value={tsigKey}
+                onChange={(e) => setTsigKey(e.target.value)}
+                disabled={!isAdmin || busy}
+                placeholder="Leave blank if master uses IP ACL"
+              />
+              <datalist id="secondary-tsig-keys-list">
+                {tsigKeys.map((k) => (
+                  <option key={k} value={k} />
+                ))}
+              </datalist>
+            </label>
+          </div>
+
+          <div className="pt-1 flex items-center gap-2">
+            <button
+              type="submit"
+              disabled={!isAdmin || busy}
+              className="btn btn-primary text-xs min-h-[34px] px-4 font-semibold disabled:opacity-50"
+            >
+              {busy ? 'Saving…' : editZone ? 'Save Slave Zone' : 'Add Slave Zone'}
+            </button>
+          </div>
+        </form>
       </div>
     </section>
   )
@@ -1785,7 +2176,7 @@ function UsersPanel() {
             </thead>
             <tbody>
               {users.map((u) => {
-                const isSelf = me?.user === u.name
+                const isSelf = me?.name === u.name
                 const roleTone =
                   u.role === 'admin'
                     ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-semibold'
@@ -2149,6 +2540,203 @@ function ACMEPanel() {
 
 
 
+function TokensPanel() {
+  const { isAdmin } = useAuth()
+  const [tokens, setTokens] = useState([])
+  const [name, setName] = useState('')
+  const [role, setRole] = useState('operator')
+  const [ttlDays, setTtlDays] = useState(90)
+  const [createdSecret, setCreatedSecret] = useState('')
+  const [copied, setCopied] = useState(false)
+  const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const load = () =>
+    api
+      .listTokens()
+      .then((r) => setTokens(r?.tokens || []))
+      .catch((e) => setErr(e.message))
+
+  useEffect(() => {
+    load()
+  }, [])
+
+  const create = async (e) => {
+    e.preventDefault()
+    if (!name.trim()) return
+    setBusy(true)
+    setErr('')
+    setOk('')
+    setCreatedSecret('')
+    try {
+      const r = await api.createToken({
+        name: name.trim(),
+        role,
+        ttl_days: Number(ttlDays) || 0,
+      })
+      setCreatedSecret(r?.token || '')
+      setName('')
+      setOk(`Created API token "${r?.name || name}" (${r?.prefix || ''}) — copy it now; it won't be shown again.`)
+      await load()
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const revoke = async (id, tokName) => {
+    if (!window.confirm(`Revoke API token "${tokName}"? Scripts using it will lose access immediately.`)) return
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      await api.revokeToken(id)
+      setOk(`Revoked token "${tokName}"`)
+      await load()
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const copySecret = () => {
+    if (!createdSecret) return
+    try {
+      navigator.clipboard.writeText(createdSecret)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return (
+    <div className="space-y-4 max-w-4xl">
+      {err ? <ErrorBox msg={err} /> : null}
+      {ok ? (
+        <div className="border border-[var(--ok)]/40 bg-[var(--ok-soft)] text-[var(--ok)] text-sm px-3.5 py-2.5 rounded-[var(--radius)] font-medium">
+          {ok}
+        </div>
+      ) : null}
+
+      {createdSecret ? (
+        <div className="panel p-4 border border-[var(--accent)] bg-[var(--bg-elevated)] space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wider text-[var(--accent)]">
+              New Bearer Token (Shown Once)
+            </span>
+            <button type="button" onClick={copySecret} className="btn btn-primary text-xs">
+              {copied ? <Check size={14} weight="bold" /> : <Copy size={14} weight="bold" />}
+              <span>{copied ? 'Copied!' : 'Copy Token'}</span>
+            </button>
+          </div>
+          <pre className="mono text-xs p-2.5 rounded bg-[var(--bg)] border border-[var(--border)] select-all break-all">
+            {createdSecret}
+          </pre>
+        </div>
+      ) : null}
+
+      <div className="panel overflow-hidden">
+        <div className="p-4 border-b border-[var(--border)] bg-[var(--bg-elevated)] flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded-lg bg-[var(--accent-soft)] text-[var(--accent)]">
+              <Key weight="bold" className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold">API Tokens &amp; Automation Keys</h3>
+              <p className="text-xs text-[var(--muted)]">
+                Scoped Bearer tokens for Terraform, scripts, and CI/CD (Authorization: Bearer psvx_…)
+              </p>
+            </div>
+          </div>
+          <span className="text-xs font-mono text-[var(--muted)]">{tokens.length} active</span>
+        </div>
+
+        <div className="divide-y divide-[var(--border)]">
+          {tokens.length === 0 ? (
+            <div className="p-6 text-center text-xs text-[var(--muted)]">
+              No API tokens minted yet. Create one below for programmatic REST API access.
+            </div>
+          ) : (
+            tokens.map((t) => (
+              <div key={t.id} className="px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                <div className="space-y-0.5 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-[var(--text)]">{t.name}</span>
+                    <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--accent)]">
+                      {t.role}
+                    </span>
+                  </div>
+                  <div className="text-[11px] font-mono text-[var(--muted)] flex flex-wrap gap-3">
+                    <span>Prefix: {t.prefix}…</span>
+                    <span>Created: {t.created_at ? new Date(t.created_at).toLocaleDateString() : '—'}</span>
+                    <span>Expires: {t.expires_at ? new Date(t.expires_at).toLocaleDateString() : 'Never'}</span>
+                  </div>
+                </div>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => revoke(t.id, t.name)}
+                    className="btn btn-secondary text-xs text-[var(--danger)]"
+                  >
+                    <Trash size={14} />
+                    <span>Revoke</span>
+                  </button>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+
+        {isAdmin && (
+          <div className="p-4 border-t border-[var(--border)] bg-[var(--bg-elevated)]/60">
+            <form onSubmit={create} className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+              <label className="text-xs text-[var(--muted)] space-y-1 md:col-span-2">
+                <span>Token Label</span>
+                <input
+                  className="input text-xs w-full"
+                  placeholder="e.g. certbot-dns01 or netops-ci"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  required
+                />
+              </label>
+              <label className="text-xs text-[var(--muted)] space-y-1">
+                <span>Role</span>
+                <select className="input text-xs w-full" value={role} onChange={(e) => setRole(e.target.value)}>
+                  <option value="admin">admin</option>
+                  <option value="operator">operator</option>
+                  <option value="readonly">readonly</option>
+                </select>
+              </label>
+              <label className="text-xs text-[var(--muted)] space-y-1">
+                <span>TTL (days, 0 = never)</span>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    max={3650}
+                    className="input text-xs mono w-full"
+                    value={ttlDays}
+                    onChange={(e) => setTtlDays(Number(e.target.value))}
+                  />
+                  <button type="submit" disabled={busy || !name.trim()} className="btn btn-primary text-xs shrink-0">
+                    Mint Token
+                  </button>
+                </div>
+              </label>
+            </form>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function SettingsPage() {
   return (
     <Settings
@@ -2158,6 +2746,7 @@ export default function SettingsPage() {
         backup: BackupPanel,
         users: UsersPanel,
         rpz: RPZPanel,
+        tokens: TokensPanel,
       }}
     />
   )

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.7.0] - 2026-11-17
+
+### Added
+- **Carrier-Grade Slave Authoritative Zones (`internal/secondary`)**:
+  - Full **RFC 1995 IXFR** incremental zone transfer with automatic **AXFR** fallback when primary masters reject or do not support IXFR.
+  - Pre-transfer **SOA serial check** using **RFC 1982** wrap-around serial arithmetic (`internal/tsig.SerialGreater`), skipping unchanged transfers.
+  - Automatic honoring of upstream master SOA **`Refresh` / `Retry` / `Expire`** timers (with optional `refresh_seconds` override) and `inFlight` transfer deduplication.
+  - Optional outbound **RFC 2845 TSIG** authentication (`tsig_key`) across SOA, IXFR, and AXFR pulls (`internal/tsig`).
+  - Atomic per-zone record persistence (`data/secondary-zones/*.json`) restored automatically on boot so slave zones serve offline even before masters respond.
+  - Automatic dataplane sync callback (`SyncSecondaryDataplane`) updating `authzones.cdb`, `dnsdist`, and Unbound `auth_zones`.
+  - Full Web UI management via **Settings → Tools → AXFR → Secondary Authoritative Zones** (`SecondaryZonesPanel`) and `[SLAVE]` zone badges/warnings in **Domains** (`DomainsPage.jsx`).
+- **Carrier-Grade Slave Filter Feeds (`internal/rpz`, `internal/api/cdb_sync.go`)**:
+  - Per-policy feed cache files (`data/blocklist/feeds/<policy>-<hash>.txt` + `manifest.txt`) preventing multi-policy overwrites when a feed skips on unchanged SOA or triggers on targeted `NOTIFY`.
+  - Memory-efficient streaming AXFR (`StreamAXFRNames`), optional outbound `tsig_key` support on `format="axfr"` feeds, and winning `Master` tracking.
+  - Seamless seed-to-IXFR handoff fallbacks: `blockcdb.ReadSeedManifest` (serial recovery from `seed-manifest.json`) and `blockcdb.ReadCDBKeys` (baseline extraction directly from `domains.cdb`).
+- **ISP DNS Core & Security Suite**:
+  - Full control-plane → dataplane sync (`dnsdistctl` dynamic ACL/RRL/CDB reload + Unbound runtime config drop-in for forwarders, DNSSEC, ECS, and `auth_zones`).
+  - Multi-algorithm DNSSEC zone signing (`ECDSAP256SHA256`, `ED25519`, `ECDSAP384SHA384`, `RSASHA256`) + **NSEC3** support, BIND zone import/export, and SOA timer editing.
+  - Live DNS query ring-buffer + SSE stream (`/api/v1/stream`), Cache Explorer (`web/src/features/cache`), Security & Dynamic IP Bans (`internal/aclban`, `web/src/features/security`), DNS Client Lookup + Iterative Root Trace (`internal/api/tools.go`), Scoped SHA-256 API tokens (`internal/apiauth/tokens.go`), and Web UI EN/ID switcher (`web/src/i18n.jsx`).
+
+### Fixed
+- **Dataplane `NOTIFY` Routing (`deploy/linux/gen-dnsdist-conf.sh`, `internal/server`)**: Routed `OpcodeRule(DNSOpcode.Notify)` directly to PowerSVX (`:5354`) ahead of blocklist/cache rules, and enforced master source IP or valid TSIG verification on inbound `HandleNotifyFrom` and `HandleRPZNotify` (`REFUSED` on unauthorized senders).
+- **Code Review Hardening**: Resolved resource leaks and safety issues across PTY terminal lifecycle, conntrack/tproxy parsing, anomaly/bloom/cache locking, database context deadlines, host network interface validation (`internal/hostnet`), and RFC 1982 wraparound serial checks on outbound XFER.
+
+---
+
 ## [1.6.3] - 2026-10-25
 
 ### Added

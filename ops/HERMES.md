@@ -4,16 +4,17 @@ Read **`ops/inventory.local.yaml`** first. Match the user’s host by `name`, `i
 
 Copy templates if missing: `ops/inventory.example.yaml` → `inventory.local.yaml`, `ops/vault.example.yaml` → `vault.local.yaml`.
 
-## Architecture (v1.6.3+ dnsdist)
+## Architecture (v1.7.0+ dnsdist)
 
-**Production default:** **dnsdist** owns public `:53` with a **CDB blocklist** (full Kominfo AXFR, mmap). **Unbound** recurses only on `127.0.0.1:5353` (no huge RPZ). PowerSVX is control-plane (UI/API `:5380`, AXFR→CDB sync, banks whitelist, optional auth `:5354`).
+**Production default:** **dnsdist** owns public `:53` with a **CDB blocklist** (full Kominfo AXFR/IXFR, mmap). **Unbound** recurses only on `127.0.0.1:5353` (no huge RPZ). PowerSVX is control-plane (UI/API `:5380`, AXFR/IXFR→CDB sync, banks whitelist, auth & slave zones `:5354`, `OpcodeNotify` routed by dnsdist to `:5354`).
 
 ```
 Client → dnsdist :53
          ├─ bank SuffixMatchNode → Unbound :5353
+         ├─ OpcodeNotify → PowerSVX :5354
          ├─ CDB hit (A/AAAA) → spoof 139.255.196.196 / ::
          └─ miss → Unbound :5353
-PowerSVX → AXFR/hosts → data/blocklist/domains.cdb (+ banks.whitelist)
+PowerSVX → AXFR/IXFR/hosts → data/blocklist/domains.cdb (+ banks.whitelist + authzones.cdb)
 ```
 
 Env: `POWERSVX_DNS_DATAPLANE=dnsdist` (compose host default).
@@ -48,7 +49,7 @@ Default target if unspecified: **isehat2 / 103.172.70.254**.
    eval "$(deploy/linux/calc-mem-env.sh)"
    export GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
    export BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-   export POWERSVX_VERSION=1.6.3 GOGC=50
+   export POWERSVX_VERSION=1.7.0 GOGC=50
    docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml build powersvx
    docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \
      up -d --no-deps --force-recreate unbound dnsdist powersvx node-exporter prometheus grafana

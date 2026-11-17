@@ -24,12 +24,12 @@ type Detector struct {
 }
 
 type Alert struct {
-	Time    time.Time `json:"time"`
-	Kind    string    `json:"kind"`
-	Message string    `json:"message"`
-	Score   float64   `json:"score"`
-	Current float64   `json:"current"`
-	Baseline float64  `json:"baseline"`
+	Time     time.Time `json:"time"`
+	Kind     string    `json:"kind"`
+	Message  string    `json:"message"`
+	Score    float64   `json:"score"`
+	Current  float64   `json:"current"`
+	Baseline float64   `json:"baseline"`
 }
 
 func New(maxAlerts int) *Detector {
@@ -135,12 +135,12 @@ func (d *Detector) Snapshot() map[string]any {
 	alerts := make([]Alert, len(d.alerts))
 	copy(alerts, d.alerts)
 	return map[string]any{
-		"alerts":          alerts,
-		"warm":            d.warm,
-		"qps_baseline":    round2(d.qRateEWMA),
-		"error_baseline":  round2(d.eRateEWMA),
-		"window_seconds":  int(d.window.Seconds()),
-		"note":            "EWMA spike detector (not cloud ML). Alerts when rate ≫ baseline.",
+		"alerts":         alerts,
+		"warm":           d.warm,
+		"qps_baseline":   round2(d.qRateEWMA),
+		"error_baseline": round2(d.eRateEWMA),
+		"window_seconds": int(d.window.Seconds()),
+		"note":           "EWMA spike detector (not cloud ML). Alerts when rate ≫ baseline.",
 	}
 }
 

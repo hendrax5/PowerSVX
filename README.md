@@ -1,6 +1,6 @@
-# PowerSVX `v1.6.3`
+# PowerSVX `v1.7.0`
 
-Modern High-Performance DNS Server in Go & Dnsdist — recursive/authoritative, encrypted transports, RPZ & Kominfo CDB policy (>10k QPS), and React ops UI with dark/light mode.
+Modern High-Performance DNS Server in Go & Dnsdist — recursive/authoritative, encrypted transports, RPZ & Kominfo CDB policy (>10k QPS), carrier-grade slave IXFR/TSIG sync, and React ops UI with dark/light mode.
 
 **Repository:** [https://github.com/hendrax5/PowerSVX.git](https://github.com/hendrax5/PowerSVX.git)
 
@@ -33,8 +33,9 @@ git clone https://github.com/hendrax5/PowerSVX.git /home/hendra/powersvx && cd /
 |------|----------------|
 | DNS Dataplane | **Dnsdist (port 53, 1M packet cache, memory-mapped CDB)** + **Unbound (127.0.0.1:5353 multi-threaded recursive backend)** |
 | Performance | **>10k QPS**, kernel `NOTRACK` bypass conntrack, 3M conntrack table, 16MB socket buffers, 4096 NIC ring buffers |
-| Filter & Policy | Kominfo TrustPositif (full 20M+ via AXFR/IXFR mmap), banks whitelist bypass, RPZ, query ACL, rate-limiting |
-| Control & UI | PowerSVX Go `:5380`, REST API, React modular UI with **Dark & Light Mode**, query logs, RBAC |
+| Filter & Policy | Kominfo TrustPositif (seed bootstrap + SOA/IXFR/AXFR delta to per-policy CDB), banks whitelist bypass, RPZ, query ACL, rate-limiting |
+| Authoritative & Slave | Multi-algo DNSSEC (ECDSA/ED25519/RSA) + NSEC3, BIND import/export, Secondary (Slave) RFC 1995 IXFR + AXFR, RFC 2845 TSIG, SOA timers & disk cache |
+| Control & UI | PowerSVX Go `:5380`, scoped API tokens, live SSE query stream, Cache Explorer, Security & Bans, DNS Lookup/Root Trace, EN/ID switcher |
 | Observability | Auto-provisioned **Grafana (`:3000`)** embedded in `/analytics`, **Prometheus (`127.0.0.1:9091`)**, **Node-Exporter (`127.0.0.1:9101`)** |
 | Encrypted DNS | DoT (`:853`), DoH/DoH3 (`:443`), DoQ (`:784`), outbound forwarders, ACME DNS-01 |
 | Intercept | MikroTik / iptables DNAT; Linux kernel `tproxy` (`IP_TRANSPARENT`) |
@@ -46,7 +47,7 @@ git clone https://github.com/hendrax5/PowerSVX.git /home/hendra/powersvx && cd /
 
 | Port | Service | Access / Role |
 |------|---------|---------------|
-| `53` | DNS (UDP/TCP) | **Dnsdist** (Public edge, 1M packet cache + CDB mmap) |
+| `53` | DNS (UDP/TCP) | **Dnsdist** (Public edge, 1M packet cache + CDB mmap + NOTIFY routing) |
 | `5353` | Unbound Recursive | Loopback `127.0.0.1` multi-threaded backend |
 | `5380` | PowerSVX Control | Web UI + REST API (AXFR initial + IXFR delta updates) |
 | `3000` | Grafana Analytics | Auto-provisioned dashboards (embedded in UI `/analytics`) |
@@ -67,7 +68,7 @@ Untuk mengelola, probe, dan update server fleet:
 # Probe kesehatan seluruh fleet:
 python ops/probe.py all
 
-# Update node yang sudah berjalan ke v1.6.3:
+# Update node yang sudah berjalan ke v1.7.0:
 bash deploy/linux/apply-update.sh
 ```
 

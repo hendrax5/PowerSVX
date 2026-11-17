@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sync"
 
 	"golang.org/x/net/websocket"
 )
@@ -23,7 +24,13 @@ func NewHandler() *Handler {
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	wsHandler := websocket.Handler(func(ws *websocket.Conn) {
-		defer ws.Close()
+		var closeOnce sync.Once
+		closeWS := func() {
+			closeOnce.Do(func() {
+				_ = ws.Close()
+			})
+		}
+		defer closeWS()
 
 		session, stream, err := StartSession()
 		if err != nil {
@@ -50,7 +57,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			ws.Close()
+			closeWS()
 		}()
 
 		// WebSocket -> stream PTY
@@ -64,10 +71,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			// Check for resize message
-			if bytes.HasPrefix(raw, []byte(`{"type":"resize"`)) || bytes.HasPrefix(raw, []byte(`{"type": "resize"`)) {
+			trimmed := bytes.TrimSpace(raw)
+			if len(trimmed) > 0 && trimmed[0] == '{' {
 				var rmsg ResizeMessage
-				if err := json.Unmarshal(raw, &rmsg); err == nil && rmsg.Cols > 0 && rmsg.Rows > 0 {
+				if err := json.Unmarshal(trimmed, &rmsg); err == nil && rmsg.Type == "resize" && rmsg.Cols > 0 && rmsg.Rows > 0 {
 					_ = session.SetSize(rmsg.Cols, rmsg.Rows)
 					continue
 				}

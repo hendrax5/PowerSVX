@@ -52,4 +52,4 @@ type rwcBridge struct {
 
 func (b *rwcBridge) Read(p []byte) (int, error)  { return b.r.Read(p) }
 func (b *rwcBridge) Write(p []byte) (int, error) { return b.w.Write(p) }
-func (b *rwcBridge) Close() error               { return nil }
+func (b *rwcBridge) Close() error                { return nil }

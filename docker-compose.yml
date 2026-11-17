@@ -7,7 +7,7 @@ services:
       # make Alpine/Debian package mirrors look "temporarily" unavailable.
       network: host
       args:
-        VERSION: ${POWERSVX_VERSION:-1.6.3}
+        VERSION: ${POWERSVX_VERSION:-1.7.0}
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: powersvx

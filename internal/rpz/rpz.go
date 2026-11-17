@@ -60,9 +60,9 @@ type LoadStatus struct {
 
 func New(enabled bool) *Engine {
 	e := &Engine{
-		tree:   newTrie(),
+		tree:    newTrie(),
 		enabled: enabled,
-		hotMax: 500_000,
+		hotMax:  500_000,
 	}
 	e.lastErr.Store("")
 	e.lastLoaded.Store(time.Time{})
@@ -613,10 +613,19 @@ type PolicyConfig struct {
 	// Target is required for redirect (IP) and cname (hostname).
 	Target string
 	// Zone + Masters for format=axfr (slave pull; owner names → RPZ).
-	Zone    string
-	Masters []string
+	Zone       string
+	Masters    []string
+	TSIGKey    string // optional TSIG key name
+	TSIGSecret string // optional base64 secret resolved from tsig.Store
 	// Enabled nil/true = sync; false = skip.
 	Enabled *bool
+}
+
+func (p PolicyConfig) tsigAuth() TSIGAuth {
+	if p.TSIGKey == "" || p.TSIGSecret == "" {
+		return TSIGAuth{}
+	}
+	return TSIGAuth{Name: p.TSIGKey, Secret: p.TSIGSecret}
 }
 
 // PolicyEnabled reports whether the feed should sync (nil = on).
@@ -744,7 +753,7 @@ func (e *Engine) loadPoliciesDisk(policies []PolicyConfig, timeout time.Duration
 		}
 		hit := Hit{Action: action, Target: strings.TrimSpace(p.Target)}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		serial, _, err := streamAXFRToSink(ctx, p.Zone, p.Masters, hit, feedSink{b: b, policy: p.Name})
+		serial, _, err := streamAXFRToSinkWithTSIG(ctx, p.Zone, p.Masters, hit, feedSink{b: b, policy: p.Name}, p.tsigAuth())
 		cancel()
 		if err != nil {
 			return 0, fmt.Errorf("policy %s: %w", p.Name, err)
@@ -824,7 +833,7 @@ func (e *Engine) loadPoliciesRAM(policies []PolicyConfig, timeout time.Duration,
 			keepFeeds[p.Name] = true
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			var serial uint32
-			serial, _, err = streamAXFRToSink(ctx, p.Zone, p.Masters, hit, merged)
+			serial, _, err = streamAXFRToSinkWithTSIG(ctx, p.Zone, p.Masters, hit, merged, p.tsigAuth())
 			cancel()
 			if err == nil {
 				axfrSerials[p.Name] = struct {
@@ -906,7 +915,8 @@ func (e *Engine) RefreshAXFR(policies []PolicyConfig, timeout time.Duration) (in
 		hit := Hit{Action: action, Target: strings.TrimSpace(p.Target)}
 		zone := config.NormalizeName(p.Zone)
 
-		remoteSerial, master, err := QuerySOASerial(ctx, zone, p.Masters)
+		auth := p.tsigAuth()
+		remoteSerial, master, err := QuerySOASerialWithTSIG(ctx, zone, p.Masters, auth)
 		if err != nil {
 			if state != nil {
 				_ = state.PutFailure(p.Name, zone, "", fmt.Sprintf("SOA failed: %v", err))
@@ -919,7 +929,7 @@ func (e *Engine) RefreshAXFR(policies []PolicyConfig, timeout time.Duration) (in
 				localSerial = st.Serial
 			}
 		}
-		if localSerial != 0 && remoteSerial == localSerial {
+		if localSerial != 0 && !SerialGreater(remoteSerial, localSerial) {
 			if state != nil {
 				_ = state.PutSuccess(p.Name, zone, "skipped", master, remoteSerial,
 					fmt.Sprintf("SOA unchanged · serial %d · master %s", remoteSerial, master))
@@ -927,12 +937,15 @@ func (e *Engine) RefreshAXFR(policies []PolicyConfig, timeout time.Duration) (in
 			continue
 		}
 
-		res, err := PullZone(ctx, zone, p.Masters, localSerial)
+		res, err := PullZoneWithTSIG(ctx, zone, p.Masters, localSerial, auth)
 		if err != nil {
 			if state != nil {
 				_ = state.PutFailure(p.Name, zone, master, fmt.Sprintf("transfer failed: %v", err))
 			}
 			return 0, fmt.Errorf("policy %s transfer: %w", p.Name, err)
+		}
+		if res.Master != "" {
+			master = res.Master
 		}
 		mode := "ixfr"
 		if res.FullReplace || localSerial == 0 {

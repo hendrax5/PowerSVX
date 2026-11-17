@@ -66,7 +66,7 @@ fi
 echo "==> recreate stack (logging limits + retention)"
 export GIT_COMMIT="${GIT_COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-export POWERSVX_VERSION="${POWERSVX_VERSION:-1.6.3}"
+export POWERSVX_VERSION="${POWERSVX_VERSION:-1.7.0}"
 export GOGC="${GOGC:-50}"
 echo "build stamp VERSION=$POWERSVX_VERSION GIT_COMMIT=$GIT_COMMIT DATAPLANE=$POWERSVX_DNS_DATAPLANE"
 # Dataplane default mem_percent=30 via calc-mem-env (leave RAM for Unbound).

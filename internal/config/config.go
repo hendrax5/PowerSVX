@@ -47,18 +47,18 @@ type ACLConfig struct {
 }
 
 type ServerConfig struct {
-	BindAddress string    `toml:"bind_address"`
-	UDPPort     int       `toml:"udp_port"`
-	TCPPort     int       `toml:"tcp_port"`
-	DoTPort     int       `toml:"dot_port"`
-	DoHPort     int       `toml:"doh_port"`
-	DoQPort     int       `toml:"doq_port"`
-	Workers     int       `toml:"workers"`
+	BindAddress string `toml:"bind_address"`
+	UDPPort     int    `toml:"udp_port"`
+	TCPPort     int    `toml:"tcp_port"`
+	DoTPort     int    `toml:"dot_port"`
+	DoHPort     int    `toml:"doh_port"`
+	DoQPort     int    `toml:"doq_port"`
+	Workers     int    `toml:"workers"`
 	// TProxy enables IP_TRANSPARENT on UDP/TCP DNS sockets (Linux only).
 	// Needed for nftables/iptables TPROXY where the packet destination stays
 	// non-local (e.g. 8.8.8.8). Not required for MikroTik/iptables DNAT.
-	TProxy      bool      `toml:"tproxy"`
-	TLS         TLSConfig `toml:"tls"`
+	TProxy bool      `toml:"tproxy"`
+	TLS    TLSConfig `toml:"tls"`
 }
 
 type TLSConfig struct {
@@ -79,13 +79,13 @@ type DatabaseConfig struct {
 }
 
 type CacheConfig struct {
-	Type        string `toml:"type"`
-	Path        string `toml:"path"`
-	MaxSizeMB   int    `toml:"max_size_mb"`
-	TTLSeconds  int    `toml:"ttl_seconds"`
+	Type       string `toml:"type"`
+	Path       string `toml:"path"`
+	MaxSizeMB  int    `toml:"max_size_mb"`
+	TTLSeconds int    `toml:"ttl_seconds"`
 	// MinTTL floors positive-answer cache lifetime (0 = honor upstream TTL only).
-	MinTTL      int    `toml:"min_ttl"`
-	NegativeTTL int    `toml:"negative_ttl"`
+	MinTTL      int `toml:"min_ttl"`
+	NegativeTTL int `toml:"negative_ttl"`
 	// ServeStale answers briefly past Expiry while a background refresh runs.
 	ServeStale bool `toml:"serve_stale"`
 	// StaleTTL seconds past Expiry that stale answers may still be served (0 = 60 when ServeStale).
@@ -95,23 +95,23 @@ type CacheConfig struct {
 }
 
 type ResolverConfig struct {
-	Mode              string   `toml:"mode"`
-	Forwarders        []string `toml:"forwarders"`
+	Mode       string   `toml:"mode"`
+	Forwarders []string `toml:"forwarders"`
 	// ForwardZones routes queries for matching domains to specific upstreams
 	// (longest-suffix match). Checked before recursion and before global forwarders.
-	ForwardZones      []ForwardZoneConfig `toml:"forward_zones"`
-	RootHintsFile     string   `toml:"root_hints_file"`
+	ForwardZones  []ForwardZoneConfig `toml:"forward_zones"`
+	RootHintsFile string              `toml:"root_hints_file"`
 	// ForwardOnFail: when mode=recursive, fall back to forwarders if root iteration fails.
-	ForwardOnFail     bool     `toml:"forward_on_fail"`
-	DNSSECValidation  bool     `toml:"dnssec_validation"`
-	DNSSECMode        string   `toml:"dnssec_mode"`
-	QNameMinimization bool     `toml:"qname_minimization"`
-	EDNSBufferSize    uint16   `toml:"edns_buffer_size"`
-	TimeoutMS         int      `toml:"timeout_ms"`
+	ForwardOnFail     bool   `toml:"forward_on_fail"`
+	DNSSECValidation  bool   `toml:"dnssec_validation"`
+	DNSSECMode        string `toml:"dnssec_mode"`
+	QNameMinimization bool   `toml:"qname_minimization"`
+	EDNSBufferSize    uint16 `toml:"edns_buffer_size"`
+	TimeoutMS         int    `toml:"timeout_ms"`
 	// MaxInflight caps concurrent recursive/forward resolves (0 = Autosize from CPU).
 	MaxInflight int `toml:"max_inflight"`
 	// FallbackTimeoutMS is the short budget for forward_on_fail after recursive fails (0 = auto ~20% of TimeoutMS, capped 500ms).
-	FallbackTimeoutMS int `toml:"fallback_timeout_ms"`
+	FallbackTimeoutMS int   `toml:"fallback_timeout_ms"`
 	ECSEnabled        bool  `toml:"ecs_enabled"`
 	ECSPrefixV4       uint8 `toml:"ecs_prefix_v4"`
 	ECSPrefixV6       uint8 `toml:"ecs_prefix_v6"`
@@ -226,6 +226,7 @@ type RPZPolicyTOML struct {
 	// Zone + Masters are used when Format is "axfr" (PowerSVX as slave; names → RPZ).
 	Zone    string   `toml:"zone" json:"zone,omitempty"`
 	Masters []string `toml:"masters" json:"masters,omitempty"`
+	TSIGKey string   `toml:"tsig_key" json:"tsig_key,omitempty"`
 	// Enabled: nil/omitted = on (backward compatible); false = skip sync for this feed.
 	Enabled *bool `toml:"enabled,omitempty" json:"enabled,omitempty"`
 }
@@ -326,10 +327,10 @@ func Default() *Config {
 		},
 		Resolver: ResolverConfig{
 			// Default: Unbound hybrid (loopback). Host compose starts Unbound on :5353.
-			Mode: "forward",
-			Forwarders: []string{"127.0.0.1:5353"},
+			Mode:          "forward",
+			Forwarders:    []string{"127.0.0.1:5353"},
 			ForwardOnFail: false,
-			DNSSECMode: "off", QNameMinimization: true,
+			DNSSECMode:    "off", QNameMinimization: true,
 			EDNSBufferSize: 1232, TimeoutMS: 3000,
 			MaxInflight: 1024, FallbackTimeoutMS: 400,
 			ECSEnabled: true, ECSPrefixV4: 24, ECSPrefixV6: 56,
@@ -350,7 +351,7 @@ func Default() *Config {
 			PrometheusEnabled: true,
 			PrometheusBind:    "0.0.0.0:9100",
 		},
-		TSIG:     TSIGConfig{Enabled: false},
+		TSIG:        TSIGConfig{Enabled: false},
 		Transfer:    TransferConfig{AllowAXFR: false, RequireTSIG: true},
 		Update:      UpdateConfig{Enabled: false, RequireTSIG: true},
 		KominfoSync: KominfoSyncConfig{Enabled: false},

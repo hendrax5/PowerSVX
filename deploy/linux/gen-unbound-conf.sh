@@ -115,6 +115,17 @@ access-control: 0.0.0.0/0 allow
 access-control: ::/0 allow
 Z
 fi
+if [ ! -f "$RPZ_DIR_HOST/runtime-server.conf" ]; then
+  cat >"$RPZ_DIR_HOST/runtime-server.conf" <<'Z'
+# PowerSVX dynamic server-scope options (populated on startup & settings save)
+    do-not-query-localhost: no
+Z
+fi
+if [ ! -f "$RPZ_DIR_HOST/runtime-zones.conf" ]; then
+  cat >"$RPZ_DIR_HOST/runtime-zones.conf" <<'Z'
+# PowerSVX dynamic forward-zone & stub-zone clauses (populated on startup & settings save)
+Z
+fi
 
 TMP="${OUT}.tmp.$$"
 
@@ -179,6 +190,7 @@ server:
 
     include: /opt/unbound/etc/unbound/a-records.conf
     include: /opt/unbound/etc/unbound/srv-records.conf
+    include: /opt/unbound/etc/unbound/rpz/runtime-server.conf
 
     # Query logfile optional — full log-queries under multi-k QPS + 9.5M RPZ can stall Unbound.
     # Keep file path for future sampling; default queries logging OFF for stability.
@@ -188,6 +200,8 @@ server:
     log-queries: no
     log-replies: no
     log-servfail: no
+
+include: /opt/unbound/etc/unbound/rpz/runtime-zones.conf
 
 # Bank passthru first, then AXFR feeds, then TrustPositif hosts (~9.5M).
 rpz:
@@ -274,6 +288,9 @@ server:
 
     include: /opt/unbound/etc/unbound/a-records.conf
     include: /opt/unbound/etc/unbound/srv-records.conf
+    include: /opt/unbound/etc/unbound/rpz/runtime-server.conf
+
+include: /opt/unbound/etc/unbound/rpz/runtime-zones.conf
 
 remote-control:
     control-enable: yes

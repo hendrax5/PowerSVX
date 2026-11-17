@@ -108,10 +108,19 @@ func AllowPath(role, method, path string) bool {
 	if strings.HasPrefix(path, "/api/v1/conntrack") {
 		return false
 	}
+	if strings.HasPrefix(path, "/api/v1/host/network") {
+		return false
+	}
+	if strings.HasPrefix(path, "/api/v1/terminal") {
+		return false
+	}
+	if strings.HasPrefix(path, "/api/v1/system") {
+		return false
+	}
 	if path == "/api/v1/backup" && method != http.MethodGet {
 		return false
 	}
-	if strings.HasPrefix(path, "/api/v1/auth/users") {
+	if strings.HasPrefix(path, "/api/v1/auth/users") || strings.HasPrefix(path, "/api/v1/auth/tokens") {
 		return false
 	}
 	return true

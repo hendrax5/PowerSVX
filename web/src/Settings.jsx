@@ -823,12 +823,12 @@ export default function Settings({ tools = {} }) {
           hint: 'Engine & socket stats',
           Icon: ChartLine,
           dirty: false,
-          pill: saved?.version || 'v1.6.3',
+          pill: saved?.version || '—',
         },
         {
           id: 'tools',
           label: 'System Tools',
-          hint: 'AXFR, ACME & Backup',
+          hint: 'AXFR, ACME, Tokens & Backup',
           Icon: HardDrives,
           dirty: false,
           pill: 'Tools',
@@ -853,6 +853,7 @@ export default function Settings({ tools = {} }) {
     { id: 'acme', label: 'ACME DNS-01', hint: 'TLS Certificates' },
     { id: 'backup', label: 'Backup & Restore', hint: 'JSON Configuration' },
     { id: 'users', label: 'Access & Users', hint: 'RBAC Directory' },
+    { id: 'tokens', label: 'API Tokens', hint: 'Automation Keys' },
   ]
 
   const sectionMeta = categories.find((c) => c.id === section)
@@ -885,6 +886,7 @@ export default function Settings({ tools = {} }) {
   const ToolBackup = tools.backup
   const ToolUsers = tools.users
   const ToolRpz = tools.rpz
+  const ToolTokens = tools.tokens
 
   return (
     <div className="settings-page space-y-5 max-w-[1400px] mx-auto pb-28">
@@ -1033,7 +1035,13 @@ export default function Settings({ tools = {} }) {
                 <span className="routing-flow-arrow">➔</span>
                 <div className="routing-flow-step is-active">
                   <span className="routing-flow-title">3. RPZ Policy</span>
-                  <span className="routing-flow-val">{draft.rpz_enabled ? 'CDB 9.95M' : 'Disabled'}</span>
+                  <span className="routing-flow-val">
+                    {draft.rpz_enabled
+                      ? status?.rpz_entries != null
+                        ? `CDB ${Number(status.rpz_entries).toLocaleString()}`
+                        : 'CDB Active'
+                      : 'Disabled'}
+                  </span>
                   <span className="routing-flow-sub">{draft.rpz_enabled ? 'Kominfo Fast Spoof' : 'Pass-through'}</span>
                 </div>
                 <span className="routing-flow-arrow">➔</span>
@@ -2068,12 +2076,12 @@ export default function Settings({ tools = {} }) {
                         </p>
                         <div className="pt-2 flex flex-wrap gap-2">
                           <a
-                            href={`http://${hnAppliedNotice.ip.split('/')[0]}:5380/settings#network`}
+                            href={`${window.location.protocol}//${hnAppliedNotice.ip.split('/')[0]}${window.location.port ? `:${window.location.port}` : ''}/settings#network`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="btn btn-primary text-xs"
                           >
-                            Buka Web UI di http://{hnAppliedNotice.ip.split('/')[0]}:5380
+                            Open Web UI at {window.location.protocol}//{hnAppliedNotice.ip.split('/')[0]}{window.location.port ? `:${window.location.port}` : ''}
                           </a>
                           <button
                             type="button"
@@ -2385,6 +2393,7 @@ export default function Settings({ tools = {} }) {
               {tool === 'acme' && ToolAcme ? <ToolAcme /> : null}
               {tool === 'backup' && ToolBackup ? <ToolBackup /> : null}
               {tool === 'users' && ToolUsers ? <ToolUsers /> : null}
+              {tool === 'tokens' && ToolTokens ? <ToolTokens /> : null}
             </div>
           ) : null}
         </div>

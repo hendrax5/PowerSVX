@@ -178,10 +178,10 @@ type QueryLogEntry struct {
 }
 
 type QueryLogger struct {
-	db     *DB
-	ch     chan QueryLogEntry
-	done   chan struct{}
-	log    *slog.Logger
+	db   *DB
+	ch   chan QueryLogEntry
+	done chan struct{}
+	log  *slog.Logger
 }
 
 func NewQueryLogger(db *DB, enabled bool, log *slog.Logger) *QueryLogger {

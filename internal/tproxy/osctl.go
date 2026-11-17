@@ -50,8 +50,8 @@ type Status struct {
 
 // IfaceInfo is a host NIC suitable for intercept.
 type IfaceInfo struct {
-	Name string   `json:"name"`
-	Up   bool     `json:"up"`
+	Name  string   `json:"name"`
+	Up    bool     `json:"up"`
 	Addrs []string `json:"addrs,omitempty"`
 }
 
@@ -299,7 +299,22 @@ func ensureRoutes(mark uint32) error {
 	return nil
 }
 
+var tproxyIfaceRe = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,15}$`)
+
+func validateTProxyIface(iface string) error {
+	if iface == "" || !tproxyIfaceRe.MatchString(iface) || strings.Contains(iface, "..") {
+		return fmt.Errorf("invalid interface name: %q", iface)
+	}
+	if _, err := net.InterfaceByName(iface); err != nil {
+		return fmt.Errorf("interface %q not found: %w", iface, err)
+	}
+	return nil
+}
+
 func applyNFT(cfg InterceptConfig) error {
+	if err := validateTProxyIface(cfg.Iface); err != nil {
+		return err
+	}
 	_ = exec.Command("nft", "delete", "table", "inet", "powersvx_tproxy").Run()
 
 	var b strings.Builder

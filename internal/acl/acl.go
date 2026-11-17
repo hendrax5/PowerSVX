@@ -8,8 +8,8 @@ import (
 
 // List is a query ACL: deny wins; empty allow means permit all (except deny).
 type List struct {
-	allow []*net.IPNet
-	deny  []*net.IPNet
+	allow    []*net.IPNet
+	deny     []*net.IPNet
 	rawAllow []string
 	rawDeny  []string
 }

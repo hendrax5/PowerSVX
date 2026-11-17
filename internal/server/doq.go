@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"net"
 	"time"
 
 	"github.com/miekg/dns"
@@ -83,7 +84,16 @@ func (s *Server) handleDoQStream(conn *quic.Conn, stream *quic.Stream) {
 		return
 	}
 
-	_, respWire, err := s.ServeDNSMsg(req)
+	clientIP := ""
+	if ra := conn.RemoteAddr(); ra != nil {
+		if host, _, splitErr := net.SplitHostPort(ra.String()); splitErr == nil {
+			clientIP = host
+		} else {
+			clientIP = ra.String()
+		}
+	}
+
+	_, respWire, err := s.ServeDNSMsgFrom(req, clientIP)
 	if err != nil || len(respWire) == 0 {
 		return
 	}

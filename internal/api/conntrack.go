@@ -129,17 +129,17 @@ func (a *API) conntrackPayload() map[string]any {
 		maxOut = conntrack.DefaultMax
 	}
 	return map[string]any{
-		"supported":           conntrack.Supported(),
-		"conntrack_managed":   cfg.Managed,
-		"conntrack_max":       maxOut,
-		"conntrack_hashsize":  hash,
-		"conntrack_persist":   cfg.Persist,
-		"min_max":             conntrack.MinMax,
-		"max_max":             conntrack.MaxMax,
-		"default_max":         conntrack.DefaultMax,
-		"presets":             presets,
-		"status":              st,
-		"note": "Live apply needs writable host sysctl paths (host compose bind-mounts /powersvx-sys). Persist writes /etc/sysctl.d + modprobe.d when writable; PowerSVX also re-applies on startup from runtime-settings.json.",
+		"supported":          conntrack.Supported(),
+		"conntrack_managed":  cfg.Managed,
+		"conntrack_max":      maxOut,
+		"conntrack_hashsize": hash,
+		"conntrack_persist":  cfg.Persist,
+		"min_max":            conntrack.MinMax,
+		"max_max":            conntrack.MaxMax,
+		"default_max":        conntrack.DefaultMax,
+		"presets":            presets,
+		"status":             st,
+		"note":               "Live apply needs writable host sysctl paths (host compose bind-mounts /powersvx-sys). Persist writes /etc/sysctl.d + modprobe.d when writable; PowerSVX also re-applies on startup from runtime-settings.json.",
 	}
 }
 

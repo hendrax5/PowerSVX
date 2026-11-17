@@ -141,7 +141,7 @@ fi
 echo "==> [6/7] Starting Docker Compose stack (Host Networking)..."
 export GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-export POWERSVX_VERSION="1.6.3"
+export POWERSVX_VERSION="1.7.0"
 export GOGC=50
 
 docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml build powersvx

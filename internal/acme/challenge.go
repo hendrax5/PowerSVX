@@ -10,8 +10,8 @@ import (
 
 // ChallengeStore holds DNS-01 TXT values for _acme-challenge names.
 type ChallengeStore struct {
-	mu   sync.RWMutex
-	txt  map[string]string // fqdn -> value
+	mu  sync.RWMutex
+	txt map[string]string // fqdn -> value
 }
 
 func NewChallengeStore() *ChallengeStore {

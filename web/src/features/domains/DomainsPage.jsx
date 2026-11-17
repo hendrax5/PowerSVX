@@ -2,9 +2,13 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Check,
   CheckCircle,
+  CloudArrowDown,
+  CloudArrowUp,
   Copy,
   Globe,
+  Key,
   MagnifyingGlass,
+  PencilSimple,
   Plus,
   ShieldCheck,
   ShieldWarning,
@@ -15,7 +19,24 @@ import { api } from '../../api'
 import { useAuth } from '../../auth'
 import { EmptyState, ErrorBox, ICON_WEIGHT, PageHeader } from '../../ui'
 
-const RECORD_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SRV']
+const RECORD_TYPES = [
+  'A',
+  'AAAA',
+  'CNAME',
+  'MX',
+  'TXT',
+  'NS',
+  'PTR',
+  'SRV',
+  'SOA',
+  'CAA',
+  'DS',
+  'HTTPS',
+  'SVCB',
+  'TLSA',
+  'SSHFP',
+  'NAPTR',
+]
 
 function typeBadgeClass(t) {
   switch ((t || '').toUpperCase()) {
@@ -40,8 +61,9 @@ export default function DomainsPage() {
   const { canWrite } = useAuth()
   const [activeTab, setActiveTab] = useState('zones') // 'zones' | 'filtering'
 
-  // Zones & Records State (Cloudflare & Route 53)
+  // Zones & Records State (Cloudflare & Route 53 & Technitium)
   const [zones, setZones] = useState([])
+  const [secondaryZones, setSecondaryZones] = useState([])
   const [selectedZone, setSelectedZone] = useState('')
   const [zoneDetail, setZoneDetail] = useState(null)
   const [records, setRecords] = useState([])
@@ -49,22 +71,39 @@ export default function DomainsPage() {
   const [recordSearch, setRecordSearch] = useState('')
   const [dnssecStatus, setDnssecStatus] = useState(null)
   const [isAddingRecord, setIsAddingRecord] = useState(false)
+  const [editingRec, setEditingRec] = useState(null)
   const [isCreatingZone, setIsCreatingZone] = useState(false)
   const [newZoneName, setNewZoneName] = useState('')
   const [copiedKey, setCopiedKey] = useState('')
 
-  // New Record Form State
+  // BIND Import / Export & DNSSEC / SOA Panels
+  const [showBindPanel, setShowBindPanel] = useState(false)
+  const [exportContent, setExportContent] = useState('')
+  const [importZoneName, setImportZoneName] = useState('')
+  const [importContent, setImportContent] = useState('')
+  const [showDnssecPanel, setShowDnssecPanel] = useState(false)
+  const [dnssecAlgo, setDnssecAlgo] = useState('ECDSAP256SHA256')
+  const [dnssecNsec3, setDnssecNsec3] = useState(false)
+  const [soaRefresh, setSoaRefresh] = useState(3600)
+  const [soaRetry, setSoaRetry] = useState(600)
+  const [soaExpire, setSoaExpire] = useState(86400)
+  const [soaMinimum, setSoaMinimum] = useState(3600)
+
+  // Add/Edit Record Form State
   const [recType, setRecType] = useState('A')
   const [recName, setRecName] = useState('@')
   const [recContent, setRecContent] = useState('')
   const [recTTL, setRecTTL] = useState(300)
   const [recPrio, setRecPrio] = useState(10)
+  const [recView, setRecView] = useState('')
+  const [recGeoTag, setRecGeoTag] = useState('')
 
   // Filtering & Overrides State (AdGuard Home)
   const [lookupDomain, setLookupDomain] = useState('')
   const [lookupResult, setLookupResult] = useState(null)
   const [whitelist, setWhitelist] = useState([])
   const [blacklist, setBlacklist] = useState([])
+  const [rpzEntries, setRpzEntries] = useState(null)
   const [wlSearch, setWlSearch] = useState('')
   const [blSearch, setBlSearch] = useState('')
   const [wlDraft, setWlDraft] = useState('')
@@ -78,9 +117,13 @@ export default function DomainsPage() {
   // Load Zones List
   const loadZones = async () => {
     try {
-      const r = await api.zones()
+      const [r, secRes] = await Promise.all([
+        api.zones(),
+        api.secondary().catch(() => ({ zones: [] })),
+      ])
       const list = r?.zones || []
       setZones(list)
+      setSecondaryZones(secRes?.zones || [])
       if (list.length > 0 && !selectedZone) {
         setSelectedZone(list[0].name)
       }
@@ -101,10 +144,20 @@ export default function DomainsPage() {
       const z = await api.getZone(zoneName)
       setZoneDetail(z)
       setRecords(z?.records || [])
+      if (z?.meta) {
+        setSoaRefresh(Number(z.meta.soa_refresh) || 3600)
+        setSoaRetry(Number(z.meta.soa_retry) || 600)
+        setSoaExpire(Number(z.meta.soa_expire) || 86400)
+        setSoaMinimum(Number(z.meta.soa_minimum) || 3600)
+      }
       // Check DNSSEC
       api
         .zoneDNSSEC(zoneName)
-        .then((sec) => setDnssecStatus(sec))
+        .then((sec) => {
+          setDnssecStatus(sec)
+          if (sec?.algorithm) setDnssecAlgo(sec.algorithm)
+          if (typeof sec?.nsec3 === 'boolean') setDnssecNsec3(sec.nsec3)
+        })
         .catch(() => setDnssecStatus(null))
     } catch (e) {
       setErr(`Failed loading zone ${zoneName}: ${e.message}`)
@@ -123,6 +176,10 @@ export default function DomainsPage() {
       .blacklist()
       .then((r) => setBlacklist(r.domains || []))
       .catch((e) => setErr(e.message))
+    api
+      .status()
+      .then((s) => setRpzEntries(Number(s?.rpz_entries ?? 0)))
+      .catch(() => {})
   }
 
   useEffect(() => {
@@ -133,6 +190,9 @@ export default function DomainsPage() {
   useEffect(() => {
     if (selectedZone) {
       loadZoneDetail(selectedZone)
+      setExportContent('')
+      setImportZoneName(selectedZone)
+      setEditingRec(null)
     }
   }, [selectedZone])
 
@@ -178,8 +238,32 @@ export default function DomainsPage() {
     }
   }
 
-  // Add Record
-  const handleAddRecord = async (e) => {
+  const openAddRecord = () => {
+    setEditingRec(null)
+    setRecType('A')
+    setRecName('@')
+    setRecContent('')
+    setRecTTL(300)
+    setRecPrio(10)
+    setRecView('')
+    setRecGeoTag('')
+    setIsAddingRecord(true)
+  }
+
+  const openEditRecord = (rec) => {
+    setEditingRec(rec)
+    setRecType((rec.type || 'A').toUpperCase())
+    setRecName(rec.name || '@')
+    setRecContent(rec.content || '')
+    setRecTTL(Number(rec.ttl) || 300)
+    setRecPrio(Number(rec.prio) || 10)
+    setRecView(rec.view || '')
+    setRecGeoTag(rec.geo_tag || '')
+    setIsAddingRecord(true)
+  }
+
+  // Add or Update Record
+  const handleSaveRecord = async (e) => {
     e.preventDefault()
     if (!selectedZone) return
     const content = recContent.trim()
@@ -201,17 +285,142 @@ export default function DomainsPage() {
       fqdn = `${fqdn}.${cleanZone}`
     }
 
+    const payload = {
+      name: fqdn,
+      type: recType,
+      content,
+      ttl: Number(recTTL) || 300,
+      prio: recType === 'MX' || recType === 'SRV' ? Number(recPrio) || 10 : undefined,
+      view: recView.trim() || undefined,
+      geo_tag: recGeoTag.trim() || undefined,
+    }
+
     try {
-      await api.addRecord(selectedZone, {
-        name: fqdn,
-        type: recType,
-        content: content,
-        ttl: Number(recTTL) || 300,
-        prio: recType === 'MX' || recType === 'SRV' ? Number(recPrio) || 10 : undefined,
-      })
-      setOk(`Added ${recType} record for ${fqdn}`)
+      if (editingRec) {
+        await api.updateRecord(selectedZone, {
+          old_name: editingRec.name,
+          old_type: editingRec.type,
+          ...payload,
+        })
+        setOk(`Updated ${recType} record for ${fqdn}`)
+      } else {
+        await api.addRecord(selectedZone, payload)
+        setOk(`Added ${recType} record for ${fqdn}`)
+      }
       setIsAddingRecord(false)
+      setEditingRec(null)
       setRecContent('')
+      await loadZoneDetail(selectedZone)
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleExportZone = async () => {
+    if (!selectedZone) return
+    setBusy(true)
+    setErr('')
+    try {
+      const r = await api.exportZone(selectedZone)
+      setExportContent(r?.content || '')
+      setShowBindPanel(true)
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleDownloadZoneFile = () => {
+    if (!exportContent || !selectedZone) return
+    const blob = new Blob([exportContent], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${selectedZone.replace(/\.$/, '')}.zone`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleImportZone = async (e) => {
+    e.preventDefault()
+    const target = (importZoneName || selectedZone).trim()
+    if (!target || !importContent.trim()) {
+      setErr('Zone name and BIND master file content are required')
+      return
+    }
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const res = await api.importZone(target, importContent)
+      setOk(`Imported ${res?.imported ?? 0} record(s) into ${res?.zone || target}`)
+      setImportContent('')
+      await loadZones()
+      setSelectedZone(res?.zone || target)
+      await loadZoneDetail(res?.zone || target)
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleEnableDNSSEC = async () => {
+    if (!selectedZone) return
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const res = await api.enableZoneDNSSEC(selectedZone, {
+        algorithm: dnssecAlgo,
+        nsec3: dnssecNsec3,
+        action: 'enable',
+      })
+      setDnssecStatus(res)
+      setOk(`DNSSEC enabled on ${selectedZone} (${res.algorithm}${res.nsec3 ? ' · NSEC3' : ''})`)
+      await loadZoneDetail(selectedZone)
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleRolloverZSK = async () => {
+    if (!selectedZone) return
+    if (!window.confirm(`Rollover ZSK key for ${selectedZone}?`)) return
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      const res = await api.enableZoneDNSSEC(selectedZone, { action: 'rollover' })
+      setDnssecStatus(res)
+      setOk(`ZSK rollover completed for ${selectedZone}`)
+      await loadZoneDetail(selectedZone)
+    } catch (ex) {
+      setErr(ex.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleSaveSOA = async (e) => {
+    e.preventDefault()
+    if (!selectedZone) return
+    setBusy(true)
+    setErr('')
+    setOk('')
+    try {
+      await api.updateZoneMeta(selectedZone, {
+        soa_refresh: Number(soaRefresh) || 3600,
+        soa_retry: Number(soaRetry) || 600,
+        soa_expire: Number(soaExpire) || 86400,
+        soa_minimum: Number(soaMinimum) || 3600,
+      })
+      setOk(`Updated SOA timers for ${selectedZone}`)
       await loadZoneDetail(selectedZone)
     } catch (ex) {
       setErr(ex.message)
@@ -405,11 +614,14 @@ export default function DomainsPage() {
                   onChange={(e) => setSelectedZone(e.target.value)}
                   className="input py-1 px-3 text-sm font-semibold mono min-w-[200px]"
                 >
-                  {zones.map((z) => (
-                    <option key={z.name} value={z.name}>
-                      {z.name}
-                    </option>
-                  ))}
+                  {zones.map((z) => {
+                    const isSlave = secondaryZones.some((sz) => sz.name === z.name)
+                    return (
+                      <option key={z.name} value={z.name}>
+                        {z.name} {isSlave ? '[SLAVE]' : ''}
+                      </option>
+                    )
+                  })}
                 </select>
               ) : (
                 <span className="text-sm text-[var(--muted)] mono">No hosted zones configured</span>
@@ -425,32 +637,85 @@ export default function DomainsPage() {
                   <span>New Hosted Zone</span>
                 </button>
               )}
+
+              {canWrite && (
+                <button
+                  type="button"
+                  onClick={() => setShowBindPanel((v) => !v)}
+                  className={`btn text-xs ${showBindPanel ? 'btn-primary' : 'btn-secondary'}`}
+                >
+                  <CloudArrowUp size={14} weight="bold" />
+                  <span>BIND Import / Export</span>
+                </button>
+              )}
             </div>
 
-            {selectedZone && (
-              <div className="flex items-center gap-3 text-xs text-[var(--muted)] mono">
-                <span className="flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-[var(--ok)]" />
-                  SOA Serial: <strong>{zoneDetail?.meta?.soa_serial || 1}</strong>
-                </span>
-                <span>Type: <strong>{zoneDetail?.meta?.type || 'native'}</strong></span>
-                {dnssecStatus ? (
-                  <span className="px-2 py-0.5 rounded bg-[var(--ok)]/10 text-[var(--ok)] font-medium border border-[var(--ok)]/30">
-                    DNSSEC ON
+            {selectedZone && (() => {
+              const activeSecondary = secondaryZones.find((sz) => sz.name === selectedZone)
+              return (
+                <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--muted)] mono">
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-[var(--ok)]" />
+                    SOA Serial: <strong>{zoneDetail?.meta?.soa_serial || 1}</strong>
                   </span>
-                ) : null}
-                {canWrite && (
+                  <span>
+                    Type:{' '}
+                    {activeSecondary ? (
+                      <strong className="px-1.5 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent)]/30 uppercase">
+                        SLAVE ({activeSecondary.last_mode || 'axfr'})
+                      </strong>
+                    ) : (
+                      <strong>{zoneDetail?.meta?.type || 'native'}</strong>
+                    )}
+                  </span>
+                  {activeSecondary ? (
+                    <a
+                      href="/settings#tools/axfr"
+                      className="text-[var(--accent)] hover:underline font-medium"
+                    >
+                      Manage Slave ({(activeSecondary.masters || []).join(', ')})
+                    </a>
+                  ) : null}
                   <button
                     type="button"
-                    onClick={() => handleDeleteZone(selectedZone)}
-                    className="text-xs text-[var(--danger)] hover:underline ml-2"
+                    onClick={() => setShowDnssecPanel((v) => !v)}
+                    className={`px-2 py-0.5 rounded font-medium border flex items-center gap-1 transition-colors ${
+                      dnssecStatus?.enabled
+                        ? 'bg-[var(--ok)]/10 text-[var(--ok)] border-[var(--ok)]/30'
+                        : 'bg-[var(--bg-elevated)] text-[var(--muted)] border-[var(--border)] hover:text-[var(--text)]'
+                    }`}
                   >
-                    Delete Zone
+                    <Key size={12} weight="bold" />
+                    <span>
+                      {dnssecStatus?.enabled
+                        ? `DNSSEC ON (${dnssecStatus.algorithm || 'ECDSA'}${dnssecStatus.nsec3 ? ' · NSEC3' : ''})`
+                        : 'DNSSEC & SOA'}
+                    </span>
                   </button>
-                )}
-              </div>
-            )}
+                  {canWrite && (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteZone(selectedZone)}
+                      className="text-xs text-[var(--danger)] hover:underline ml-2"
+                    >
+                      Delete Zone
+                    </button>
+                  )}
+                </div>
+              )
+            })()}
           </section>
+
+          {selectedZone && secondaryZones.some((sz) => sz.name === selectedZone) ? (
+            <div className="px-3.5 py-2.5 rounded-[var(--radius)] border border-[var(--accent)]/30 bg-[var(--accent-soft)] text-xs text-[var(--text)] flex flex-wrap items-center justify-between gap-2">
+              <span>
+                <strong>Secondary (Slave) Zone:</strong> Records are replicated automatically from upstream primary via IXFR/AXFR. Local manual edits will be overwritten on the next sync.
+              </span>
+              <a href="/settings#tools/axfr" className="text-[var(--accent)] font-semibold hover:underline">
+                Sync / Configure in Settings →
+              </a>
+            </div>
+          ) : null}
 
           {/* Create Zone Inline Form */}
           {isCreatingZone && (
@@ -475,6 +740,235 @@ export default function DomainsPage() {
                   Cancel
                 </button>
               </form>
+            </section>
+          )}
+
+          {/* BIND Master File Import / Export Drawer */}
+          {showBindPanel && (
+            <section className="panel p-5 bg-[var(--bg-elevated)] border border-[var(--border-strong)] space-y-4 reveal">
+              <div className="flex items-center justify-between border-b border-[var(--border)] pb-2.5">
+                <h3 className="text-sm font-semibold">RFC 1035 BIND Zone Import &amp; Export</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowBindPanel(false)}
+                  className="btn btn-ghost text-xs"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <form onSubmit={handleImportZone} className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-[var(--text)]">Import Master Zone File</span>
+                  </div>
+                  <input
+                    className="input text-xs mono w-full"
+                    placeholder="Target zone name (e.g. corp.local)"
+                    value={importZoneName}
+                    onChange={(e) => setImportZoneName(e.target.value)}
+                    required
+                  />
+                  <textarea
+                    rows={6}
+                    className="input text-xs mono w-full"
+                    placeholder={'$ORIGIN corp.local.\n$TTL 300\n@ IN A 10.10.10.5\nwww IN CNAME @'}
+                    value={importContent}
+                    onChange={(e) => setImportContent(e.target.value)}
+                    required
+                  />
+                  <button type="submit" disabled={busy || !importContent.trim()} className="btn btn-primary text-xs">
+                    <CloudArrowUp size={14} weight="bold" />
+                    <span>Import BIND Records</span>
+                  </button>
+                </form>
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-[var(--text)]">
+                      Export Zone {selectedZone ? `(${selectedZone})` : ''}
+                    </span>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={busy || !selectedZone}
+                        onClick={handleExportZone}
+                        className="btn btn-secondary text-xs"
+                      >
+                        <CloudArrowDown size={14} weight="bold" />
+                        <span>Fetch .zone</span>
+                      </button>
+                      {exportContent ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleCopy(exportContent, 'bind-export')}
+                            className="btn btn-secondary text-xs"
+                          >
+                            {copiedKey === 'bind-export' ? 'Copied!' : 'Copy'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleDownloadZoneFile}
+                            className="btn btn-primary text-xs"
+                          >
+                            Download .zone
+                          </button>
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
+                  <textarea
+                    rows={8}
+                    readOnly
+                    className="input text-xs mono w-full bg-[var(--bg)]"
+                    placeholder="Click 'Fetch .zone' to generate RFC 1035 master zone output..."
+                    value={exportContent}
+                  />
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* DNSSEC Signing & SOA Timers Drawer */}
+          {showDnssecPanel && selectedZone && (
+            <section className="panel p-5 bg-[var(--bg-elevated)] border border-[var(--border-strong)] space-y-4 reveal">
+              <div className="flex items-center justify-between border-b border-[var(--border)] pb-2.5">
+                <h3 className="text-sm font-semibold">DNSSEC &amp; SOA Policy · {selectedZone}</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowDnssecPanel(false)}
+                  className="btn btn-ghost text-xs"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <div className="space-y-3">
+                  <div className="text-xs font-semibold text-[var(--text)]">Authoritative DNSSEC Signing</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="label-quiet">Signing Algorithm</label>
+                      <select
+                        value={dnssecAlgo}
+                        onChange={(e) => setDnssecAlgo(e.target.value)}
+                        className="input text-xs mono"
+                        disabled={!canWrite || busy}
+                      >
+                        <option value="ECDSAP256SHA256">ECDSAP256SHA256 (Algo 13)</option>
+                        <option value="ED25519">ED25519 (Algo 15)</option>
+                        <option value="ECDSAP384SHA384">ECDSAP384SHA384 (Algo 14)</option>
+                        <option value="RSASHA256">RSASHA256 (Algo 8)</option>
+                      </select>
+                    </div>
+                    <label className="flex items-center gap-2 text-xs pt-5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={dnssecNsec3}
+                        onChange={(e) => setDnssecNsec3(e.target.checked)}
+                        disabled={!canWrite || busy}
+                      />
+                      <span>Enable NSEC3 Denial Hashing</span>
+                    </label>
+                  </div>
+                  {canWrite && (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={handleEnableDNSSEC}
+                        className="btn btn-primary text-xs"
+                      >
+                        <ShieldCheck size={14} weight="bold" />
+                        <span>{dnssecStatus?.enabled ? 'Apply / Re-sign Policy' : 'Enable DNSSEC'}</span>
+                      </button>
+                      {dnssecStatus?.enabled && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={handleRolloverZSK}
+                          className="btn btn-secondary text-xs"
+                        >
+                          <Key size={14} weight="bold" />
+                          <span>Rollover ZSK</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {dnssecStatus?.ds ? (
+                    <div className="p-2.5 rounded bg-[var(--bg)] border border-[var(--border)] space-y-1">
+                      <div className="flex items-center justify-between text-[11px] text-[var(--muted)]">
+                        <span>Parent DS Record</span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(dnssecStatus.ds, 'ds-record')}
+                          className="text-[var(--accent)] hover:underline"
+                        >
+                          {copiedKey === 'ds-record' ? 'Copied DS!' : 'Copy DS'}
+                        </button>
+                      </div>
+                      <pre className="mono text-[11px] text-[var(--text)] whitespace-pre-wrap break-all">
+                        {dnssecStatus.ds}
+                      </pre>
+                    </div>
+                  ) : null}
+                </div>
+
+                <form onSubmit={handleSaveSOA} className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-[var(--text)]">SOA Timers (seconds)</span>
+                    {!zoneDetail?.meta && (
+                      <span className="text-[11px] text-[var(--muted)]">Requires PostgreSQL meta</span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <label className="space-y-1 text-xs">
+                      <span className="label-quiet">Refresh</span>
+                      <input
+                        type="number"
+                        className="input text-xs mono"
+                        value={soaRefresh}
+                        onChange={(e) => setSoaRefresh(Number(e.target.value))}
+                        disabled={!canWrite || !zoneDetail?.meta}
+                      />
+                    </label>
+                    <label className="space-y-1 text-xs">
+                      <span className="label-quiet">Retry</span>
+                      <input
+                        type="number"
+                        className="input text-xs mono"
+                        value={soaRetry}
+                        onChange={(e) => setSoaRetry(Number(e.target.value))}
+                        disabled={!canWrite || !zoneDetail?.meta}
+                      />
+                    </label>
+                    <label className="space-y-1 text-xs">
+                      <span className="label-quiet">Expire</span>
+                      <input
+                        type="number"
+                        className="input text-xs mono"
+                        value={soaExpire}
+                        onChange={(e) => setSoaExpire(Number(e.target.value))}
+                        disabled={!canWrite || !zoneDetail?.meta}
+                      />
+                    </label>
+                    <label className="space-y-1 text-xs">
+                      <span className="label-quiet">Minimum / Neg TTL</span>
+                      <input
+                        type="number"
+                        className="input text-xs mono"
+                        value={soaMinimum}
+                        onChange={(e) => setSoaMinimum(Number(e.target.value))}
+                        disabled={!canWrite || !zoneDetail?.meta}
+                      />
+                    </label>
+                  </div>
+                  {canWrite && zoneDetail?.meta && (
+                    <button type="submit" disabled={busy} className="btn btn-secondary text-xs">
+                      Save SOA Timers
+                    </button>
+                  )}
+                </form>
+              </div>
             </section>
           )}
 
@@ -525,7 +1019,7 @@ export default function DomainsPage() {
                   {canWrite && (
                     <button
                       type="button"
-                      onClick={() => setIsAddingRecord((v) => !v)}
+                      onClick={() => (isAddingRecord ? setIsAddingRecord(false) : openAddRecord())}
                       className="btn btn-primary text-xs"
                     >
                       <Plus size={14} weight="bold" />
@@ -535,21 +1029,26 @@ export default function DomainsPage() {
                 </div>
               </div>
 
-              {/* Add Record Form (Cloudflare Modal/Drawer style) */}
+              {/* Add / Edit Record Form */}
               {isAddingRecord && (
                 <section className="panel p-5 bg-[var(--bg-elevated)] border border-[var(--border-strong)] space-y-4 reveal">
                   <div className="flex items-center justify-between border-b border-[var(--border)] pb-2.5">
-                    <h3 className="text-sm font-semibold">Add DNS Record to {selectedZone}</h3>
+                    <h3 className="text-sm font-semibold">
+                      {editingRec ? `Edit ${editingRec.type} Record in ${selectedZone}` : `Add DNS Record to ${selectedZone}`}
+                    </h3>
                     <button
                       type="button"
-                      onClick={() => setIsAddingRecord(false)}
+                      onClick={() => {
+                        setIsAddingRecord(false)
+                        setEditingRec(null)
+                      }}
                       className="btn btn-ghost text-xs"
                     >
                       Close
                     </button>
                   </div>
 
-                  <form onSubmit={handleAddRecord} className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+                  <form onSubmit={handleSaveRecord} className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
                     <div className="md:col-span-2 space-y-1">
                       <label className="label-quiet">Type</label>
                       <select
@@ -577,7 +1076,7 @@ export default function DomainsPage() {
                     </div>
 
                     <div className="md:col-span-4 space-y-1">
-                      <label className="label-quiet">Content / Target IP</label>
+                      <label className="label-quiet">Content / Target</label>
                       <input
                         className="input text-xs font-mono"
                         placeholder={recType === 'A' ? '192.0.2.1' : recType === 'AAAA' ? '2001:db8::1' : 'target.example'}
@@ -589,16 +1088,13 @@ export default function DomainsPage() {
 
                     <div className="md:col-span-2 space-y-1">
                       <label className="label-quiet">TTL (seconds)</label>
-                      <select
+                      <input
+                        type="number"
+                        min={1}
                         value={recTTL}
                         onChange={(e) => setRecTTL(Number(e.target.value))}
                         className="input text-xs font-mono"
-                      >
-                        <option value={60}>60s (1m)</option>
-                        <option value={300}>300s (5m - Auto)</option>
-                        <option value={3600}>3600s (1h)</option>
-                        <option value={86400}>86400s (1d)</option>
-                      </select>
+                      />
                     </div>
 
                     {(recType === 'MX' || recType === 'SRV') && (
@@ -613,23 +1109,46 @@ export default function DomainsPage() {
                       </div>
                     )}
 
+                    <div className="md:col-span-3 space-y-1">
+                      <label className="label-quiet">Split-Horizon View (optional)</label>
+                      <input
+                        className="input text-xs font-mono"
+                        placeholder="e.g. internal / external"
+                        value={recView}
+                        onChange={(e) => setRecView(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="md:col-span-3 space-y-1">
+                      <label className="label-quiet">GeoDNS Tag (optional)</label>
+                      <input
+                        className="input text-xs font-mono"
+                        placeholder="e.g. ID / SG / AS"
+                        value={recGeoTag}
+                        onChange={(e) => setRecGeoTag(e.target.value)}
+                      />
+                    </div>
+
                     <div className="md:col-span-12 flex justify-end gap-2 pt-2">
                       <button
                         type="button"
-                        onClick={() => setIsAddingRecord(false)}
+                        onClick={() => {
+                          setIsAddingRecord(false)
+                          setEditingRec(null)
+                        }}
                         className="btn btn-secondary text-xs"
                       >
                         Cancel
                       </button>
                       <button type="submit" disabled={busy} className="btn btn-primary text-xs">
-                        Save Record
+                        {editingRec ? 'Update Record' : 'Save Record'}
                       </button>
                     </div>
                   </form>
                 </section>
               )}
 
-              {/* Records Table (Cloudflare & Route 53 Grammar) */}
+              {/* Records Table */}
               <div className="cf-table-wrap">
                 <table className="cf-table">
                   <thead>
@@ -638,8 +1157,8 @@ export default function DomainsPage() {
                       <th>Name</th>
                       <th>Content / Target</th>
                       <th className="w-24">TTL</th>
-                      <th className="w-24">Proxy</th>
-                      <th className="w-20 text-right">Actions</th>
+                      <th className="w-32">View / Geo</th>
+                      <th className="w-24 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -676,23 +1195,47 @@ export default function DomainsPage() {
                               </div>
                             </td>
                             <td className="mono text-xs text-[var(--muted)]">
-                              {r.ttl === 300 ? 'Auto' : `${r.ttl}s`}
+                              {r.ttl === 300 ? 'Auto (300s)' : `${r.ttl}s`}
                             </td>
                             <td>
-                              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--muted)]">
-                                DNS Only
-                              </span>
+                              <div className="flex flex-wrap gap-1">
+                                {r.view ? (
+                                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent)]">
+                                    {r.view}
+                                  </span>
+                                ) : null}
+                                {r.geo_tag ? (
+                                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--ok-soft)] text-[var(--ok)]">
+                                    {r.geo_tag}
+                                  </span>
+                                ) : null}
+                                {!r.view && !r.geo_tag ? (
+                                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--muted)]">
+                                    Default
+                                  </span>
+                                ) : null}
+                              </div>
                             </td>
-                            <td className="text-right">
+                            <td className="text-right whitespace-nowrap">
                               {canWrite && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteRecord(r)}
-                                  className="text-[var(--muted)] hover:text-[var(--danger)] transition-colors p-1"
-                                  title="Delete record"
-                                >
-                                  <Trash size={14} />
-                                </button>
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditRecord(r)}
+                                    className="text-[var(--muted)] hover:text-[var(--accent)] transition-colors p-1 mr-1"
+                                    title="Edit record"
+                                  >
+                                    <PencilSimple size={14} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteRecord(r)}
+                                    className="text-[var(--muted)] hover:text-[var(--danger)] transition-colors p-1"
+                                    title="Delete record"
+                                  >
+                                    <Trash size={14} />
+                                  </button>
+                                </>
                               )}
                             </td>
                           </tr>
@@ -751,7 +1294,9 @@ export default function DomainsPage() {
                 <p className="text-xs text-[var(--muted)] mt-0.5">
                   PowerSVX evaluates domains against: <strong>Whitelist (Overrides)</strong> →{' '}
                   <strong>Blacklist (Manual Blocks)</strong> →{' '}
-                  <strong>Kominfo AXFR Dataset (9,952,100 rules in CDB)</strong>
+                  <strong>
+                    Kominfo AXFR Dataset ({rpzEntries != null ? `${rpzEntries.toLocaleString()} rules in CDB` : 'CDB synced'})
+                  </strong>
                 </p>
               </div>
             </div>

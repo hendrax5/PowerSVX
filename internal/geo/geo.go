@@ -19,11 +19,11 @@ type Info struct {
 
 // Resolver looks up client geo. Works without MMDB via static overrides.
 type Resolver struct {
-	mu        sync.RWMutex
-	db        *geoip2.Reader
-	enabled   bool
+	mu         sync.RWMutex
+	db         *geoip2.Reader
+	enabled    bool
 	defaultTag string
-	overrides map[string]Info // exact IP string → info
+	overrides  map[string]Info // exact IP string → info
 }
 
 func New(enabled bool, dbPath, defaultTag string) (*Resolver, error) {

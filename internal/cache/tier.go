@@ -236,6 +236,58 @@ func (t *Tier) SetScoped(name string, qtype uint16, ecsSubnet, viewName, geoTag 
 	}
 }
 
+// Delete removes one key from L2 BadgerDB.
+func (c *L2) Delete(key uint64) error {
+	if c == nil || c.db == nil {
+		return nil
+	}
+	return c.db.Update(func(txn *badger.Txn) error {
+		return txn.Delete(keyBytes(key))
+	})
+}
+
+// Clear drops all keys from L2 BadgerDB.
+func (c *L2) Clear() error {
+	if c == nil || c.db == nil {
+		return nil
+	}
+	return c.db.DropAll()
+}
+
+// Clear flushes all L1 and L2 entries.
+func (t *Tier) Clear() error {
+	if t == nil {
+		return nil
+	}
+	if t.L1 != nil {
+		t.L1.Clear()
+	}
+	if t.L2 != nil {
+		return t.L2.Clear()
+	}
+	return nil
+}
+
+// FlushName removes common qtype keys (or specified qtype) from L1 and L2 for default scope.
+func (t *Tier) FlushName(name string, qtype uint16) {
+	if t == nil {
+		return
+	}
+	types := []uint16{qtype}
+	if qtype == 0 {
+		types = []uint16{1, 2, 5, 6, 12, 15, 16, 28, 33, 46, 48, 64, 65, 257}
+	}
+	for _, qt := range types {
+		k := KeyScoped(name, qt, "", "", "")
+		if t.L1 != nil {
+			t.L1.Delete(k)
+		}
+		if t.L2 != nil {
+			_ = t.L2.Delete(k)
+		}
+	}
+}
+
 func (t *Tier) Close() error {
 	var err error
 	if t.L1 != nil {

@@ -3,13 +3,11 @@ package server
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -37,6 +35,7 @@ import (
 	"github.com/powersvx/powersvx/internal/monitor"
 	"github.com/powersvx/powersvx/internal/otelx"
 	"github.com/powersvx/powersvx/internal/plugin"
+	"github.com/powersvx/powersvx/internal/queryring"
 	"github.com/powersvx/powersvx/internal/ratelimit"
 	"github.com/powersvx/powersvx/internal/resolver"
 	"github.com/powersvx/powersvx/internal/rpz"
@@ -69,15 +68,17 @@ type Server struct {
 	stats        *analytics.Collector
 	anomaly      *anomaly.Detector
 	mon          *monitor.Collector
+	ring         *queryring.Ring
 	plugins      *plugin.Registry
 	qlog         *database.QueryLogger
 	secondaryMgr *secondary.Manager
 	kominfo      *kominfo.Manager
-	onRPZNotify  func(zone string) bool
+	onRPZNotify  func(zone, clientIP string, tsigValid bool) bool
 	log          *slog.Logger
 	queryACLMu   sync.RWMutex
 	queryACL     *acl.List
 	aclBan       *aclban.Guard
+	autobanOn    bool
 	aclDenyN     atomic.Uint64
 	nsec         *dnssec.NSECCache
 	// refreshInflight dedupes background cache refresh/prefetch by cache key.
@@ -121,6 +122,7 @@ type Deps struct {
 	Stats   *analytics.Collector
 	Anomaly *anomaly.Detector
 	Monitor *monitor.Collector
+	Ring    *queryring.Ring
 	Plugins *plugin.Registry
 	QLog    *database.QueryLogger
 }
@@ -140,42 +142,50 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 	} else {
 		qacl = acl.Open()
 	}
-	var ban *aclban.Guard
-	if cfg != nil && cfg.ACL.DenyAutobanThreshold > 0 {
-		ban = aclban.New(aclban.Config{
+	autobanOn := cfg != nil && cfg.ACL.DenyAutobanThreshold > 0
+	var banCfg aclban.Config
+	if cfg != nil {
+		banCfg = aclban.Config{
 			Threshold: cfg.ACL.DenyAutobanThreshold,
 			Window:    time.Duration(cfg.ACL.DenyAutobanWindowSec) * time.Second,
 			TTL:       time.Duration(cfg.ACL.DenyAutobanTTLSec) * time.Second,
 			NFT:       cfg.ACL.DenyAutobanNFT,
-		}, log)
+		}
+	}
+	ban := aclban.New(banCfg, log)
+	ring := d.Ring
+	if ring == nil {
+		ring = queryring.New(0)
 	}
 	return &Server{
-		cfg:      cfg,
-		cache:    d.Cache,
-		res:      d.Res,
-		auth:     d.Auth,
-		dnssec:   d.DNSSEC,
-		signer:   d.Signer,
-		limiter:  d.Limiter,
-		rpz:      d.RPZ,
-		allow:    d.Allow,
-		deny:     d.Deny,
-		tsig:     d.TSIG,
-		views:    d.Views,
-		geo:      d.Geo,
-		tlsCfg:   d.TLS,
-		events:   d.Events,
-		acme:     d.ACME,
-		stats:    d.Stats,
-		anomaly:  d.Anomaly,
-		mon:      d.Monitor,
-		plugins:  d.Plugins,
-		qlog:     d.QLog,
-		nsec:     dnssec.NewNSECCache(),
-		log:      log,
-		queryACL: qacl,
-		aclBan:   ban,
-		started:  time.Now(),
+		cfg:       cfg,
+		cache:     d.Cache,
+		res:       d.Res,
+		auth:      d.Auth,
+		dnssec:    d.DNSSEC,
+		signer:    d.Signer,
+		limiter:   d.Limiter,
+		rpz:       d.RPZ,
+		allow:     d.Allow,
+		deny:      d.Deny,
+		tsig:      d.TSIG,
+		views:     d.Views,
+		geo:       d.Geo,
+		tlsCfg:    d.TLS,
+		events:    d.Events,
+		acme:      d.ACME,
+		stats:     d.Stats,
+		anomaly:   d.Anomaly,
+		mon:       d.Monitor,
+		ring:      ring,
+		plugins:   d.Plugins,
+		qlog:      d.QLog,
+		nsec:      dnssec.NewNSECCache(),
+		log:       log,
+		queryACL:  qacl,
+		aclBan:    ban,
+		autobanOn: autobanOn,
+		started:   time.Now(),
 	}
 }
 
@@ -202,13 +212,14 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		if len(req.Question) > 0 {
 			zone = config.NormalizeName(req.Question[0].Name)
 		}
+		tsigValid := req.IsTsig() != nil && w.TsigStatus() == nil
 		m := new(dns.Msg)
 		handled := false
 		if zone != "" {
-			if s.secondaryMgr != nil && s.secondaryMgr.HandleNotify(zone) {
+			if s.secondaryMgr != nil && s.secondaryMgr.HandleNotifyFrom(zone, clientIP, tsigValid) {
 				handled = true
 			}
-			if s.onRPZNotify != nil && s.onRPZNotify(zone) {
+			if s.onRPZNotify != nil && s.onRPZNotify(zone, clientIP, tsigValid) {
 				handled = true
 			}
 		}
@@ -265,17 +276,34 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		})
 	}
 	note := func(path, rcode string, aclDenied, rateLimited, timeout bool) {
+		qn, qt := "", ""
+		if req != nil && len(req.Question) > 0 {
+			qn = config.NormalizeName(req.Question[0].Name)
+			qt = dns.TypeToString[req.Question[0].Qtype]
+		}
+		dur := time.Since(start)
+		if s.ring != nil {
+			blocked := aclDenied || rateLimited || path == "blacklist" || path == "rpz" || path == "plugin" || path == "manual_ban"
+			s.ring.Push(queryring.QueryEvent{
+				Time:      start.UTC(),
+				ClientIP:  clientIP,
+				QName:     qn,
+				QType:     qt,
+				Protocol:  proto,
+				RCode:     rcode,
+				Path:      path,
+				LatencyMS: float64(dur.Microseconds()) / 1000.0,
+				Blocked:   blocked,
+				Source:    "go",
+			})
+		}
 		if s.mon == nil {
 			return
-		}
-		qn := ""
-		if len(req.Question) > 0 {
-			qn = config.NormalizeName(req.Question[0].Name)
 		}
 		s.mon.Observe(monitor.Sample{
 			ClientIP:    clientIP,
 			QName:       qn,
-			Latency:     time.Since(start),
+			Latency:     dur,
 			Path:        path,
 			RCode:       rcode,
 			ACLDenied:   aclDenied,
@@ -284,22 +312,18 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		})
 	}
 
+	if s.aclBan != nil && s.aclBan.IsBanned(clientIP) {
+		metrics.ACLSilentDrop.Inc()
+		return
+	}
+
 	s.queryACLMu.RLock()
 	qacl := s.queryACL
 	s.queryACLMu.RUnlock()
 	if qacl != nil && clientIP != "" && !qacl.Allows(clientIP) {
-		// #region agent log
-		aclQ := ""
-		if req != nil && len(req.Question) > 0 {
-			aclQ = config.NormalizeName(req.Question[0].Name)
-		}
-		if allowlist.BankLikeName(aclQ) {
-			debugBankLog("D", "server.go:acl", "ACL REFUSED bank-like query", map[string]any{"qname": aclQ, "client": clientIP, "proto": proto})
-		}
-		// #endregion
 		metrics.QueriesTotal.WithLabelValues(proto, "acl_denied").Inc()
 		// Autoban: after threshold, silent-drop (no REFUSED / no query-log) to cut CPU.
-		if s.aclBan != nil {
+		if s.autobanOn && s.aclBan != nil {
 			if silent, newBan := s.aclBan.Observe(clientIP); silent {
 				metrics.ACLSilentDrop.Inc()
 				if newBan {
@@ -362,12 +386,6 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	qname := config.NormalizeName(q.Name)
 	qtype := q.Qtype
 	qtypeStr := dns.TypeToString[qtype]
-	// #region agent log
-	bankQ := allowlist.BankLikeName(qname)
-	if bankQ {
-		debugBankLog("B", "server.go:ServeDNS", "bank-like query admitted", map[string]any{"qname": qname, "qtype": qtypeStr, "client": clientIP, "proto": proto})
-	}
-	// #endregion
 	observe := func(code string) {
 		if s.stats != nil {
 			s.stats.Observe(qname, code)
@@ -439,11 +457,6 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 
 	if s.rpz != nil || s.deny != nil {
 		whitelisted := s.allow.Allows(qname)
-		// #region agent log
-		if bankQ && whitelisted {
-			debugBankLog("E", "server.go:rpz", "whitelist bypass", map[string]any{"qname": qname})
-		}
-		// #endregion
 		if !whitelisted {
 			if s.deny != nil && s.deny.Blocks(qname) {
 				metrics.RPZBlocked.Inc()
@@ -462,11 +475,6 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			if s.rpz != nil {
 				if hit, ok := s.rpz.Lookup(qname); ok {
 					hit = bankSafeRPZHit(qname, hit)
-					// #region agent log
-					if bankQ {
-						debugBankLog("C", "server.go:rpz.Lookup", "RPZ hit on bank-like name", map[string]any{"qname": qname, "action": string(hit.Action), "target": hit.Target, "ok": ok, "runId": "post-fix"})
-					}
-					// #endregion
 					if hit.Action == rpz.ActionPass {
 						// Explicit allow — continue to cache / auth / recursive.
 					} else {
@@ -506,10 +514,6 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 						note("rpz", code, false, false, false)
 						return
 					}
-				} else if bankQ {
-					// #region agent log
-					debugBankLog("B", "server.go:rpz.Lookup", "RPZ miss on bank-like name", map[string]any{"qname": qname})
-					// #endregion
 				}
 			}
 		}
@@ -566,9 +570,16 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 				m.Rcode = dns.RcodeSuccess
 				s.signer.SignResponse(zone, req, m)
 			} else if len(rrs) == 0 {
-				m.Rcode = dns.RcodeNameError
+				if s.auth.NameExists(zone, qname) {
+					m.Rcode = dns.RcodeSuccess // NODATA (name exists, qtype absent)
+				} else {
+					m.Rcode = dns.RcodeNameError // NXDOMAIN
+				}
+				if soaRRs, ok := s.auth.LookupScoped(zone, dns.TypeSOA, viewName, geoTag); ok && len(soaRRs) > 0 {
+					m.Ns = append(m.Ns, soaRRs[0])
+				}
 				if s.signer != nil && s.signer.Enabled(zone) {
-					s.signer.SignDenial(zone, qname, req, m)
+					s.signer.SignDenialForNames(zone, qname, s.auth.ZoneNames(zone), req, m)
 				}
 			} else {
 				m.Answer = rrs
@@ -1224,8 +1235,12 @@ func (s *Server) SetKominfo(m *kominfo.Manager) { s.kominfo = m }
 
 func (s *Server) Kominfo() *kominfo.Manager { return s.kominfo }
 
+func (s *Server) TSIG() *tsig.Store { return s.tsig }
+
 // SetRPZNotifyHandler registers a callback for inbound NOTIFY that matches an axfr RPZ feed zone.
-func (s *Server) SetRPZNotifyHandler(fn func(zone string) bool) { s.onRPZNotify = fn }
+func (s *Server) SetRPZNotifyHandler(fn func(zone, clientIP string, tsigValid bool) bool) {
+	s.onRPZNotify = fn
+}
 
 // SetQueryACL replaces the live DNS query ACL (allow/deny CIDRs).
 func (s *Server) SetQueryACL(allow, deny []string) error {
@@ -1258,8 +1273,30 @@ func (s *Server) QueryLogger() *database.QueryLogger { return s.qlog }
 
 func (s *Server) Analytics() *analytics.Collector { return s.stats }
 func (s *Server) Monitor() *monitor.Collector     { return s.mon }
+func (s *Server) QueryRing() *queryring.Ring      { return s.ring }
 func (s *Server) Allowlist() *allowlist.List      { return s.allow }
 func (s *Server) Denylist() *denylist.List        { return s.deny }
+
+func (s *Server) BanIP(ip string, ttl time.Duration) error {
+	if s == nil || s.aclBan == nil {
+		return fmt.Errorf("aclban guard unavailable")
+	}
+	return s.aclBan.Ban(ip, ttl)
+}
+
+func (s *Server) UnbanIP(ip string) bool {
+	if s == nil || s.aclBan == nil {
+		return false
+	}
+	return s.aclBan.Unban(ip)
+}
+
+func (s *Server) ACLBanList() []aclban.BanEntry {
+	if s == nil || s.aclBan == nil {
+		return nil
+	}
+	return s.aclBan.BanList()
+}
 
 func (s *Server) RateLimitConfig() ratelimit.Config {
 	if s == nil || s.limiter == nil {
@@ -1375,23 +1412,3 @@ func bankSafeRPZHit(qname string, hit rpz.Hit) rpz.Hit {
 		return hit
 	}
 }
-
-// #region agent log
-func debugBankLog(hypothesisId, location, message string, data map[string]any) {
-	payload, _ := json.Marshal(map[string]any{
-		"sessionId":    "cf81b3",
-		"hypothesisId": hypothesisId,
-		"location":     location,
-		"message":      message,
-		"data":         data,
-		"timestamp":    time.Now().UnixMilli(),
-	})
-	f, err := os.OpenFile(`c:\Users\hendr\OneDrive\Documents\Cursor\PowerSVX\debug-cf81b3.log`, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	_, _ = f.Write(append(payload, '\n'))
-	_ = f.Close()
-}
-
-// #endregion

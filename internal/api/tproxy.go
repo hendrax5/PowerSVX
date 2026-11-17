@@ -18,13 +18,13 @@ func (a *API) handleTProxy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.tproxyPayload())
 	case http.MethodPut, http.MethodPatch:
 		var body struct {
-			TProxyListen    *bool    `json:"tproxy_listen"`
-			TProxyIntercept *bool    `json:"tproxy_intercept"`
-			TProxyIface     *string  `json:"tproxy_iface"`
-			TProxyMode      *string  `json:"tproxy_mode"`
+			TProxyListen    *bool     `json:"tproxy_listen"`
+			TProxyIntercept *bool     `json:"tproxy_intercept"`
+			TProxyIface     *string   `json:"tproxy_iface"`
+			TProxyMode      *string   `json:"tproxy_mode"`
 			TProxyResolvers *[]string `json:"tproxy_resolvers"`
-			TProxyMark      *uint32  `json:"tproxy_mark"`
-			ApplyNow        *bool    `json:"apply_now"`
+			TProxyMark      *uint32   `json:"tproxy_mark"`
+			ApplyNow        *bool     `json:"apply_now"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
@@ -195,19 +195,19 @@ func (a *API) tproxyPayload() map[string]any {
 		cfg.Iface = tproxy.PickDefaultIface()
 	}
 	return map[string]any{
-		"supported":            tproxy.Supported(),
-		"tproxy_listen":        listenDesired,
-		"tproxy_listen_active": listenActive,
+		"supported":                   tproxy.Supported(),
+		"tproxy_listen":               listenDesired,
+		"tproxy_listen_active":        listenActive,
 		"tproxy_listen_needs_restart": listenDesired != listenActive,
-		"tproxy_intercept":     cfg.Enabled,
-		"tproxy_iface":         cfg.Iface,
-		"tproxy_mode":          cfg.Mode,
-		"tproxy_resolvers":     cfg.Resolvers,
-		"tproxy_mark":          cfg.Mark,
-		"default_resolvers":    tproxy.DefaultPublicResolvers,
-		"ifaces":               ifs,
-		"status":               st,
-		"note": "Intercept (nftables) applies live. Transparent socket (tproxy_listen) needs Restart service after Save.",
+		"tproxy_intercept":            cfg.Enabled,
+		"tproxy_iface":                cfg.Iface,
+		"tproxy_mode":                 cfg.Mode,
+		"tproxy_resolvers":            cfg.Resolvers,
+		"tproxy_mark":                 cfg.Mark,
+		"default_resolvers":           tproxy.DefaultPublicResolvers,
+		"ifaces":                      ifs,
+		"status":                      st,
+		"note":                        "Intercept (nftables) applies live. Transparent socket (tproxy_listen) needs Restart service after Save.",
 	}
 }
 

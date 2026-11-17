@@ -124,6 +124,103 @@ func (g *Guard) Observe(ipStr string) (silent, newBan bool) {
 	return true, true
 }
 
+// BanEntry describes an active temporary or manual IP ban.
+type BanEntry struct {
+	IP        string    `json:"ip"`
+	Until     time.Time `json:"until"`
+	Remaining int       `json:"remaining_sec"`
+}
+
+// BanList returns non-expired banned IPs.
+func (g *Guard) BanList() []BanEntry {
+	if g == nil {
+		return nil
+	}
+	now := time.Now()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]BanEntry, 0, len(g.banned))
+	for ip, until := range g.banned {
+		if now.Before(until) {
+			out = append(out, BanEntry{
+				IP:        ip,
+				Until:     until.UTC(),
+				Remaining: int(until.Sub(now).Seconds()),
+			})
+		} else {
+			delete(g.banned, ip)
+		}
+	}
+	return out
+}
+
+// IsBanned checks if ipStr currently has an active temporary or manual ban.
+func (g *Guard) IsBanned(ipStr string) bool {
+	if g == nil || ipStr == "" {
+		return false
+	}
+	now := time.Now()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	until, ok := g.banned[ipStr]
+	if !ok {
+		return false
+	}
+	if now.Before(until) {
+		return true
+	}
+	delete(g.banned, ipStr)
+	return false
+}
+
+// Ban manually adds an IP to the ban map (and nft set if enabled).
+func (g *Guard) Ban(ipStr string, ttl time.Duration) error {
+	if g == nil {
+		return fmt.Errorf("aclban guard unavailable")
+	}
+	ip := net.ParseIP(strings.TrimSpace(ipStr))
+	if ip == nil {
+		return fmt.Errorf("invalid ip %q", ipStr)
+	}
+	if ttl <= 0 {
+		ttl = g.cfg.TTL
+	}
+	g.mu.Lock()
+	g.banned[ip.String()] = time.Now().Add(ttl)
+	useNFT := g.cfg.NFT && g.nftOK
+	g.mu.Unlock()
+	if useNFT {
+		g.addNFT(ip, ttl)
+	}
+	return nil
+}
+
+// Unban removes an IP from the ban map (and nft set if enabled).
+func (g *Guard) Unban(ipStr string) bool {
+	if g == nil {
+		return false
+	}
+	ip := net.ParseIP(strings.TrimSpace(ipStr))
+	key := strings.TrimSpace(ipStr)
+	if ip != nil {
+		key = ip.String()
+	}
+	g.mu.Lock()
+	_, ok := g.banned[key]
+	delete(g.banned, key)
+	delete(g.hits, key)
+	useNFT := g.cfg.NFT && g.nftOK
+	g.mu.Unlock()
+	if useNFT && ip != nil {
+		set := g.cfg.NFTSet
+		if ip.To4() == nil {
+			set = g.cfg.NFTSet + "6"
+		}
+		_ = exec.Command("nft", "delete", "element", "inet", "powersvx", set, "{", ip.String(), "}").Run()
+	}
+	return ok
+}
+
 // Reset clears in-memory bans (e.g. after allow_query changes) and flushes nft set.
 func (g *Guard) Reset() {
 	if g == nil {

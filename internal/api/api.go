@@ -26,6 +26,8 @@ import (
 	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/database"
+	"github.com/powersvx/powersvx/internal/dnsdistctl"
+	"github.com/powersvx/powersvx/internal/dnssec"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/monitor"
 	"github.com/powersvx/powersvx/internal/rpz"
@@ -44,6 +46,7 @@ type API struct {
 	audit    *audit.Log
 	users    *apiauth.UserStore
 	sessions *apiauth.SessionStore
+	tokens   *apiauth.TokenStore
 	loginLim *loginLimiter
 	log      *slog.Logger
 	http     *http.Server
@@ -62,13 +65,14 @@ func New(cfg *config.Config, srv *server.Server, db *database.DB, tier *cache.Ti
 	return &API{cfg: cfg, srv: srv, db: db, cache: tier, auth: auth, log: log, start: time.Now(), dataDir: "./data", loginLim: newLoginLimiter()}
 }
 
-func (a *API) SetWebFS(fsys fs.FS) { a.webFS = fsys }
-func (a *API) SetReloadZones(fn func() error) { a.reloadFn = fn }
-func (a *API) SetEvents(bus *eventlog.Bus) { a.events = bus }
-func (a *API) SetACME(m *acme.Manager) { a.acmeMgr = m }
-func (a *API) SetAudit(l *audit.Log) { a.audit = l }
-func (a *API) SetUserStore(u *apiauth.UserStore) { a.users = u }
+func (a *API) SetWebFS(fsys fs.FS)                     { a.webFS = fsys }
+func (a *API) SetReloadZones(fn func() error)          { a.reloadFn = fn }
+func (a *API) SetEvents(bus *eventlog.Bus)             { a.events = bus }
+func (a *API) SetACME(m *acme.Manager)                 { a.acmeMgr = m }
+func (a *API) SetAudit(l *audit.Log)                   { a.audit = l }
+func (a *API) SetUserStore(u *apiauth.UserStore)       { a.users = u }
 func (a *API) SetSessionStore(s *apiauth.SessionStore) { a.sessions = s }
+func (a *API) SetTokenStore(t *apiauth.TokenStore)     { a.tokens = t }
 func (a *API) SetDataDir(dir string) {
 	if dir != "" {
 		a.dataDir = dir
@@ -97,8 +101,17 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/status", a.withAuth(a.handleStatus))
 	mux.HandleFunc("/api/v1/dashboard", a.withAuth(a.handleDashboard))
 	mux.HandleFunc("/api/v1/zones", a.withAuth(a.handleZones))
+	mux.HandleFunc("/api/v1/zones/import", a.withAuth(a.handleZoneImport))
 	mux.HandleFunc("/api/v1/zones/", a.withAuth(a.handleZoneSub))
 	mux.HandleFunc("/api/v1/settings", a.withAuth(a.handleSettings))
+	mux.HandleFunc("/api/v1/cache/stats", a.withAuth(a.handleCacheStats))
+	mux.HandleFunc("/api/v1/cache/inspect", a.withAuth(a.handleCacheInspect))
+	mux.HandleFunc("/api/v1/cache/flush", a.withAuth(a.handleCacheFlush))
+	mux.HandleFunc("/api/v1/security/blocks", a.withAuth(a.handleSecurityBlocks))
+	mux.HandleFunc("/api/v1/security/ban", a.withAuth(a.handleSecurityBan))
+	mux.HandleFunc("/api/v1/security/dynblocks/clear", a.withAuth(a.handleSecurityClearDynBlocks))
+	mux.HandleFunc("/api/v1/queries/live", a.withAuth(a.handleLiveQueries))
+	mux.HandleFunc("/api/v1/queries/stream", a.withAuth(a.handleQueryStream))
 	mux.HandleFunc("/api/v1/tproxy", a.withAuth(a.handleTProxy))
 	mux.HandleFunc("/api/v1/tproxy/apply", a.withAuth(a.handleTProxyApply))
 	mux.HandleFunc("/api/v1/tproxy/disable", a.withAuth(a.handleTProxyDisable))
@@ -116,6 +129,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/blocklist/seed", a.withAuth(a.handleBlocklistSeed))
 	mux.HandleFunc("/api/v1/domains/", a.withAuth(a.handleDomains))
 	mux.HandleFunc("/api/v1/tools/lookup", a.withAuth(a.handleLookup))
+	mux.HandleFunc("/api/v1/tools/trace", a.withAuth(a.handleTrace))
 	mux.HandleFunc("/api/v1/events", a.withAuth(a.handleEvents))
 	mux.HandleFunc("/api/v1/events/stream", a.withAuth(a.handleEventStream))
 	mux.HandleFunc("/api/v1/analytics", a.withAuth(a.handleAnalytics))
@@ -176,6 +190,11 @@ func (a *API) resolvePrincipal(r *http.Request) (apiauth.Principal, bool) {
 		got = r.URL.Query().Get("token")
 	}
 	if got != "" {
+		if a.tokens != nil {
+			if p, ok := a.tokens.Resolve(got); ok {
+				return p, true
+			}
+		}
 		if authType == "token" && a.cfg.API.APIToken == "" && len(a.cfg.API.Tokens) == 0 {
 			return apiauth.Principal{}, false
 		}
@@ -184,9 +203,6 @@ func (a *API) resolvePrincipal(r *http.Request) (apiauth.Principal, bool) {
 	if authType == "local" && a.sessions != nil {
 		id := apiauth.ReadSessionCookie(r)
 		return a.sessions.Get(id)
-	}
-	if authType == "token" && a.cfg.API.APIToken == "" && len(a.cfg.API.Tokens) == 0 {
-		return apiauth.Principal{}, false
 	}
 	return apiauth.Principal{}, false
 }
@@ -207,28 +223,17 @@ func tokenEqual(got, want string) bool {
 }
 
 func isAllowedOrigin(origin, host string) bool {
-	if origin == "" {
+	if origin == "" || host == "" {
 		return false
 	}
 	u, err := url.Parse(origin)
 	if err != nil {
 		return false
 	}
-	if strings.EqualFold(u.Host, host) {
-		return true
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
 	}
-	h, _, _ := net.SplitHostPort(u.Host)
-	if h == "" {
-		h = u.Host
-	}
-	if h == "localhost" || h == "127.0.0.1" || h == "::1" {
-		return true
-	}
-	reqHost, _, _ := net.SplitHostPort(host)
-	if reqHost == "" {
-		reqHost = host
-	}
-	return strings.EqualFold(h, reqHost)
+	return strings.EqualFold(u.Host, host)
 }
 
 func withCORS(next http.Handler) http.Handler {
@@ -240,6 +245,7 @@ func withCORS(next http.Handler) http.Handler {
 
 		origin := r.Header.Get("Origin")
 		if origin != "" {
+			w.Header().Add("Vary", "Origin")
 			if isAllowedOrigin(origin, r.Host) {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
@@ -454,19 +460,19 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 		gomemMB := config.GoMemLimitMB()
 		rssDegradeMB := config.RSSDegradeThresholdMB()
 		resDetail := map[string]any{
-			"status":               resStatus,
-			"goroutines":           res.Goroutines,
-			"rss_mb":               res.RSSMB,
-			"cpu_percent":          res.CPUPercent,
-			"gomemlimit_mb":        gomemMB,
-			"rss_degrade_mb":       rssDegradeMB,
-			"host_mem_total_mb":    res.HostMemTotalMB,
+			"status":                resStatus,
+			"goroutines":            res.Goroutines,
+			"rss_mb":                res.RSSMB,
+			"cpu_percent":           res.CPUPercent,
+			"gomemlimit_mb":         gomemMB,
+			"rss_degrade_mb":        rssDegradeMB,
+			"host_mem_total_mb":     res.HostMemTotalMB,
 			"host_mem_available_mb": res.HostMemAvailableMB,
-			"host_mem_used_pct":    res.HostMemUsedPct,
-			"disk_total_gb":        res.DiskTotalGB,
-			"disk_used_gb":         res.DiskUsedGB,
-			"disk_used_pct":        res.DiskUsedPct,
-			"load1":                res.Load1,
+			"host_mem_used_pct":     res.HostMemUsedPct,
+			"disk_total_gb":         res.DiskTotalGB,
+			"disk_used_gb":          res.DiskUsedGB,
+			"disk_used_pct":         res.DiskUsedPct,
+			"load1":                 res.Load1,
 		}
 		if res.DiskUsedPct >= 95 {
 			resStatus = "fail"
@@ -592,19 +598,33 @@ func (a *API) statusPayload() map[string]any {
 	flags := a.srv.RuntimeFlags()
 	out := map[string]any{
 		"uptime_seconds": int(uptime.Seconds()),
-		"mode": a.cfg.Resolver.Mode, "dnssec_mode": a.srv.DNSSECMode(),
+		"mode":           a.cfg.Resolver.Mode, "dnssec_mode": a.srv.DNSSECMode(),
 		"dot_enabled": a.srv.DoTEnabled(), "doh_enabled": a.srv.DoHEnabled(), "doh3_enabled": a.srv.DoH3Enabled(), "doq_enabled": a.srv.DoQEnabled(),
 		"dot_addr": a.srv.DoTAddr(), "doh_addr": a.srv.DoHAddr(), "doq_addr": a.srv.DoQAddr(),
 		"queries_total": queries, "rate_limited": a.srv.Blocked(),
 		"cache_hits": hits, "cache_misses": misses, "cache_l1_size": size,
 		"rpz_entries": a.srv.RPZCount(), "zones": zones, "udp_addr": a.srv.UDPAddr(),
 		"ratelimit_enabled": flags.RateLimit, "rpz_enabled": flags.RPZ,
-		"ecs_enabled": flags.ECS,
-		"geodns_enabled": flags.GeoDNS,
+		"ecs_enabled":           flags.ECS,
+		"geodns_enabled":        flags.GeoDNS,
 		"split_horizon_enabled": flags.SplitHorizon,
-		"dns_dataplane": config.DNSDataplane(),
+		"dns_dataplane":         config.DNSDataplane(),
 	}
-	if config.UnboundDataplane() {
+	if config.DNSDistDataplane() {
+		out["mode"] = "dnsdist"
+		out["udp_addr"] = "0.0.0.0:53 (dnsdist)"
+		out["rpz_entries"] = a.unboundRPZEntryCount()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		st, err := dnsdistctl.DefaultClient().Stats(ctx)
+		cancel()
+		if err == nil && st != nil {
+			out["queries_total"] = uint64(st["queries"])
+			out["cache_hits"] = uint64(st["cache-hits"])
+			out["cache_misses"] = uint64(st["cache-misses"])
+			out["dnsdist_self_answered"] = uint64(st["self-answered"])
+			out["dnsdist_latency_avg100"] = st["latency-avg100"]
+		}
+	} else if config.UnboundDataplane() {
 		out["mode"] = "unbound"
 		out["udp_addr"] = "0.0.0.0:53 (Unbound)"
 		out["rpz_entries"] = a.unboundRPZEntryCount()
@@ -695,6 +715,7 @@ func (a *API) handleZones(w http.ResponseWriter, r *http.Request) {
 		} else {
 			a.auth.UpsertZone(body.Name)
 		}
+		a.SyncAllDataplanes()
 		writeJSON(w, http.StatusCreated, map[string]any{"name": config.NormalizeName(body.Name)})
 		a.srv.NotifySecondaries(body.Name)
 	default:
@@ -779,6 +800,7 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "zone not found", http.StatusNotFound)
 				return
 			}
+			a.SyncAllDataplanes()
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -786,20 +808,47 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if parts[1] == "export" {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		txt, ok := a.auth.ExportBINDZone(zone)
+		if !ok {
+			http.Error(w, "zone not found", http.StatusNotFound)
+			return
+		}
+		if r.URL.Query().Get("raw") == "1" {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Content-Disposition", "attachment; filename=\""+strings.TrimSuffix(config.NormalizeName(zone), ".")+".zone\"")
+			_, _ = w.Write([]byte(txt))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"zone": config.NormalizeName(zone), "content": txt})
+		return
+	}
+
 	if parts[1] == "dnssec" {
+		normZone := config.NormalizeName(zone)
 		switch r.Method {
 		case http.MethodGet:
 			sig := a.srv.Signer()
-			if sig == nil || !sig.Enabled(zone) {
+			if sig == nil || !sig.Enabled(normZone) {
 				writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
 				return
 			}
 			keys := []string{}
-			for _, rr := range sig.DNSKEYs(zone) {
+			for _, rr := range sig.DNSKEYs(normZone) {
 				keys = append(keys, rr.String())
 			}
-			out := map[string]any{"enabled": true, "keys": keys}
-			if ds, err := sig.DS(zone); err == nil && ds != nil {
+			pol, _ := sig.Policy(normZone)
+			out := map[string]any{
+				"enabled":   true,
+				"keys":      keys,
+				"algorithm": dns.AlgorithmToString[pol.Algorithm],
+				"nsec3":     pol.NSEC3,
+			}
+			if ds, err := sig.DS(normZone); err == nil && ds != nil {
 				out["ds"] = ds.String()
 			}
 			writeJSON(w, http.StatusOK, out)
@@ -809,16 +858,38 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "signer unavailable", http.StatusServiceUnavailable)
 				return
 			}
-			if err := sig.Ensure(config.NormalizeName(zone)); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
+			var body struct {
+				Algorithm string `json:"algorithm"`
+				NSEC3     bool   `json:"nsec3"`
+				Action    string `json:"action"` // enable | rollover
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if strings.EqualFold(body.Action, "rollover") {
+				if err := sig.RolloverZSK(normZone); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			} else {
+				opts := dnssec.SignOptions{
+					Algorithm: dnssec.ParseAlgorithm(body.Algorithm),
+					NSEC3:     body.NSEC3,
+				}
+				if err := sig.EnsureWithOptions(normZone, opts); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
 			}
 			if a.db != nil && a.cfg.Database.Enabled {
 				on := true
 				_ = a.db.UpdateZoneMeta(r.Context(), zone, &on, nil, nil, nil, nil, nil)
 			}
-			ds, _ := sig.DS(zone)
-			out := map[string]any{"enabled": true}
+			pol, _ := sig.Policy(normZone)
+			ds, _ := sig.DS(normZone)
+			out := map[string]any{
+				"enabled":   true,
+				"algorithm": dns.AlgorithmToString[pol.Algorithm],
+				"nsec3":     pol.NSEC3,
+			}
 			if ds != nil {
 				out["ds"] = ds.String()
 			}
@@ -849,6 +920,10 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rec := body.toRecord()
+		if err := authoritative.ValidateRecord(rec); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if a.db != nil && a.cfg.Database.Enabled {
 			if err := a.db.AddRecord(r.Context(), zone, rec); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -859,6 +934,14 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 			a.auth.UpsertZone(zone)
 			a.auth.AddRecord(zone, rec)
 		}
+		if config.DNSDistDataplane() {
+			go func(qname string) {
+				cctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = dnsdistctl.DefaultClient().ExpungeByName(cctx, qname)
+			}(rec.Name)
+		}
+		a.srv.NotifySecondaries(zone)
 		writeJSON(w, http.StatusCreated, body)
 	case http.MethodPut:
 		var body struct {
@@ -877,6 +960,10 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 			body.OldType = body.Type
 		}
 		rec := body.toRecord()
+		if err := authoritative.ValidateRecord(rec); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if a.db != nil && a.cfg.Database.Enabled {
 			if err := a.db.UpdateRecord(r.Context(), zone, body.OldName, body.OldType, rec); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
@@ -890,6 +977,18 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if config.DNSDistDataplane() {
+			go func(qname, oldName string) {
+				cctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				ctl := dnsdistctl.DefaultClient()
+				_ = ctl.ExpungeByName(cctx, qname)
+				if oldName != "" && oldName != qname {
+					_ = ctl.ExpungeByName(cctx, oldName)
+				}
+			}(rec.Name, body.OldName)
+		}
+		a.srv.NotifySecondaries(zone)
 		writeJSON(w, http.StatusOK, body.recordDTO)
 	case http.MethodDelete:
 		name := r.URL.Query().Get("name")
@@ -908,10 +1007,67 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 			qt := authoritative.TypeFromString(typ)
 			a.auth.DeleteRecord(zone, name, qt)
 		}
+		if config.DNSDistDataplane() {
+			go func(qname string) {
+				cctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = dnsdistctl.DefaultClient().ExpungeByName(cctx, qname)
+			}(name)
+		}
+		a.srv.NotifySecondaries(zone)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (a *API) handleZoneImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Zone    string `json:"zone"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	zone := strings.TrimSpace(body.Zone)
+	if zone == "" || strings.TrimSpace(body.Content) == "" {
+		http.Error(w, "zone and content required", http.StatusBadRequest)
+		return
+	}
+	recs, err := authoritative.ImportBINDZone(zone, body.Content)
+	if err != nil {
+		http.Error(w, "zone parse failed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if a.db != nil && a.cfg.Database.Enabled {
+		if _, err := a.db.CreateZone(r.Context(), zone); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, rec := range recs {
+			if err := a.db.AddRecord(r.Context(), zone, rec); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		_ = a.reloadZones()
+	} else {
+		a.auth.UpsertZone(zone)
+		for _, rec := range recs {
+			a.auth.AddRecord(zone, rec)
+		}
+	}
+	a.SyncAllDataplanes()
+	a.srv.NotifySecondaries(zone)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"zone":             config.NormalizeName(zone),
+		"imported_records": len(recs),
+	})
 }
 
 type recordDTO struct {
@@ -952,26 +1108,26 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.settingsPayload())
 	case http.MethodPut, http.MethodPatch:
 		var body struct {
-			GeoDNS               *bool     `json:"geodns"`
-			RPZ                  *bool     `json:"rpz_enabled"`
-			RateLimit            *bool     `json:"rate_limit"`
-			RateLimitQPS         *int      `json:"rate_limit_qps"`
-			RateLimitBurst       *int      `json:"rate_limit_burst"`
-			RateLimitBlockDur    *int      `json:"rate_limit_block_duration"`
-			RateLimitWhitelist   *[]string `json:"rate_limit_whitelist"`
-			ClearRateLimitBlocks *bool     `json:"clear_rate_limit_blocks"`
-			ECS                  *bool     `json:"ecs_enabled"`
-			SplitHorizon         *bool     `json:"split_horizon"`
-			ResolverMode         *string   `json:"resolver_mode"`
-			ForwardOnFail        *bool     `json:"forward_on_fail"`
-			QueryLog             *bool     `json:"query_log_enabled"`
-			QueryLogRetentionDays *int     `json:"query_log_retention_days"`
-			QueryLogMaxSizeMB    *int      `json:"query_log_max_size_mb"`
-			QueryLogSampleRate   *float64  `json:"query_log_sample_rate"`
-			Forwarders           *[]string `json:"forwarders"`
-			ForwardZones         *[]config.ForwardZoneConfig `json:"forward_zones"`
-			AllowQuery           *[]string `json:"allow_query"`
-			DenyQuery            *[]string `json:"deny_query"`
+			GeoDNS                *bool                       `json:"geodns"`
+			RPZ                   *bool                       `json:"rpz_enabled"`
+			RateLimit             *bool                       `json:"rate_limit"`
+			RateLimitQPS          *int                        `json:"rate_limit_qps"`
+			RateLimitBurst        *int                        `json:"rate_limit_burst"`
+			RateLimitBlockDur     *int                        `json:"rate_limit_block_duration"`
+			RateLimitWhitelist    *[]string                   `json:"rate_limit_whitelist"`
+			ClearRateLimitBlocks  *bool                       `json:"clear_rate_limit_blocks"`
+			ECS                   *bool                       `json:"ecs_enabled"`
+			SplitHorizon          *bool                       `json:"split_horizon"`
+			ResolverMode          *string                     `json:"resolver_mode"`
+			ForwardOnFail         *bool                       `json:"forward_on_fail"`
+			QueryLog              *bool                       `json:"query_log_enabled"`
+			QueryLogRetentionDays *int                        `json:"query_log_retention_days"`
+			QueryLogMaxSizeMB     *int                        `json:"query_log_max_size_mb"`
+			QueryLogSampleRate    *float64                    `json:"query_log_sample_rate"`
+			Forwarders            *[]string                   `json:"forwarders"`
+			ForwardZones          *[]config.ForwardZoneConfig `json:"forward_zones"`
+			AllowQuery            *[]string                   `json:"allow_query"`
+			DenyQuery             *[]string                   `json:"deny_query"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
@@ -1147,13 +1303,14 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 			RateLimitQPS: &rlLive.QPS, RateLimitBurst: &rlLive.Burst, RateLimitBlockDur: &rlLive.BlockDuration,
 			RateLimitWhitelist: rlLive.Whitelist,
-			ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
+			ECS:                &cur.ECS, SplitHorizon: &cur.SplitHorizon,
 			ResolverMode: &mode, ForwardOnFail: &cur.ForwardOnFail, QueryLog: &cur.QueryLog,
 			QueryLogRetentionDays: &retDays, QueryLogMaxSizeMB: &maxMB, QueryLogSampleRate: &sampleRate,
 			Forwarders: fwd, ForwardZones: fz, AllowQuery: allow, DenyQuery: deny,
 			AxfrSyncEnabled: &kominfoOn, AxfrSyncTargets: axfrTargets,
 			KominfoSyncEnabled: &kominfoOn,
 		}))
+		a.SyncAllDataplanes()
 		writeJSON(w, http.StatusOK, a.settingsPayload())
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1190,27 +1347,27 @@ func (a *API) settingsPayload() map[string]any {
 	}
 	rl := a.srv.RateLimitConfig()
 	out := map[string]any{
-		"resolver_mode":            f.ResolverMode,
-		"forward_on_fail":          f.ForwardOnFail,
-		"forwarders":               forwarders,
-		"forward_zones":            forwardZones,
-		"dnssec_mode":              a.cfg.Resolver.DNSSECMode,
-		"ecs_enabled":              f.ECS,
-		"rpz_enabled":              f.RPZ,
-		"geodns":                   f.GeoDNS,
-		"split_horizon":            f.SplitHorizon,
-		"rate_limit":               f.RateLimit,
-		"rate_limit_qps":           rl.QPS,
-		"rate_limit_burst":         rl.Burst,
+		"resolver_mode":             f.ResolverMode,
+		"forward_on_fail":           f.ForwardOnFail,
+		"forwarders":                forwarders,
+		"forward_zones":             forwardZones,
+		"dnssec_mode":               a.cfg.Resolver.DNSSECMode,
+		"ecs_enabled":               f.ECS,
+		"rpz_enabled":               f.RPZ,
+		"geodns":                    f.GeoDNS,
+		"split_horizon":             f.SplitHorizon,
+		"rate_limit":                f.RateLimit,
+		"rate_limit_qps":            rl.QPS,
+		"rate_limit_burst":          rl.Burst,
 		"rate_limit_block_duration": rl.BlockDuration,
-		"rate_limit_whitelist":     rl.Whitelist,
-		"query_log_enabled":        f.QueryLog,
-		"query_log_mask_ip":        a.cfg.Logging.QueryLogMaskIP,
-		"query_log_retention_days": a.cfg.Logging.QueryLogRetentionDays,
-		"query_log_max_size_mb":    a.cfg.Logging.QueryLogMaxSizeMB,
-		"query_log_sample_rate":    a.cfg.Logging.QueryLogSampleRate,
-		"allow_query":              allow,
-		"deny_query":               deny,
+		"rate_limit_whitelist":      rl.Whitelist,
+		"query_log_enabled":         f.QueryLog,
+		"query_log_mask_ip":         a.cfg.Logging.QueryLogMaskIP,
+		"query_log_retention_days":  a.cfg.Logging.QueryLogRetentionDays,
+		"query_log_max_size_mb":     a.cfg.Logging.QueryLogMaxSizeMB,
+		"query_log_sample_rate":     a.cfg.Logging.QueryLogSampleRate,
+		"allow_query":               allow,
+		"deny_query":                deny,
 		"transfer": map[string]any{
 			"allow_axfr":   a.cfg.Transfer.AllowAXFR,
 			"require_tsig": a.cfg.Transfer.RequireTSIG,
@@ -1219,12 +1376,12 @@ func (a *API) settingsPayload() map[string]any {
 		},
 		"kominfo_sync_enabled": a.srv.RuntimeFlags().KominfoSync,
 		"axfr_sync_enabled":    a.srv.RuntimeFlags().KominfoSync,
-		"udp_addr":        a.srv.UDPAddr(),
-		"geodns_db":       a.cfg.GeoDNS.DatabasePath,
-		"auth_type":       a.cfg.API.AuthType,
-		"auth_required":   apiauth.AuthRequired(a.cfg.API.AuthType),
-		"auth_configured": a.authConfigured(),
-		"tls_min_version": "1.3",
+		"udp_addr":             a.srv.UDPAddr(),
+		"geodns_db":            a.cfg.GeoDNS.DatabasePath,
+		"auth_type":            a.cfg.API.AuthType,
+		"auth_required":        apiauth.AuthRequired(a.cfg.API.AuthType),
+		"auth_configured":      a.authConfigured(),
+		"tls_min_version":      "1.3",
 		"editable": []string{
 			"geodns", "rpz_enabled", "rate_limit", "rate_limit_qps", "rate_limit_burst",
 			"rate_limit_block_duration", "rate_limit_whitelist",
@@ -1400,6 +1557,7 @@ func (a *API) rpzPayload() map[string]any {
 		"from_disk":            st.FromDisk,
 		"axfr_feeds":           axfrFeeds,
 		"axfr_events":          axfrEvents,
+		"tsig_keys":            a.secondaryTSIGKeyNames(),
 		"filter_seed_url":      config.FilterSeedURL(),
 		"note":                 note,
 	}
@@ -1464,6 +1622,7 @@ func normalizeRPZPolicies(in []config.RPZPolicyTOML) ([]config.RPZPolicyTOML, er
 				return nil, errRPZ("axfr policy requires at least one master for " + p.Name)
 			}
 			p.Masters = masters
+			p.TSIGKey = strings.TrimSpace(p.TSIGKey)
 			// Keep Source aligned with zone for display/fingerprint stability.
 			if p.Source == "" {
 				p.Source = p.Zone
@@ -1496,10 +1655,18 @@ func normalizeRPZPolicies(in []config.RPZPolicyTOML) ([]config.RPZPolicyTOML, er
 	return out, nil
 }
 
-func rpzPolicyConfigs(pols []config.RPZPolicyTOML) []rpz.PolicyConfig {
+func (a *API) rpzPolicyConfigs(pols []config.RPZPolicyTOML) []rpz.PolicyConfig {
+	var tsigStore interface {
+		Get(name string) (string, string, bool)
+	}
+	if a != nil && a.srv != nil {
+		if ts := a.srv.TSIG(); ts != nil {
+			tsigStore = ts
+		}
+	}
 	out := make([]rpz.PolicyConfig, 0, len(pols))
 	for _, p := range pols {
-		out = append(out, rpz.PolicyConfig{
+		pc := rpz.PolicyConfig{
 			Name:    p.Name,
 			Source:  p.Source,
 			Format:  p.Format,
@@ -1507,8 +1674,16 @@ func rpzPolicyConfigs(pols []config.RPZPolicyTOML) []rpz.PolicyConfig {
 			Target:  p.Target,
 			Zone:    p.Zone,
 			Masters: append([]string(nil), p.Masters...),
+			TSIGKey: strings.TrimSpace(p.TSIGKey),
 			Enabled: p.Enabled,
-		})
+		}
+		if pc.TSIGKey != "" && tsigStore != nil {
+			if fqdn, sec, ok := tsigStore.Get(pc.TSIGKey); ok {
+				pc.TSIGKey = fqdn
+				pc.TSIGSecret = sec
+			}
+		}
+		out = append(out, pc)
 	}
 	return out
 }
@@ -1538,7 +1713,7 @@ func (a *API) startRPZReload(sync bool) error {
 	if !eng.TryBeginLoad() {
 		return errRPZ("rpz sync already in progress")
 	}
-	policies := rpzPolicyConfigs(a.cfg.RPZ.Policies)
+	policies := a.rpzPolicyConfigs(a.cfg.RPZ.Policies)
 	run := func() {
 		n, err := a.srv.ReloadRPZ(policies, 30*time.Minute)
 		eng.EndLoad(err)
@@ -1570,7 +1745,7 @@ func (a *API) startRPZAXFRRefresh(sync bool) error {
 	if !eng.TryBeginLoad() {
 		return errRPZ("rpz sync already in progress")
 	}
-	policies := rpzPolicyConfigs(a.cfg.RPZ.Policies)
+	policies := a.rpzPolicyConfigs(a.cfg.RPZ.Policies)
 	run := func() {
 		n, err := a.srv.RefreshRPZAXFR(policies, 30*time.Minute)
 		eng.EndLoad(err)
@@ -1589,26 +1764,67 @@ func (a *API) startRPZAXFRRefresh(sync bool) error {
 	return nil
 }
 
-// HandleRPZNotify returns true when zone matches an axfr RPZ feed and kicks an AXFR/IXFR refresh.
-func (a *API) HandleRPZNotify(zone string) bool {
+func notifyMasterMatch(clientIP string, masters []string) bool {
+	ipStr := strings.TrimSpace(clientIP)
+	if ipStr == "" {
+		return false
+	}
+	if h, _, err := net.SplitHostPort(ipStr); err == nil {
+		ipStr = h
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	for _, m := range masters {
+		h := strings.TrimSpace(m)
+		if host, _, err := net.SplitHostPort(h); err == nil {
+			h = host
+		}
+		if mip := net.ParseIP(h); mip != nil && mip.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// HandleRPZNotify returns true when zone matches an enabled axfr RPZ feed from an authorized master (or valid TSIG) and kicks an AXFR/IXFR refresh.
+func (a *API) HandleRPZNotify(zone, clientIP string, tsigValid bool) bool {
 	if a == nil || a.cfg == nil {
 		return false
 	}
 	zone = config.NormalizeName(zone)
 	match := false
+	authorized := false
 	for _, p := range a.cfg.RPZ.Policies {
-		if strings.EqualFold(strings.TrimSpace(p.Format), "axfr") && config.NormalizeName(p.Zone) == zone {
-			match = true
+		if !strings.EqualFold(strings.TrimSpace(p.Format), "axfr") || config.NormalizeName(p.Zone) != zone {
+			continue
+		}
+		if p.Enabled != nil && !*p.Enabled {
+			continue
+		}
+		match = true
+		if tsigValid || notifyMasterMatch(clientIP, p.Masters) {
+			authorized = true
 			break
 		}
 	}
 	if !match {
 		return false
 	}
+	if !authorized {
+		if a.log != nil {
+			a.log.Warn("rejected unauthorized NOTIFY for RPZ feed", "zone", zone, "client", clientIP)
+		}
+		return false
+	}
 	if err := a.startRPZAXFRRefresh(false); err != nil {
 		a.log.Debug("rpz notify reload skip", "zone", zone, "err", err)
 	} else {
-		a.log.Info("rpz axfr notify reload started", "zone", zone)
+		a.log.Info("rpz axfr notify reload started", "zone", zone, "client", clientIP)
 	}
 	return true
 }
@@ -1724,42 +1940,6 @@ func (a *API) StartRPZAutoUpdate() {
 			}
 		}
 	}()
-}
-
-func (a *API) handleLookup(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var body struct {
-		Name string `json:"name"`
-		Type string `json:"type"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
-		http.Error(w, "name required", http.StatusBadRequest)
-		return
-	}
-	qtype := dns.TypeA
-	if body.Type != "" {
-		if t, ok := dns.StringToType[strings.ToUpper(body.Type)]; ok {
-			qtype = t
-		}
-	}
-	msg := new(dns.Msg)
-	msg.SetQuestion(dns.Fqdn(body.Name), qtype)
-	msg.RecursionDesired = true
-	resp, _, err := a.srv.ServeDNSMsg(msg)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	answers := make([]string, 0, len(resp.Answer))
-	for _, rr := range resp.Answer {
-		answers = append(answers, rr.String())
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"rcode": dns.RcodeToString[resp.Rcode], "answers": answers, "ad": resp.AuthenticatedData,
-	})
 }
 
 func (a *API) handleEvents(w http.ResponseWriter, r *http.Request) {

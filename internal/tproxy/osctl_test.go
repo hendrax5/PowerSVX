@@ -38,3 +38,15 @@ func TestResolversFor(t *testing.T) {
 func TestSupported(t *testing.T) {
 	_ = Supported() // platform-dependent; just ensure it does not panic
 }
+
+func TestValidateTProxyIface(t *testing.T) {
+	invalid := []string{"", "eth0\" }", "eth 0", "../lo", "too_long_interface_name"}
+	for _, iv := range invalid {
+		if err := validateTProxyIface(iv); err == nil {
+			t.Fatalf("expected invalid iface %q to fail", iv)
+		}
+	}
+	if err := validateTProxyIface("lo"); err != nil {
+		t.Fatalf("expected loopback interface lo to exist and validate, got %v", err)
+	}
+}

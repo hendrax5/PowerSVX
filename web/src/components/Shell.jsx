@@ -3,9 +3,11 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   ChartLine,
   ClipboardText,
+  Database,
   Gauge,
   GearSix,
   Globe,
+  LockSimple,
   MagnifyingGlass,
   Moon,
   Sun,
@@ -13,11 +15,13 @@ import {
 } from '@phosphor-icons/react'
 import { api, setToken } from '../api'
 import { useAuth } from '../auth'
+import { useI18n } from '../i18n'
 import { useTheme } from '../theme'
 import { ICON_WEIGHT, releaseLabel } from '../ui'
 
 export default function Shell({ children }) {
-  const { me, refresh } = useAuth()
+  const { me, refresh, isAdmin } = useAuth()
+  const { lang, setLang, t } = useI18n()
   const { theme, toggleTheme } = useTheme()
   const nav = useNavigate()
   const loc = useLocation()
@@ -49,31 +53,33 @@ export default function Shell({ children }) {
 
   const navGroups = [
     {
-      label: 'Control Plane',
+      label: t('nav.control_plane'),
       links: [
-        ['/', 'Dashboard', Gauge],
-        ['/domains', 'DNS & Filtering', Globe],
-        ['/lookup', 'Query Lookup', MagnifyingGlass],
+        ['/', t('nav.dashboard'), Gauge],
+        ['/domains', t('nav.domains'), Globe],
+        ['/lookup', t('nav.lookup'), MagnifyingGlass],
+        ['/cache', t('nav.cache'), Database],
+        ['/security', t('nav.security'), LockSimple],
       ],
     },
     {
-      label: 'Observability',
+      label: t('nav.observability'),
       links: [
-        ['/analytics', 'Analytics', ChartLine],
-        ['/audit', 'Audit Logs', ClipboardText],
+        ['/analytics', t('nav.analytics'), ChartLine],
+        ['/audit', t('nav.audit'), ClipboardText],
       ],
     },
     {
-      label: 'System & Routing',
+      label: t('nav.system'),
       links: [
-        ['/settings', 'Settings', GearSix],
-        ['/terminal', 'Live Terminal', TerminalWindow],
+        ['/settings', t('nav.settings'), GearSix],
+        ...(isAdmin ? [['/terminal', t('nav.terminal'), TerminalWindow]] : []),
       ],
     },
   ]
   const hereLabel =
     navGroups.flatMap((g) => g.links).find(([to]) => (to === '/' ? loc.pathname === '/' : loc.pathname.startsWith(to)))?.[1] ||
-    'Dashboard'
+    t('nav.dashboard')
 
   const logout = async () => {
     try {
@@ -121,7 +127,7 @@ export default function Shell({ children }) {
         >
           <span className="flex items-center gap-2">
             <MagnifyingGlass size={14} weight="bold" />
-            <span>Quick Lookup…</span>
+            <span>{t('shell.quick_lookup')}</span>
           </span>
           <kbd className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-[var(--bg-panel)] border border-[var(--border)] text-[var(--muted)]">
             ⌘K
@@ -148,16 +154,27 @@ export default function Shell({ children }) {
         </nav>
 
         <div className="shell-user space-y-2.5 text-xs pt-3 border-t border-[var(--border)]">
-          <button
-            type="button"
-            onClick={toggleTheme}
-            className="btn btn-secondary w-full flex items-center justify-center gap-2 text-xs"
-            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-            aria-label="Toggle theme"
-          >
-            {theme === 'dark' ? <Sun size={15} weight="regular" /> : <Moon size={15} weight="regular" />}
-            <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
-          </button>
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="btn btn-secondary flex-1 flex items-center justify-center gap-1.5 text-xs"
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              aria-label="Toggle theme"
+            >
+              {theme === 'dark' ? <Sun size={15} weight="regular" /> : <Moon size={15} weight="regular" />}
+              <span>{theme === 'dark' ? t('shell.light_mode') : t('shell.dark_mode')}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setLang(lang === 'id' ? 'en' : 'id')}
+              className="btn btn-secondary px-2.5 text-xs font-mono uppercase"
+              title="Switch UI language (EN / ID)"
+              aria-label="Toggle language"
+            >
+              {lang.toUpperCase()}
+            </button>
+          </div>
           {release ? (
             <div className="text-[var(--muted)] px-1 mono text-[11px]" title="Deployed DNS build">
               {release}
@@ -175,11 +192,11 @@ export default function Shell({ children }) {
                 </div>
               </div>
               <button type="button" onClick={logout} className="btn btn-secondary w-full text-xs">
-                Log out
+                {t('shell.logout')}
               </button>
             </div>
           ) : (
-            <div className="text-[var(--muted)] px-1">Open access</div>
+            <div className="text-[var(--muted)] px-1">{t('shell.open_access')}</div>
           )}
         </div>
       </aside>

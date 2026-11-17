@@ -1,9 +1,11 @@
 package authoritative
 
 import (
+	"fmt"
 	"net"
-	"strings"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/miekg/dns"
@@ -21,14 +23,28 @@ type Record struct {
 	GeoTag  string // country/continent/default; empty = all geos
 }
 
+// IXFRDelta records added/removed RRs between two zone serials.
+type IXFRDelta struct {
+	FromSerial uint32
+	ToSerial   uint32
+	Removed    []Record
+	Added      []Record
+}
+
+const maxIXFRHistory = 64
+
 // Store holds authoritative zones loaded from PostgreSQL (or empty).
 type Store struct {
 	mu    sync.RWMutex
 	zones map[string][]Record
+	ixfr  map[string][]IXFRDelta
 }
 
 func NewStore() *Store {
-	return &Store{zones: make(map[string][]Record)}
+	return &Store{
+		zones: make(map[string][]Record),
+		ixfr:  make(map[string][]IXFRDelta),
+	}
 }
 
 func (s *Store) Replace(zones map[string][]Record) {
@@ -97,7 +113,12 @@ func (s *Store) AddRecord(zone string, rec Record) {
 	defer s.mu.Unlock()
 	zone = config.NormalizeName(zone)
 	rec.Name = config.NormalizeName(rec.Name)
+	oldSer := s.currentSOASerialLocked(zone)
 	s.zones[zone] = append(s.zones[zone], rec)
+	newSer, _ := s.bumpSOASerialLocked(zone)
+	if oldSer > 0 && newSer > oldSer {
+		s.appendIXFRLocked(zone, IXFRDelta{FromSerial: oldSer, ToSerial: newSer, Added: []Record{rec}})
+	}
 }
 
 func (s *Store) UpdateRecord(zone, oldName string, oldType uint16, rec Record) bool {
@@ -109,8 +130,14 @@ func (s *Store) UpdateRecord(zone, oldName string, oldType uint16, rec Record) b
 	recs := s.zones[zone]
 	for i, r := range recs {
 		if config.NormalizeName(r.Name) == oldName && (oldType == 0 || r.Type == oldType) {
+			oldRec := r
+			oldSer := s.currentSOASerialLocked(zone)
 			recs[i] = rec
 			s.zones[zone] = recs
+			newSer, _ := s.bumpSOASerialLocked(zone)
+			if oldSer > 0 && newSer > oldSer {
+				s.appendIXFRLocked(zone, IXFRDelta{FromSerial: oldSer, ToSerial: newSer, Removed: []Record{oldRec}, Added: []Record{rec}})
+			}
 			return true
 		}
 	}
@@ -123,17 +150,24 @@ func (s *Store) DeleteRecord(zone, name string, qtype uint16) int {
 	zone = config.NormalizeName(zone)
 	name = config.NormalizeName(name)
 	recs := s.zones[zone]
-	kept := recs[:0]
-	n := 0
+	kept := make([]Record, 0, len(recs))
+	var removed []Record
 	for _, r := range recs {
 		if config.NormalizeName(r.Name) == name && (qtype == 0 || r.Type == qtype) {
-			n++
+			removed = append(removed, r)
 			continue
 		}
 		kept = append(kept, r)
 	}
 	s.zones[zone] = kept
-	return n
+	if len(removed) > 0 {
+		oldSer := s.currentSOASerialLocked(zone)
+		newSer, _ := s.bumpSOASerialLocked(zone)
+		if oldSer > 0 && newSer > oldSer {
+			s.appendIXFRLocked(zone, IXFRDelta{FromSerial: oldSer, ToSerial: newSer, Removed: removed})
+		}
+	}
+	return len(removed)
 }
 
 // DeleteRecordExact removes records matching name+type+content (+prio for MX).
@@ -144,20 +178,112 @@ func (s *Store) DeleteRecordExact(zone string, want Record) int {
 	want.Name = config.NormalizeName(want.Name)
 	want.Content = strings.TrimSpace(want.Content)
 	recs := s.zones[zone]
-	kept := recs[:0]
-	n := 0
+	kept := make([]Record, 0, len(recs))
+	var removed []Record
 	for _, r := range recs {
 		if config.NormalizeName(r.Name) == want.Name &&
 			r.Type == want.Type &&
 			strings.EqualFold(strings.TrimSpace(r.Content), want.Content) &&
 			r.Prio == want.Prio {
-			n++
+			removed = append(removed, r)
 			continue
 		}
 		kept = append(kept, r)
 	}
 	s.zones[zone] = kept
-	return n
+	if len(removed) > 0 {
+		oldSer := s.currentSOASerialLocked(zone)
+		newSer, _ := s.bumpSOASerialLocked(zone)
+		if oldSer > 0 && newSer > oldSer {
+			s.appendIXFRLocked(zone, IXFRDelta{FromSerial: oldSer, ToSerial: newSer, Removed: removed})
+		}
+	}
+	return len(removed)
+}
+
+func (s *Store) currentSOASerialLocked(zone string) uint32 {
+	for _, r := range s.zones[zone] {
+		if r.Type != dns.TypeSOA {
+			continue
+		}
+		parts := strings.Fields(r.Content)
+		if len(parts) >= 3 {
+			if ser, err := strconv.ParseUint(parts[2], 10, 32); err == nil {
+				return uint32(ser)
+			}
+		}
+	}
+	return 0
+}
+
+func (s *Store) bumpSOASerialLocked(zone string) (uint32, bool) {
+	recs := s.zones[zone]
+	for i, r := range recs {
+		if r.Type != dns.TypeSOA {
+			continue
+		}
+		parts := strings.Fields(r.Content)
+		if len(parts) < 7 {
+			return 0, false
+		}
+		serial, err := strconv.ParseUint(parts[2], 10, 32)
+		if err != nil {
+			return 0, false
+		}
+		serial++
+		parts[2] = strconv.FormatUint(serial, 10)
+		recs[i].Content = strings.Join(parts, " ")
+		s.zones[zone] = recs
+		return uint32(serial), true
+	}
+	return 0, false
+}
+
+func (s *Store) appendIXFRLocked(zone string, d IXFRDelta) {
+	if s.ixfr == nil {
+		s.ixfr = make(map[string][]IXFRDelta)
+	}
+	hist := append(s.ixfr[zone], d)
+	if len(hist) > maxIXFRHistory {
+		hist = hist[len(hist)-maxIXFRHistory:]
+	}
+	s.ixfr[zone] = hist
+}
+
+// CurrentSOASerial returns the current SOA serial for zone (0 if none).
+func (s *Store) CurrentSOASerial(zone string) uint32 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.currentSOASerialLocked(config.NormalizeName(zone))
+}
+
+// IXFRDeltas returns incremental deltas starting from clientSerial, plus current serial.
+// ok=false if history doesn't cover clientSerial (caller should fall back to AXFR).
+func (s *Store) IXFRDeltas(zone string, clientSerial uint32) (deltas []IXFRDelta, currentSerial uint32, ok bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	zone = config.NormalizeName(zone)
+	cur := s.currentSOASerialLocked(zone)
+	if cur == 0 || clientSerial == 0 {
+		return nil, cur, false
+	}
+	if cur == clientSerial || int32(cur-clientSerial) <= 0 {
+		return nil, cur, true
+	}
+	hist := s.ixfr[zone]
+	startIdx := -1
+	for i, d := range hist {
+		if d.FromSerial == clientSerial {
+			startIdx = i
+			break
+		}
+	}
+	if startIdx < 0 {
+		return nil, cur, false
+	}
+	out := make([]IXFRDelta, len(hist)-startIdx)
+	copy(out, hist[startIdx:])
+	return out, cur, true
 }
 
 // NameExists reports whether any RR exists at name in zone.
@@ -341,18 +467,25 @@ func buildRR(rec Record) (dns.RR, error) {
 	}
 	switch rec.Type {
 	case dns.TypeA:
-		ip := net.ParseIP(rec.Content)
+		ip := net.ParseIP(strings.TrimSpace(rec.Content))
 		if ip == nil {
-			return nil, nil
+			return nil, fmt.Errorf("invalid IPv4 address")
+		}
+		ip4 := ip.To4()
+		if ip4 == nil {
+			return nil, fmt.Errorf("expected IPv4 address for A record")
 		}
 		return &dns.A{
 			Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl},
-			A:   ip.To4(),
+			A:   ip4,
 		}, nil
 	case dns.TypeAAAA:
-		ip := net.ParseIP(rec.Content)
+		ip := net.ParseIP(strings.TrimSpace(rec.Content))
 		if ip == nil {
-			return nil, nil
+			return nil, fmt.Errorf("invalid IPv6 address")
+		}
+		if ip.To4() != nil {
+			return nil, fmt.Errorf("expected IPv6 address for AAAA record")
 		}
 		return &dns.AAAA{
 			Hdr:  dns.RR_Header{Name: name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl},
@@ -368,10 +501,25 @@ func buildRR(rec Record) (dns.RR, error) {
 			Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: ttl},
 			Ns:  config.NormalizeName(rec.Content),
 		}, nil
+	case dns.TypePTR:
+		return &dns.PTR{
+			Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: ttl},
+			Ptr: config.NormalizeName(rec.Content),
+		}, nil
 	case dns.TypeTXT:
+		txt := rec.Content
+		if len(txt) >= 2 && strings.HasPrefix(txt, `"`) && strings.HasSuffix(txt, `"`) {
+			txt = txt[1 : len(txt)-1]
+		}
+		var chunks []string
+		for len(txt) > 255 {
+			chunks = append(chunks, txt[:255])
+			txt = txt[255:]
+		}
+		chunks = append(chunks, txt)
 		return &dns.TXT{
 			Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: ttl},
-			Txt: []string{rec.Content},
+			Txt: chunks,
 		}, nil
 	case dns.TypeMX:
 		return &dns.MX{
@@ -380,11 +528,80 @@ func buildRR(rec Record) (dns.RR, error) {
 			Mx:         config.NormalizeName(rec.Content),
 		}, nil
 	default:
-		line := name + " " + dns.TypeToString[rec.Type] + " " + rec.Content
+		typName := dns.TypeToString[rec.Type]
+		if typName == "" {
+			return nil, fmt.Errorf("unsupported record type %d", rec.Type)
+		}
+		line := fmt.Sprintf("%s %d IN %s %s", name, ttl, typName, strings.TrimSpace(rec.Content))
 		return dns.NewRR(line)
 	}
 }
 
+// ValidateRecord verifies that a Record parses into a valid DNS RR.
+func ValidateRecord(rec Record) error {
+	rr, err := buildRR(rec)
+	if err != nil {
+		return err
+	}
+	if rr == nil {
+		return fmt.Errorf("invalid record")
+	}
+	return nil
+}
+
+// ImportBINDZone parses RFC 1035 BIND master zone syntax into []Record.
+func ImportBINDZone(zone, masterText string) ([]Record, error) {
+	origin := config.NormalizeName(zone)
+	zp := dns.NewZoneParser(strings.NewReader(masterText), origin, "")
+	var out []Record
+	for rr, ok := zp.Next(); ok; rr, ok = zp.Next() {
+		if rec, conv := RecordFromRR(rr); conv {
+			out = append(out, rec)
+		}
+	}
+	if err := zp.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ExportBINDZone renders a zone into RFC 1035 master zone text.
+func (s *Store) ExportBINDZone(zone string) (string, bool) {
+	recs, ok := s.GetRecords(zone)
+	if !ok {
+		return "", false
+	}
+	origin := config.NormalizeName(zone)
+	var b strings.Builder
+	fmt.Fprintf(&b, "$ORIGIN %s\n$TTL 3600\n", origin)
+	for _, rec := range recs {
+		if rr := RecordToRR(rec); rr != nil {
+			b.WriteString(rr.String())
+			b.WriteByte('\n')
+		}
+	}
+	return b.String(), true
+}
+
+// ZoneNames returns sorted FQDN names for all unique owners in zone (used by DNSSEC NSEC chain).
+func (s *Store) ZoneNames(zone string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	zone = config.NormalizeName(zone)
+	seen := map[string]struct{}{zone: {}}
+	for _, r := range s.zones[zone] {
+		n := config.NormalizeName(r.Name)
+		if !strings.HasPrefix(n, "*.") {
+			seen[n] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
 
 func TypeFromString(s string) uint16 {
 	if t, ok := dns.StringToType[strings.ToUpper(s)]; ok {

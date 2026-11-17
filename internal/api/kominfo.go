@@ -90,12 +90,12 @@ func (a *API) saveRuntimeFromServer(cur server.RuntimeFlags) {
 		GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 		RateLimitQPS: &rlLive.QPS, RateLimitBurst: &rlLive.Burst, RateLimitBlockDur: &rlLive.BlockDuration,
 		RateLimitWhitelist: rlLive.Whitelist,
-		ECS: &cur.ECS, SplitHorizon: &cur.SplitHorizon,
+		ECS:                &cur.ECS, SplitHorizon: &cur.SplitHorizon,
 		ResolverMode: &mode, ForwardOnFail: &cur.ForwardOnFail, QueryLog: &cur.QueryLog,
 		QueryLogRetentionDays: &retDays, QueryLogMaxSizeMB: &maxMB, QueryLogSampleRate: &sampleRate,
 		Forwarders: fwd, ForwardZones: fz, AllowQuery: allow, DenyQuery: deny,
-		AxfrSyncEnabled: &en,
-		AxfrSyncTargets: targets,
+		AxfrSyncEnabled:    &en,
+		AxfrSyncTargets:    targets,
 		KominfoSyncEnabled: &en, // legacy alias
 	}))
 }

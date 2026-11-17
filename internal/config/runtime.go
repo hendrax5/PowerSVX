@@ -8,28 +8,28 @@ import (
 
 // RuntimeSettings is persisted UI-editable feature flags (survives restart).
 type RuntimeSettings struct {
-	GeoDNS               *bool    `json:"geodns,omitempty"`
-	RPZ                  *bool    `json:"rpz_enabled,omitempty"`
-	RateLimit            *bool    `json:"rate_limit,omitempty"`
-	RateLimitQPS         *int     `json:"rate_limit_qps,omitempty"`
-	RateLimitBurst       *int     `json:"rate_limit_burst,omitempty"`
-	RateLimitBlockDur    *int     `json:"rate_limit_block_duration,omitempty"`
-	RateLimitWhitelist   []string `json:"rate_limit_whitelist"`
-	ECS                  *bool    `json:"ecs_enabled,omitempty"`
-	SplitHorizon         *bool    `json:"split_horizon,omitempty"`
-	ResolverMode         *string  `json:"resolver_mode,omitempty"`
-	ForwardOnFail        *bool    `json:"forward_on_fail,omitempty"`
-	QueryLog              *bool    `json:"query_log_enabled,omitempty"`
-	QueryLogRetentionDays *int     `json:"query_log_retention_days,omitempty"`
-	QueryLogMaxSizeMB     *int     `json:"query_log_max_size_mb,omitempty"`
-	QueryLogSampleRate    *float64 `json:"query_log_sample_rate,omitempty"`
-	Forwarders           []string `json:"forwarders"`
-	ForwardZones         []ForwardZoneConfig `json:"forward_zones"`
-	AllowQuery           []string `json:"allow_query"`
-	DenyQuery            []string `json:"deny_query"`
-	KominfoSyncEnabled   *bool    `json:"kominfo_sync_enabled,omitempty"` // legacy
-	AxfrSyncEnabled      *bool    `json:"axfr_sync_enabled,omitempty"`
-	AxfrSyncTargets      []string `json:"axfr_sync_targets,omitempty"`
+	GeoDNS                *bool               `json:"geodns,omitempty"`
+	RPZ                   *bool               `json:"rpz_enabled,omitempty"`
+	RateLimit             *bool               `json:"rate_limit,omitempty"`
+	RateLimitQPS          *int                `json:"rate_limit_qps,omitempty"`
+	RateLimitBurst        *int                `json:"rate_limit_burst,omitempty"`
+	RateLimitBlockDur     *int                `json:"rate_limit_block_duration,omitempty"`
+	RateLimitWhitelist    []string            `json:"rate_limit_whitelist"`
+	ECS                   *bool               `json:"ecs_enabled,omitempty"`
+	SplitHorizon          *bool               `json:"split_horizon,omitempty"`
+	ResolverMode          *string             `json:"resolver_mode,omitempty"`
+	ForwardOnFail         *bool               `json:"forward_on_fail,omitempty"`
+	QueryLog              *bool               `json:"query_log_enabled,omitempty"`
+	QueryLogRetentionDays *int                `json:"query_log_retention_days,omitempty"`
+	QueryLogMaxSizeMB     *int                `json:"query_log_max_size_mb,omitempty"`
+	QueryLogSampleRate    *float64            `json:"query_log_sample_rate,omitempty"`
+	Forwarders            []string            `json:"forwarders"`
+	ForwardZones          []ForwardZoneConfig `json:"forward_zones"`
+	AllowQuery            []string            `json:"allow_query"`
+	DenyQuery             []string            `json:"deny_query"`
+	KominfoSyncEnabled    *bool               `json:"kominfo_sync_enabled,omitempty"` // legacy
+	AxfrSyncEnabled       *bool               `json:"axfr_sync_enabled,omitempty"`
+	AxfrSyncTargets       []string            `json:"axfr_sync_targets,omitempty"`
 	// TPROXY (Linux transparent intercept)
 	TProxyListen    *bool    `json:"tproxy_listen,omitempty"`    // IP_TRANSPARENT sockets (needs restart)
 	TProxyIntercept *bool    `json:"tproxy_intercept,omitempty"` // nftables + ip rule (live apply)

@@ -43,6 +43,18 @@ func TestResolveAndRBAC(t *testing.T) {
 	if AllowPath(RoleOperator, http.MethodPost, "/api/v1/auth/users") {
 		t.Fatal("operator must not manage users")
 	}
+	if AllowPath(RoleOperator, http.MethodPost, "/api/v1/auth/tokens") {
+		t.Fatal("operator must not manage api tokens")
+	}
+	if AllowPath(RoleOperator, http.MethodPost, "/api/v1/host/network/apply") {
+		t.Fatal("operator must not modify host network")
+	}
+	if AllowPath(RoleOperator, http.MethodPost, "/api/v1/terminal/ws") {
+		t.Fatal("operator must not open terminal")
+	}
+	if AllowPath(RoleOperator, http.MethodPost, "/api/v1/system/restart") {
+		t.Fatal("operator must not hit system control")
+	}
 	if !AllowPath(RoleAdmin, http.MethodDelete, "/api/v1/backup") {
 		t.Fatal("admin full access")
 	}

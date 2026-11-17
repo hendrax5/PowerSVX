@@ -13,7 +13,9 @@ import (
 )
 
 // WASM ABI: export filter(ptr, len) -> i32
-//   0 = continue, 1 = nxdomain, 2 = nodata, 3 = refused
+//
+//	0 = continue, 1 = nxdomain, 2 = nodata, 3 = refused
+//
 // Name bytes written by host into guest memory at ptr.
 type wasmHook struct {
 	name string

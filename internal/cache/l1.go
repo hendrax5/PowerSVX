@@ -196,6 +196,28 @@ func (c *L1) Stats() (hits, misses, size uint64) {
 	return c.hits.Load(), c.misses.Load(), uint64(c.size.Load())
 }
 
+// Delete removes one key from L1.
+func (c *L1) Delete(key uint64) {
+	if c == nil {
+		return
+	}
+	if _, loaded := c.m.LoadAndDelete(key); loaded {
+		c.size.Add(-1)
+	}
+}
+
+// Clear removes all entries from L1.
+func (c *L1) Clear() {
+	if c == nil {
+		return
+	}
+	c.m.Range(func(k, _ any) bool {
+		c.m.Delete(k)
+		return true
+	})
+	c.size.Store(0)
+}
+
 func (c *L1) Close() error { return nil }
 
 // WireBufferPool recycles byte slices for DNS packet I/O.

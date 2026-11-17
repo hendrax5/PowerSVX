@@ -18,11 +18,11 @@ const (
 )
 
 type SessionStore struct {
-	mu      sync.RWMutex
-	path    string
-	ttl     time.Duration
-	secure  bool
-	byID    map[string]sessionRec
+	mu     sync.RWMutex
+	path   string
+	ttl    time.Duration
+	secure bool
+	byID   map[string]sessionRec
 }
 
 type sessionRec struct {

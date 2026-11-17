@@ -37,6 +37,14 @@ export class ErrorBoundary extends React.Component {
         msg.includes('Failed to fetch') ||
         msg.includes('preloadError')
 
+      const isId = (() => {
+        try {
+          return localStorage.getItem('powersvx_lang') === 'id'
+        } catch {
+          return false
+        }
+      })()
+
       return (
         <div className="min-h-screen flex items-center justify-center p-6 bg-[var(--bg,#12110f)] text-[var(--text,#f5f4ef)]">
           <div className="panel max-w-md w-full p-6 text-center space-y-4 border border-[var(--border,#2b2823)]">
@@ -45,12 +53,22 @@ export class ErrorBoundary extends React.Component {
             </div>
             <div className="space-y-1">
               <h2 className="text-base font-semibold">
-                {isChunkError ? 'Pembaruan Versi / Cache Terdeteksi' : 'Terjadi Kendala pada Tampilan UI'}
+                {isId
+                  ? isChunkError
+                    ? 'Pembaruan Versi / Cache Terdeteksi'
+                    : 'Terjadi Kendala pada Tampilan UI'
+                  : isChunkError
+                    ? 'New Version / Asset Cache Detected'
+                    : 'Interface Render Error'}
               </h2>
               <p className="text-xs text-[var(--muted,#8c857b)]">
-                {isChunkError
-                  ? 'Browser masih menyimpan file aset versi sebelumnya. Muat ulang untuk memperbarui.'
-                  : 'Komponen antarmuka mengalami kendala render data.'}
+                {isId
+                  ? isChunkError
+                    ? 'Browser masih menyimpan file aset versi sebelumnya. Muat ulang untuk memperbarui.'
+                    : 'Komponen antarmuka mengalami kendala render data.'
+                  : isChunkError
+                    ? 'Your browser cached an older asset bundle. Reload to update.'
+                    : 'A UI component encountered an unexpected render error.'}
               </p>
             </div>
             {this.state.error?.message && (
@@ -64,14 +82,14 @@ export class ErrorBoundary extends React.Component {
                 className="btn btn-primary text-xs"
                 onClick={this.handleReload}
               >
-                Muat Ulang Halaman
+                {isId ? 'Muat Ulang Halaman' : 'Reload Page'}
               </button>
               <button
                 type="button"
                 className="btn btn-secondary text-xs"
                 onClick={this.handleClearSessionAndReload}
               >
-                Reset Sesi & Cache
+                {isId ? 'Reset Sesi & Cache' : 'Reset Session & Cache'}
               </button>
             </div>
           </div>

@@ -61,15 +61,15 @@ func ParseQueryLine(line string) (clientIP, qname, qtype string, ok bool) {
 
 // Sampler tails Unbound's query logfile and inserts a sampled subset into Postgres.
 type Sampler struct {
-	path       string
-	qlog       *database.QueryLogger
-	cfg        *config.Config
-	log        *slog.Logger
-	stop       chan struct{}
-	seen       atomic.Uint64
-	kept       atomic.Uint64
-	maxPerSec  int
-	rng        *rand.Rand
+	path      string
+	qlog      *database.QueryLogger
+	cfg       *config.Config
+	log       *slog.Logger
+	stop      chan struct{}
+	seen      atomic.Uint64
+	kept      atomic.Uint64
+	maxPerSec int
+	rng       *rand.Rand
 }
 
 func NewSampler(path string, qlog *database.QueryLogger, cfg *config.Config, log *slog.Logger) *Sampler {

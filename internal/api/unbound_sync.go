@@ -132,7 +132,7 @@ func (a *API) startUnboundAXFRRefresh(sync bool) error {
 	if eng != nil && !eng.TryBeginLoad() {
 		return errRPZ("rpz sync already in progress")
 	}
-	policies := rpzPolicyConfigs(a.cfg.RPZ.Policies)
+	policies := a.rpzPolicyConfigs(a.cfg.RPZ.Policies)
 	run := func() {
 		n, err := a.pullAndWriteUnboundAXFR(policies)
 		if eng != nil {
@@ -175,7 +175,11 @@ func (a *API) pullAndWriteUnboundAXFR(policies []rpz.PolicyConfig) (int, error) 
 			target = p.Target
 		}
 		zone := config.NormalizeName(p.Zone)
-		res, err := rpz.PullZone(ctx, zone, p.Masters, 0)
+		auth := rpz.TSIGAuth{}
+		if p.TSIGKey != "" && p.TSIGSecret != "" {
+			auth = rpz.TSIGAuth{Name: p.TSIGKey, Secret: p.TSIGSecret}
+		}
+		res, err := rpz.PullZoneWithTSIG(ctx, zone, p.Masters, 0, auth)
 		if err != nil {
 			return 0, fmt.Errorf("policy %s: %w", p.Name, err)
 		}

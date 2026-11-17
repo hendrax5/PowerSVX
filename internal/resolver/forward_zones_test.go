@@ -45,4 +45,3 @@ func TestMatchForwardZoneWithUnboundBackendMode(t *testing.T) {
 		t.Fatal("public name must not match zone — ResolveWithECS then uses Unbound forwarders")
 	}
 }
-

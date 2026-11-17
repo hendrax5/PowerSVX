@@ -8,11 +8,11 @@ import (
 
 // Filter is a simple concurrent Bloom filter for RPZ pre-checks.
 type Filter struct {
-	mu     sync.RWMutex
-	bits   []uint64
-	k      uint
-	nbits  uint
-	added  uint64
+	mu    sync.RWMutex
+	bits  []uint64
+	k     uint
+	nbits uint
+	added uint64
 }
 
 func New(nExpected int, fpRate float64) *Filter {

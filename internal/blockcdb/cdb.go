@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,4 +219,62 @@ func EnsureEmpty(dataDir string) error {
 	}
 	_, _, err := SyncNames(dataDir, nil)
 	return err
+}
+
+// ReadCDBKeys streams all keys sequentially from a tinycdb data section (before the hash tables).
+func ReadCDBKeys(cdbPath string) ([]string, error) {
+	f, err := os.Open(cdbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if st.Size() < headerSize {
+		return nil, fmt.Errorf("invalid cdb size %d", st.Size())
+	}
+
+	hdr := make([]byte, headerSize)
+	if _, err := f.ReadAt(hdr, 0); err != nil {
+		return nil, err
+	}
+	eod := int64(binary.LittleEndian.Uint32(hdr[0:4]))
+	if eod < headerSize || eod > st.Size() {
+		return nil, fmt.Errorf("invalid cdb eod %d (size %d)", eod, st.Size())
+	}
+
+	if _, err := f.Seek(headerSize, 0); err != nil {
+		return nil, err
+	}
+	r := bufio.NewReaderSize(f, 1<<20)
+	var recHdr [8]byte
+	pos := int64(headerSize)
+	var keys []string
+	for pos+8 <= eod {
+		if _, err := io.ReadFull(r, recHdr[:]); err != nil {
+			return nil, err
+		}
+		klen := int64(binary.LittleEndian.Uint32(recHdr[0:4]))
+		vlen := int64(binary.LittleEndian.Uint32(recHdr[4:8]))
+		if klen < 0 || vlen < 0 || pos+8+klen+vlen > eod {
+			return nil, fmt.Errorf("corrupt cdb record at %d", pos)
+		}
+		kbuf := make([]byte, klen)
+		if _, err := io.ReadFull(r, kbuf); err != nil {
+			return nil, err
+		}
+		if vlen > 0 {
+			if _, err := io.CopyN(io.Discard, r, vlen); err != nil {
+				return nil, err
+			}
+		}
+		if len(kbuf) > 0 {
+			keys = append(keys, string(kbuf))
+		}
+		pos += 8 + klen + vlen
+	}
+	return keys, nil
 }

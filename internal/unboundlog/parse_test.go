@@ -4,9 +4,9 @@ import "testing"
 
 func TestParseQueryLine(t *testing.T) {
 	cases := []struct {
-		line       string
+		line          string
 		ip, name, typ string
-		ok         bool
+		ok            bool
 	}{
 		{"[1788544000] unbound[1:0] info: 103.172.70.91 google.com. A IN", "103.172.70.91", "google.com", "A", true},
 		{"info: 1.2.3.4 example.com. AAAA IN", "1.2.3.4", "example.com", "AAAA", true},

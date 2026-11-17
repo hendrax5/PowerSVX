@@ -44,6 +44,19 @@ type SeedManifest struct {
 	Source    string    `json:"source,omitempty"`
 }
 
+// ReadSeedManifest reads dataDir/blocklist/seed-manifest.json when present.
+func ReadSeedManifest(dataDir string) (SeedManifest, bool) {
+	var man SeedManifest
+	b, err := os.ReadFile(filepath.Join(Dir(dataDir), SeedManifestFile))
+	if err != nil {
+		return man, false
+	}
+	if err := json.Unmarshal(b, &man); err != nil {
+		return man, false
+	}
+	return man, man.Serial > 0
+}
+
 // SyncNamesGuarded writes domains.txt + CDB but refuses to replace a useful CDB with empty.
 func SyncNamesGuarded(dataDir string, names []string) (txtN, cdbN int, err error) {
 	prev := existingMetaEntries(dataDir)
@@ -296,4 +309,3 @@ func BootstrapFromURL(dataDir, url string, timeout time.Duration) (SeedManifest,
 	}
 	return InstallSeedTarGz(dataDir, resp.Body)
 }
-

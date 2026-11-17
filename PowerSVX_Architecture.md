@@ -1256,38 +1256,52 @@ Push Payload:
 ### 12.1 REST Endpoints
 
 ```
-GET    /api/v1/status              → Server status, uptime, version
+GET    /api/v1/health             → Liveness & dataplane health checks
+GET    /api/v1/status             → Server status, uptime, version, dataplane stats
 GET    /api/v1/metrics            → Prometheus-compatible metrics
-GET    /api/v1/dashboard           → Aggregated dashboard data
+GET    /api/v1/dashboard          → Aggregated dashboard data
 
-GET    /api/v1/zones              → List zones (paginated)
+GET    /api/v1/zones              → List authoritative zones
 POST   /api/v1/zones              → Create zone
-GET    /api/v1/zones/{id}         → Get zone details
-PUT    /api/v1/zones/{id}         → Update zone
+GET    /api/v1/zones/{id}         → Get zone details & records
+PUT    /api/v1/zones/{id}         → Update zone SOA/DNSSEC meta
 DELETE /api/v1/zones/{id}         → Delete zone
+POST   /api/v1/zones/import       → Import RFC 1035 BIND zone file
+GET    /api/v1/zones/{id}/export  → Export zone as RFC 1035 master text
+GET    /api/v1/zones/{id}/dnssec  → Get DNSSEC status, DS & keys
+POST   /api/v1/zones/{id}/dnssec  → Enable/configure DNSSEC (NSEC3, algo) or ZSK rollover
 
 GET    /api/v1/zones/{id}/records → List records
-POST   /api/v1/zones/{id}/records → Add record
-PUT    /api/v1/zones/{id}/records/{rid} → Update record
-DELETE /api/v1/zones/{id}/records/{rid} → Delete record
+POST   /api/v1/zones/{id}/records → Add record (validated via ValidateRecord)
+PUT    /api/v1/zones/{id}/records → Update record inline (view/geo_tag/TTL)
+DELETE /api/v1/zones/{id}/records → Delete record
 
-GET    /api/v1/rpz/policies      → List RPZ policies
-POST   /api/v1/rpz/policies      → Create policy
-PUT    /api/v1/rpz/policies/{id} → Update policy
-DELETE /api/v1/rpz/policies/{id} → Delete policy
-POST   /api/v1/rpz/policies/{id}/update → Force update
+GET    /api/v1/rpz                → RPZ & AXFR filter policies status
+PUT    /api/v1/rpz                → Update RPZ policies & sync
+POST   /api/v1/rpz                → Trigger RPZ/AXFR reload
 
-GET    /api/v1/query-logs         → Query logs (paginated, filterable)
-GET    /api/v1/query-logs/stats   → Aggregated stats
+GET    /api/v1/cache/stats        → 3-tier cache statistics (dnsdist, Unbound, Go L1)
+GET    /api/v1/cache/inspect      → Search live Unbound cache dump entries
+POST   /api/v1/cache/flush        → Flush all or selective cache tier / domain
 
-POST   /api/v1/tools/lookup       → DNS lookup tool
-POST   /api/v1/tools/validate     → DNSSEC validation
+GET    /api/v1/security/blocks    → Rate limit, auto-ban & dnsdist DynBlocks
+POST   /api/v1/security/ban       → Ban CIDR / IP (live in ACL + dnsdist)
+DELETE /api/v1/security/ban       → Unban CIDR / IP
+POST   /api/v1/security/dynblocks/clear → Clear dnsdist dynamic blocks
 
-GET    /api/v1/settings           → Get all settings
-PUT    /api/v1/settings           → Update settings
+GET    /api/v1/queries/live       → Query 20k in-memory ring buffer
+GET    /api/v1/queries/stream     → Real-time SSE live query stream
+GET    /api/v1/query-logs         → Historical PostgreSQL query logs (paginated)
 
-GET    /api/v1/cluster/nodes      → Cluster node status
-POST   /api/v1/cluster/join       → Join cluster
+POST   /api/v1/tools/lookup       → Multi-protocol DNS client (UDP/TCP/DoT/DoH)
+POST   /api/v1/tools/trace        → Iterative root-to-authoritative trace
+
+GET    /api/v1/auth/tokens        → List scoped API Bearer tokens
+POST   /api/v1/auth/tokens        → Mint API Bearer token (shown once)
+DELETE /api/v1/auth/tokens        → Revoke API Bearer token
+
+GET    /api/v1/settings           → Get runtime settings
+PUT    /api/v1/settings           → Update runtime settings & sync dataplanes
 ```
 
 ### 12.2 Authentication

@@ -30,8 +30,8 @@ type TargetStatus struct {
 
 // ZoneStatus aggregates target rows for one zone.
 type ZoneStatus struct {
-	Zone   string         `json:"zone"`
-	Serial uint32         `json:"serial"`
+	Zone    string         `json:"zone"`
+	Serial  uint32         `json:"serial"`
 	Targets []TargetStatus `json:"targets"`
 }
 

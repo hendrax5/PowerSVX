@@ -53,6 +53,17 @@ func TestSeedTarRoundTrip(t *testing.T) {
 	if !bytes.Contains(b, []byte("evil.example")) {
 		t.Fatalf("domains.txt missing names: %s", b)
 	}
+	readMan, ok := ReadSeedManifest(dst)
+	if !ok || readMan.Serial != 42 || readMan.Policy != "trustpositifkominfo" {
+		t.Fatalf("ReadSeedManifest ok=%v man=%+v", ok, readMan)
+	}
+	keys, err := ReadCDBKeys(filepath.Join(Dir(dst), CDBFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 || keys[0] != "evil.example" || keys[1] != "bad.test" {
+		t.Fatalf("ReadCDBKeys=%v", keys)
+	}
 }
 
 func TestSyncNamesGuarded(t *testing.T) {

@@ -3,9 +3,11 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/powersvx/powersvx/internal/allowlist"
+	"github.com/powersvx/powersvx/internal/blockcdb"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/rpz"
 )
@@ -44,6 +46,17 @@ func (a *API) handleDomainLookup(w http.ResponseWriter, r *http.Request) {
 	if bl := a.srv.Denylist(); bl != nil {
 		blacklisted = bl.Blocks(norm)
 	}
+	cdbDir := blockcdb.Dir(a.dataDir)
+	if !whitelisted {
+		if _, ok, err := blockcdb.LookupCDBSuffix(filepath.Join(cdbDir, blockcdb.WhitelistCDBFile), norm); err == nil && ok {
+			whitelisted = true
+		}
+	}
+	if !blacklisted {
+		if _, ok, err := blockcdb.LookupCDBSuffix(filepath.Join(cdbDir, blockcdb.CustomBlackCDBFile), norm); err == nil && ok {
+			blacklisted = true
+		}
+	}
 	out := map[string]any{
 		"name":         strings.TrimSuffix(norm, "."),
 		"whitelisted":  whitelisted,
@@ -67,6 +80,16 @@ func (a *API) handleDomainLookup(w http.ResponseWriter, r *http.Request) {
 			out["in_rpz"] = ok
 			out["action"] = string(hit.Action)
 			out["target"] = hit.Target
+		}
+	}
+	if out["in_rpz"] != true {
+		if matched, ok, err := blockcdb.LookupCDBSuffix(filepath.Join(cdbDir, blockcdb.CDBFile), norm); err == nil && ok {
+			act := allowlist.BankSafeRPZAction(norm, "redirect")
+			if act != string(rpz.ActionPass) {
+				out["in_rpz"] = true
+				out["action"] = act
+				out["matched_rule"] = matched
+			}
 		}
 	}
 	if whitelisted {
@@ -114,6 +137,7 @@ func (a *API) handleWhitelist(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		a.syncFilterCDBs()
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"domain":  strings.TrimSuffix(d, "."),
 			"domains": wl.List(),
@@ -141,6 +165,7 @@ func (a *API) handleWhitelist(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
+		a.syncFilterCDBs()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"removed": strings.TrimSuffix(config.NormalizeName(name), "."),
 			"domains": wl.List(),
@@ -176,6 +201,7 @@ func (a *API) handleBlacklist(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		a.syncFilterCDBs()
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"domain":  strings.TrimSuffix(d, "."),
 			"domains": bl.List(),
@@ -203,6 +229,7 @@ func (a *API) handleBlacklist(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
+		a.syncFilterCDBs()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"removed": strings.TrimSuffix(config.NormalizeName(name), "."),
 			"domains": bl.List(),

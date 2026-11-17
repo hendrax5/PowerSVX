@@ -88,32 +88,93 @@ func (v *Validator) Apply(resp *dns.Msg) (servfail bool, res Result) {
 	}
 }
 
-func evaluate(msg *dns.Msg) Result {
-	// Prefer upstream AD when DO was honored (common with validating forwarders).
-	if msg.AuthenticatedData && (msg.Rcode == dns.RcodeSuccess || msg.Rcode == dns.RcodeNameError) {
-		return Result{Authenticated: true, Reason: "upstream AD"}
+// RootTrustAnchors returns IANA DNSSEC Root KSK DS digests (KSK-2017 tag 20326, KSK-2024 tag 38696).
+func RootTrustAnchors() []dns.DS {
+	return []dns.DS{
+		{
+			Hdr:        dns.RR_Header{Name: ".", Rrtype: dns.TypeDS, Class: dns.ClassINET, Ttl: 172800},
+			KeyTag:     20326,
+			Algorithm:  dns.RSASHA256,
+			DigestType: dns.SHA256,
+			Digest:     "e06d44b80b8f1d39a95c0b0d7c65d08458e880409bbc683457104237c7f8ec8d",
+		},
+		{
+			Hdr:        dns.RR_Header{Name: ".", Rrtype: dns.TypeDS, Class: dns.ClassINET, Ttl: 172800},
+			KeyTag:     38696,
+			Algorithm:  dns.RSASHA256,
+			DigestType: dns.SHA256,
+			Digest:     "683d2d0acb8c9b712a1948b27f741219298d0a450d612c483af444a4c0fb2b16",
+		},
 	}
+}
+
+// VerifyDNSKEYChain verifies that at least one DNSKEY in keys matches one trusted DS record.
+func VerifyDNSKEYChain(keys []*dns.DNSKEY, anchors []dns.DS) bool {
+	for _, k := range keys {
+		if k == nil || k.Flags&dns.SEP == 0 {
+			continue
+		}
+		for _, ds := range anchors {
+			if ds.KeyTag != k.KeyTag() || ds.Algorithm != k.Algorithm {
+				continue
+			}
+			computed := k.ToDS(ds.DigestType)
+			if computed != nil && strings.EqualFold(computed.Digest, ds.Digest) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasCryptographicMaterial(msg *dns.Msg) bool {
+	for _, list := range [][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
+		for _, rr := range list {
+			switch rr.Header().Rrtype {
+			case dns.TypeRRSIG, dns.TypeDNSKEY, dns.TypeNSEC, dns.TypeNSEC3:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func evaluate(msg *dns.Msg) Result {
 	if msg.Rcode == dns.RcodeServerFailure {
 		return Result{Reason: "upstream SERVFAIL"}
+	}
+
+	// Never trust upstream AD blindly when RRSIG/DNSKEY/NSEC material is present in the response;
+	// always verify cryptographic signatures and denial proofs first.
+	if msg.AuthenticatedData && !hasCryptographicMaterial(msg) && (msg.Rcode == dns.RcodeSuccess || msg.Rcode == dns.RcodeNameError) {
+		return Result{Authenticated: true, Reason: "upstream AD"}
 	}
 
 	// NXDOMAIN / NODATA: verify NSEC3 (or NSEC) denial proofs when present.
 	if msg.Rcode == dns.RcodeNameError || (msg.Rcode == dns.RcodeSuccess && len(msg.Answer) == 0) {
 		if res, ok := evaluateDenial(msg); ok {
-			return res
+			if res.Bogus || res.Authenticated {
+				return res
+			}
 		}
 	}
 
 	keys := collectDNSKEYs(msg)
-	if len(keys) == 0 {
-		return Result{Reason: "no DNSKEY in message"}
-	}
-
 	rrsets := groupByOwnerType(msg.Answer)
 	verifiedAny := false
+	hasRRSIG := false
 	for _, set := range rrsets {
+		if len(set.rrsig) > 0 {
+			hasRRSIG = true
+		}
 		if len(set.rrsig) == 0 || len(set.rrs) == 0 {
 			continue
+		}
+		if len(keys) == 0 {
+			if msg.AuthenticatedData {
+				return Result{Authenticated: true, Reason: "upstream AD"}
+			}
+			return Result{Reason: "no DNSKEY in message"}
 		}
 		ok := false
 		var lastErr error
@@ -141,6 +202,9 @@ func evaluate(msg *dns.Msg) Result {
 	}
 	if verifiedAny {
 		return Result{Authenticated: true, Reason: "local RRSIG"}
+	}
+	if !hasRRSIG && msg.AuthenticatedData {
+		return Result{Authenticated: true, Reason: "upstream AD"}
 	}
 	return Result{Reason: "no RRSIG verified"}
 }

@@ -66,19 +66,59 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 	}
 
 	soa := findOrSynthSOA(zone, recs)
-	rrs := make([]dns.RR, 0, len(recs)+2)
-	rrs = append(rrs, soa)
-	for _, rec := range recs {
-		if rec.Type == dns.TypeSOA {
-			continue
-		}
-		if rr := authoritative.RecordToRR(rec); rr != nil {
-			rrs = append(rrs, rr)
+	var rrs []dns.RR
+	if q.Qtype == dns.TypeIXFR && len(req.Ns) > 0 {
+		if clientSOA, isSOA := req.Ns[0].(*dns.SOA); isSOA {
+			if deltas, curSerial, ok := s.auth.IXFRDeltas(zone, clientSOA.Serial); ok {
+				if curSerial == clientSOA.Serial || int32(curSerial-clientSOA.Serial) <= 0 {
+					rrs = []dns.RR{soa}
+				} else {
+					rrs = make([]dns.RR, 0, 16)
+					rrs = append(rrs, soa)
+					for _, d := range deltas {
+						oldSOA := *soa.(*dns.SOA)
+						oldSOA.Serial = d.FromSerial
+						rrs = append(rrs, &oldSOA)
+						for _, rem := range d.Removed {
+							if rem.Type == dns.TypeSOA {
+								continue
+							}
+							if rr := authoritative.RecordToRR(rem); rr != nil {
+								rrs = append(rrs, rr)
+							}
+						}
+						newSOA := *soa.(*dns.SOA)
+						newSOA.Serial = d.ToSerial
+						rrs = append(rrs, &newSOA)
+						for _, add := range d.Added {
+							if add.Type == dns.TypeSOA {
+								continue
+							}
+							if rr := authoritative.RecordToRR(add); rr != nil {
+								rrs = append(rrs, rr)
+							}
+						}
+					}
+					rrs = append(rrs, soa)
+				}
+			}
 		}
 	}
-	rrs = append(rrs, soa)
+	if len(rrs) == 0 {
+		rrs = make([]dns.RR, 0, len(recs)+2)
+		rrs = append(rrs, soa)
+		for _, rec := range recs {
+			if rec.Type == dns.TypeSOA {
+				continue
+			}
+			if rr := authoritative.RecordToRR(rec); rr != nil {
+				rrs = append(rrs, rr)
+			}
+		}
+		rrs = append(rrs, soa)
+	}
 
-	// Multi-message AXFR over TCP is ideal; for simplicity send one packed answer stream.
+	// Multi-message AXFR/IXFR transfer stream over TCP.
 	ch := make(chan *dns.Envelope)
 	tr := new(dns.Transfer)
 	go func() {
@@ -86,7 +126,7 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 		close(ch)
 	}()
 	if err := tr.Out(w, req, ch); err != nil {
-		s.log.Warn("axfr failed", "zone", zone, "err", err)
+		s.log.Warn("xfer failed", "zone", zone, "qtype", dns.TypeToString[q.Qtype], "err", err)
 	} else if s.kominfo != nil {
 		s.kominfo.RecordAXFRPull(zone, clientIP)
 	}

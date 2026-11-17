@@ -93,6 +93,7 @@ services:
     volumes:
       - ./configs/dnsdist/dnsdist.conf:/etc/dnsdist/dnsdist.conf:ro
       - ./data/blocklist:/etc/dnsdist/blocklist:ro
+      - ./certs:/etc/dnsdist/certs:ro
     # Image ENTRYPOINT is already dnsdist — do NOT prefix "dnsdist" again
     # (that is parsed as a listen address → Fatal: Unable to convert ... 'dnsdist').
     command: ["--supervised", "--disable-syslog", "-C", "/etc/dnsdist/dnsdist.conf"]
@@ -133,10 +134,10 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_SECURITY_ALLOW_EMBEDDING=true
-      - GF_AUTH_ANONYMOUS_ENABLED=${GF_AUTH_ANONYMOUS_ENABLED:-true}
+      - GF_AUTH_ANONYMOUS_ENABLED=${GF_AUTH_ANONYMOUS_ENABLED:-false}
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     ports: !override
-      - "0.0.0.0:3000:3000"
+      - "${GRAFANA_BIND_ADDR:-127.0.0.1}:3000:3000"
 
 volumes:
   powersvx-data:

@@ -232,3 +232,78 @@ func WaitControl(timeout time.Duration) error {
 	}
 	return last
 }
+
+// FlushDomain evicts a single domain from Unbound cache.
+func FlushDomain(name string) (string, error) {
+	clean := sanitizeUnboundDomain(name)
+	if clean == "" {
+		return "", fmt.Errorf("invalid domain name")
+	}
+	out, err := ControlCommand("flush " + clean + ".")
+	return strings.TrimSpace(string(out)), err
+}
+
+// FlushZone evicts an entire zone subtree from Unbound cache.
+func FlushZone(zone string) (string, error) {
+	if strings.TrimSpace(zone) == "." {
+		out, err := ControlCommand("flush_zone .")
+		return strings.TrimSpace(string(out)), err
+	}
+	clean := sanitizeUnboundDomain(zone)
+	if clean == "" {
+		return "", fmt.Errorf("invalid zone name")
+	}
+	out, err := ControlCommand("flush_zone " + clean + ".")
+	return strings.TrimSpace(string(out)), err
+}
+
+// FlushType evicts a specific RRset type for name from Unbound cache.
+func FlushType(name, qtype string) (string, error) {
+	clean := sanitizeUnboundDomain(name)
+	qt := strings.ToUpper(strings.TrimSpace(qtype))
+	if clean == "" || qt == "" {
+		return "", fmt.Errorf("invalid domain or qtype")
+	}
+	for _, r := range qt {
+		if !((r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return "", fmt.Errorf("invalid qtype")
+		}
+	}
+	out, err := ControlCommand("flush_type " + clean + ". " + qt)
+	return strings.TrimSpace(string(out)), err
+}
+
+// FlushNegative clears Unbound negative cache entries.
+func FlushNegative() (string, error) {
+	out, err := ControlCommand("flush_negative")
+	return strings.TrimSpace(string(out)), err
+}
+
+// DumpCache returns filtered RRset cache lines from Unbound dump_cache, capped to limit lines.
+func DumpCache(filter string, limit int) ([]string, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	filter = strings.ToLower(strings.TrimSpace(filter))
+	out, err := ControlCommand("dump_cache")
+	if err != nil {
+		return nil, err
+	}
+	var lines []string
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "START_") || strings.HasPrefix(line, "END_") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if filter != "" && !strings.Contains(strings.ToLower(line), filter) {
+			continue
+		}
+		lines = append(lines, line)
+		if len(lines) >= limit {
+			break
+		}
+	}
+	return lines, nil
+}

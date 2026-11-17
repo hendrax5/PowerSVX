@@ -10,7 +10,7 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-ARG VERSION=1.6.3
+ARG VERSION=1.7.0
 ARG GIT_COMMIT=unknown
 ARG BUILD_TIME=unknown
 RUN CGO_ENABLED=0 GOOS=linux go build \

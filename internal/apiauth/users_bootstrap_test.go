@@ -1,4 +1,4 @@
-﻿package apiauth
+package apiauth
 
 import "testing"
 

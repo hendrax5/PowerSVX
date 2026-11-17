@@ -41,11 +41,11 @@ func TestParseIXFRDeltaAndFull(t *testing.T) {
 	zone := "block.test."
 	soaNew := &dns.SOA{
 		Hdr: dns.RR_Header{Name: zone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60},
-		Ns: "ns." + zone, Mbox: "h." + zone, Serial: 2,
+		Ns:  "ns." + zone, Mbox: "h." + zone, Serial: 2,
 	}
 	soaOld := &dns.SOA{
 		Hdr: dns.RR_Header{Name: zone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60},
-		Ns: "ns." + zone, Mbox: "h." + zone, Serial: 1,
+		Ns:  "ns." + zone, Mbox: "h." + zone, Serial: 1,
 	}
 	del := &dns.A{
 		Hdr: dns.RR_Header{Name: "gone." + zone, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
@@ -215,5 +215,78 @@ func TestPullAXFRNamesAndLoadPolicies(t *testing.T) {
 	}
 	if n2 < 1 {
 		t.Fatalf("refresh entries=%d", n2)
+	}
+}
+
+func TestStreamAXFRNamesAndTSIG(t *testing.T) {
+	zone := "rpz-tsig.test."
+	secret := "c2VjcmV0LWtleS1mb3ItdGVzdGluZw=="
+	mux := dns.NewServeMux()
+	mux.HandleFunc(zone, func(w dns.ResponseWriter, req *dns.Msg) {
+		if req.IsTsig() == nil || w.TsigStatus() != nil {
+			m := new(dns.Msg)
+			m.SetRcode(req, dns.RcodeRefused)
+			_ = w.WriteMsg(m)
+			return
+		}
+		soa := &dns.SOA{
+			Hdr:    dns.RR_Header{Name: zone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60},
+			Ns:     "ns." + zone,
+			Mbox:   "h." + zone,
+			Serial: 42,
+		}
+		if req.Question[0].Qtype == dns.TypeSOA {
+			m := new(dns.Msg)
+			m.SetReply(req)
+			m.Answer = []dns.RR{soa}
+			m.SetTsig("feed-tsig.", dns.HmacSHA256, 300, time.Now().Unix())
+			_ = w.WriteMsg(m)
+			return
+		}
+		a1 := &dns.A{Hdr: dns.RR_Header{Name: "alpha." + zone, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("127.0.0.1").To4()}
+		a2 := &dns.A{Hdr: dns.RR_Header{Name: "*.beta." + zone, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("127.0.0.1").To4()}
+		ch := make(chan *dns.Envelope)
+		go func() {
+			ch <- &dns.Envelope{RR: []dns.RR{soa, a1, a2, soa}}
+			close(ch)
+		}()
+		tr := new(dns.Transfer)
+		_ = tr.Out(w, req, ch)
+	})
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcpLn, err := net.Listen("tcp", pc.LocalAddr().String())
+	if err != nil {
+		_ = pc.Close()
+		t.Fatal(err)
+	}
+	addr := tcpLn.Addr().String()
+	secrets := map[string]string{"feed-tsig.": secret}
+	udpSrv := &dns.Server{PacketConn: pc, Handler: mux, TsigSecret: secrets}
+	tcpSrv := &dns.Server{Listener: tcpLn, Handler: mux, TsigSecret: secrets}
+	go func() { _ = udpSrv.ActivateAndServe() }()
+	go func() { _ = tcpSrv.ActivateAndServe() }()
+	defer func() {
+		_ = udpSrv.Shutdown()
+		_ = tcpSrv.Shutdown()
+	}()
+	time.Sleep(40 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var streamed []string
+	serial, master, err := StreamAXFRNames(ctx, zone, []string{addr}, TSIGAuth{Name: "feed-tsig.", Secret: secret}, func(name string) error {
+		streamed = append(streamed, name)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamAXFRNames failed: %v", err)
+	}
+	if serial != 42 || master != addr || len(streamed) != 2 {
+		t.Fatalf("serial=%d master=%q streamed=%v", serial, master, streamed)
 	}
 }

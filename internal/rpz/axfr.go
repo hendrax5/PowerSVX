@@ -9,6 +9,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/powersvx/powersvx/internal/config"
+	"github.com/powersvx/powersvx/internal/tsig"
 )
 
 const (
@@ -17,9 +18,22 @@ const (
 	xferReadTimeout    = 60 * time.Second
 )
 
+// SerialGreater compares two 32-bit SOA serials using RFC 1982 serial number arithmetic.
+func SerialGreater(a, b uint32) bool {
+	return tsig.SerialGreater(a, b)
+}
+
+// TSIGAuth holds optional RFC 2845 TSIG credentials for outbound SOA/IXFR/AXFR queries.
+type TSIGAuth = tsig.Auth
+
+func applyTSIG(m *dns.Msg, auth TSIGAuth) map[string]string {
+	return tsig.Apply(m, auth)
+}
+
 // TransferResult is the outcome of an AXFR or IXFR pull.
 type TransferResult struct {
 	Serial      uint32
+	Master      string   // actual master address that answered the transfer
 	Names       []string // set when FullReplace (complete name set, zone-relative)
 	Added       []string
 	Removed     []string
@@ -71,6 +85,11 @@ func masterAddr(master string) string {
 // QuerySOASerial asks masters (in order) for the zone SOA serial.
 // Tries UDP then TCP per master; returns the first successful serial.
 func QuerySOASerial(ctx context.Context, zone string, masters []string) (uint32, string, error) {
+	return QuerySOASerialWithTSIG(ctx, zone, masters, TSIGAuth{})
+}
+
+// QuerySOASerialWithTSIG asks masters for the zone SOA serial with optional TSIG authentication.
+func QuerySOASerialWithTSIG(ctx context.Context, zone string, masters []string, auth TSIGAuth) (uint32, string, error) {
 	zone = config.NormalizeName(zone)
 	var errs []string
 	for _, master := range masters {
@@ -83,7 +102,8 @@ func QuerySOASerial(ctx context.Context, zone string, masters []string) (uint32,
 			}
 			m := new(dns.Msg)
 			m.SetQuestion(zone, dns.TypeSOA)
-			c := &dns.Client{Net: netw, Timeout: 5 * time.Second}
+			tsigSecret := applyTSIG(m, auth)
+			c := &dns.Client{Net: netw, Timeout: 5 * time.Second, TsigSecret: tsigSecret}
 			r, _, err := c.Exchange(m, addr)
 			if err != nil {
 				errs = append(errs, fmt.Sprintf("%s/%s: %v", addr, netw, err))
@@ -117,6 +137,10 @@ func QuerySOASerial(ctx context.Context, zone string, masters []string) (uint32,
 
 // streamAXFR pulls a zone from masters and inserts zone-relative owner names into the trie.
 func streamAXFR(zone string, masters []string, hit Hit, timeout time.Duration, t *trie) (names []string, serial uint32, err error) {
+	return streamAXFRWithTSIG(zone, masters, hit, timeout, t, TSIGAuth{})
+}
+
+func streamAXFRWithTSIG(zone string, masters []string, hit Hit, timeout time.Duration, t *trie, auth TSIGAuth) (names []string, serial uint32, err error) {
 	zone = config.NormalizeName(zone)
 	if zone == "" || zone == "." {
 		return nil, 0, fmt.Errorf("axfr zone required")
@@ -130,7 +154,7 @@ func streamAXFR(zone string, masters []string, hit Hit, timeout time.Duration, t
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	res, err := PullZone(ctx, zone, masters, 0)
+	res, err := PullZoneWithTSIG(ctx, zone, masters, 0, auth)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -147,11 +171,16 @@ func streamAXFR(zone string, masters []string, hit Hit, timeout time.Duration, t
 // PullZone transfers the zone. serial==0 forces AXFR; otherwise tries IXFR first and
 // falls back to AXFR on failure or when the master returns a full zone.
 func PullZone(ctx context.Context, zone string, masters []string, serial uint32) (TransferResult, error) {
+	return PullZoneWithTSIG(ctx, zone, masters, serial, TSIGAuth{})
+}
+
+// PullZoneWithTSIG transfers the zone with optional TSIG authentication.
+func PullZoneWithTSIG(ctx context.Context, zone string, masters []string, serial uint32, auth TSIGAuth) (TransferResult, error) {
 	zone = config.NormalizeName(zone)
 	var lastErr error
 	if serial > 0 {
 		for _, master := range masters {
-			res, err := ixfrPull(ctx, zone, master, serial)
+			res, err := ixfrPull(ctx, zone, master, serial, auth)
 			if err != nil {
 				lastErr = err
 				continue
@@ -160,7 +189,7 @@ func PullZone(ctx context.Context, zone string, masters []string, serial uint32)
 		}
 	}
 	for _, master := range masters {
-		res, err := axfrPull(ctx, zone, master)
+		res, err := axfrPull(ctx, zone, master, auth)
 		if err != nil {
 			lastErr = err
 			continue
@@ -182,11 +211,12 @@ func PullAXFRNames(ctx context.Context, zone string, masters []string) ([]string
 	return res.Names, res.Serial, nil
 }
 
-func axfrPull(ctx context.Context, zone, master string) (TransferResult, error) {
+func axfrPull(ctx context.Context, zone, master string, auth TSIGAuth) (TransferResult, error) {
 	addr := masterAddr(master)
 	m := new(dns.Msg)
 	m.SetAxfr(zone)
-	tr := &dns.Transfer{DialTimeout: xferDialTimeout, ReadTimeout: xferReadTimeout}
+	tsigSecret := applyTSIG(m, auth)
+	tr := &dns.Transfer{DialTimeout: xferDialTimeout, ReadTimeout: xferReadTimeout, TsigSecret: tsigSecret}
 	env, err := tr.In(m, addr)
 	if err != nil {
 		return TransferResult{}, err
@@ -219,11 +249,94 @@ func axfrPull(ctx context.Context, zone, master string) (TransferResult, error) 
 	for n := range seen {
 		names = append(names, n)
 	}
-	return TransferResult{Serial: serial, Names: names, FullReplace: true}, nil
+	return TransferResult{Serial: serial, Master: addr, Names: names, FullReplace: true}, nil
+}
+
+// StreamAXFRNames streams zone-relative owner names to emit without buffering all entries in a giant map.
+func StreamAXFRNames(ctx context.Context, zone string, masters []string, auth TSIGAuth, emit func(rel string) error) (serial uint32, masterUsed string, count int, err error) {
+	zone = config.NormalizeName(zone)
+	if zone == "" || zone == "." {
+		return 0, "", 0, fmt.Errorf("axfr zone required")
+	}
+	if len(masters) == 0 {
+		return 0, "", 0, fmt.Errorf("axfr masters required")
+	}
+	var lastErr error
+	for _, master := range masters {
+		addr := masterAddr(master)
+		m := new(dns.Msg)
+		m.SetAxfr(zone)
+		tsigSecret := applyTSIG(m, auth)
+		tr := &dns.Transfer{DialTimeout: xferDialTimeout, ReadTimeout: xferReadTimeout, TsigSecret: tsigSecret}
+		env, err := tr.In(m, addr)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var ser uint32
+		seenSOA := 0
+		n := 0
+		var streamErr error
+		for e := range env {
+			if e.Error != nil {
+				streamErr = e.Error
+				break
+			}
+			select {
+			case <-ctx.Done():
+				streamErr = ctx.Err()
+			default:
+			}
+			if streamErr != nil {
+				break
+			}
+			for _, rr := range e.RR {
+				if soa, ok := rr.(*dns.SOA); ok {
+					seenSOA++
+					ser = soa.Serial
+					continue
+				}
+				switch rr.(type) {
+				case *dns.A, *dns.AAAA, *dns.CNAME, *dns.NS, *dns.TXT:
+				default:
+					continue
+				}
+				rel, ok := relativeOwner(rr.Header().Name, zone)
+				if !ok {
+					continue
+				}
+				if err := emit(rel); err != nil {
+					streamErr = err
+					break
+				}
+				n++
+			}
+			if streamErr != nil {
+				break
+			}
+		}
+		if streamErr != nil {
+			lastErr = streamErr
+			continue
+		}
+		if seenSOA < 2 {
+			lastErr = fmt.Errorf("incomplete AXFR from %s", addr)
+			continue
+		}
+		return ser, addr, n, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("all masters failed")
+	}
+	return 0, "", 0, lastErr
 }
 
 // streamAXFRToSink transfers the zone and writes each relative owner into sink (no giant names slice retained by caller).
 func streamAXFRToSink(ctx context.Context, zone string, masters []string, hit Hit, sink domainSink) (serial uint32, count int, err error) {
+	return streamAXFRToSinkWithTSIG(ctx, zone, masters, hit, sink, TSIGAuth{})
+}
+
+func streamAXFRToSinkWithTSIG(ctx context.Context, zone string, masters []string, hit Hit, sink domainSink, auth TSIGAuth) (serial uint32, count int, err error) {
 	zone = config.NormalizeName(zone)
 	if zone == "" || zone == "." {
 		return 0, 0, fmt.Errorf("axfr zone required")
@@ -237,7 +350,7 @@ func streamAXFRToSink(ctx context.Context, zone string, masters []string, hit Hi
 	hit.Target = strings.TrimSpace(hit.Target)
 	var lastErr error
 	for _, master := range masters {
-		ser, n, err := axfrStreamToSink(ctx, zone, master, hit, sink)
+		ser, n, err := axfrStreamToSink(ctx, zone, master, hit, sink, auth)
 		if err != nil {
 			lastErr = err
 			continue
@@ -250,11 +363,12 @@ func streamAXFRToSink(ctx context.Context, zone string, masters []string, hit Hi
 	return 0, 0, lastErr
 }
 
-func axfrStreamToSink(ctx context.Context, zone, master string, hit Hit, sink domainSink) (uint32, int, error) {
+func axfrStreamToSink(ctx context.Context, zone, master string, hit Hit, sink domainSink, auth TSIGAuth) (uint32, int, error) {
 	addr := masterAddr(master)
 	m := new(dns.Msg)
 	m.SetAxfr(zone)
-	tr := &dns.Transfer{DialTimeout: xferDialTimeout, ReadTimeout: xferReadTimeout}
+	tsigSecret := applyTSIG(m, auth)
+	tr := &dns.Transfer{DialTimeout: xferDialTimeout, ReadTimeout: xferReadTimeout, TsigSecret: tsigSecret}
 	env, err := tr.In(m, addr)
 	if err != nil {
 		return 0, 0, err
@@ -298,11 +412,12 @@ func axfrStreamToSink(ctx context.Context, zone, master string, hit Hit, sink do
 	return serial, n, nil
 }
 
-func ixfrPull(ctx context.Context, zone, master string, serial uint32) (TransferResult, error) {
+func ixfrPull(ctx context.Context, zone, master string, serial uint32, auth TSIGAuth) (TransferResult, error) {
 	addr := masterAddr(master)
 	m := new(dns.Msg)
-	m.SetIxfr(zone, serial, "ns.", "hostmaster.")
-	tr := &dns.Transfer{DialTimeout: xferDialTimeout, ReadTimeout: xferReadTimeout}
+	m.SetIxfr(zone, serial, "ns."+zone, "hostmaster."+zone)
+	tsigSecret := applyTSIG(m, auth)
+	tr := &dns.Transfer{DialTimeout: xferDialTimeout, ReadTimeout: xferReadTimeout, TsigSecret: tsigSecret}
 	env, err := tr.In(m, addr)
 	if err != nil {
 		return TransferResult{}, err
@@ -320,7 +435,12 @@ func ixfrPull(ctx context.Context, zone, master string, serial uint32) (Transfer
 		}
 		rrs = append(rrs, e.RR...)
 	}
-	return parseIXFR(zone, serial, rrs)
+	res, err := parseIXFR(zone, serial, rrs)
+	if err != nil {
+		return TransferResult{}, err
+	}
+	res.Master = addr
+	return res, nil
 }
 
 // parseIXFR interprets an IXFR (or AXFR-style) RR stream per RFC 1995.
@@ -333,7 +453,7 @@ func parseIXFR(zone string, clientSerial uint32, rrs []dns.RR) (TransferResult, 
 		return TransferResult{}, fmt.Errorf("IXFR missing leading SOA")
 	}
 	newSerial := first.Serial
-	if newSerial == clientSerial {
+	if newSerial == clientSerial || !SerialGreater(newSerial, clientSerial) {
 		return TransferResult{Serial: newSerial, FullReplace: false}, nil
 	}
 

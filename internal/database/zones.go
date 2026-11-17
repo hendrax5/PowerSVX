@@ -96,9 +96,9 @@ func (d *DB) GetZoneMeta(ctx context.Context, name string) (map[string]any, erro
 	}
 	name = config.NormalizeName(name)
 	var (
-		typ string
-		dnssec bool
-		serial int64
+		typ                             string
+		dnssec                          bool
+		serial                          int64
 		refresh, retry, expire, minimum int
 	)
 	err := d.sql.QueryRowContext(ctx, `

@@ -38,3 +38,26 @@ func TestLoadDirEmpty(t *testing.T) {
 		t.Fatalf("%v len=%d", err, reg.Len())
 	}
 }
+
+func TestLuaSandboxBlocksOSAndTimeout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sandbox.lua")
+	src := `
+function on_query(name, qtype, client_ip)
+  if os ~= nil or io ~= nil or dofile ~= nil then
+    return "refused"
+  end
+  return "continue"
+end
+`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h, err := LoadLua(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := h.OnQuery(QueryCtx{Name: "example.com."}); d != DecisionContinue {
+		t.Fatalf("sandbox leaked os/io/dofile, got %v", d)
+	}
+}

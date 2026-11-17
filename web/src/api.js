@@ -77,8 +77,17 @@ export const api = {
   backup: () => request('/api/v1/backup'),
   restoreBackup: (body) => request('/api/v1/backup', { method: 'POST', body: JSON.stringify(body) }),
   zoneDNSSEC: (name) => request(`/api/v1/zones/${encodeURIComponent(name)}/dnssec`),
-  enableZoneDNSSEC: (name) =>
-    request(`/api/v1/zones/${encodeURIComponent(name)}/dnssec`, { method: 'POST', body: '{}' }),
+  enableZoneDNSSEC: (name, opts = {}) =>
+    request(`/api/v1/zones/${encodeURIComponent(name)}/dnssec`, {
+      method: 'POST',
+      body: JSON.stringify(opts),
+    }),
+  importZone: (zone, content) =>
+    request('/api/v1/zones/import', {
+      method: 'POST',
+      body: JSON.stringify({ zone, content }),
+    }),
+  exportZone: (name) => request(`/api/v1/zones/${encodeURIComponent(name)}/export`),
   anomaly: () => request('/api/v1/anomaly'),
   updateZoneMeta: (name, body) =>
     request(`/api/v1/zones/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(body) }),
@@ -93,6 +102,26 @@ export const api = {
     q.set('limit', String(limit))
     q.set('offset', String(offset))
     return request(`/api/v1/query-logs?${q}`)
+  },
+  liveQueries: ({ q = '', client = '', rcode = '', blocked = false, limit = 150 } = {}) => {
+    const p = new URLSearchParams()
+    if (q) p.set('q', q)
+    if (client) p.set('client', client)
+    if (rcode) p.set('rcode', rcode)
+    if (blocked) p.set('blocked', '1')
+    p.set('limit', String(limit))
+    return request(`/api/v1/queries/live?${p}`)
+  },
+  liveQueriesStreamURL({ q = '', client = '', rcode = '', blocked = false } = {}) {
+    const p = new URLSearchParams()
+    if (q) p.set('q', q)
+    if (client) p.set('client', client)
+    if (rcode) p.set('rcode', rcode)
+    if (blocked) p.set('blocked', '1')
+    const token = getToken()
+    if (token) p.set('token', token)
+    const qs = p.toString()
+    return `/api/v1/queries/stream${qs ? `?${qs}` : ''}`
   },
   audit: () => request('/api/v1/audit'),
   acme: () => request('/api/v1/acme'),
@@ -136,8 +165,33 @@ export const api = {
     }),
   removeBlacklist: (name) =>
     request(`/api/v1/domains/blacklist?name=${encodeURIComponent(name)}`, { method: 'DELETE' }),
-  lookup: (name, type) =>
-    request('/api/v1/tools/lookup', { method: 'POST', body: JSON.stringify({ name, type }) }),
+  lookup: (nameOrOpts, type) => {
+    const payload = typeof nameOrOpts === 'object' ? nameOrOpts : { name: nameOrOpts, type }
+    return request('/api/v1/tools/lookup', { method: 'POST', body: JSON.stringify(payload) })
+  },
+  trace: (name, type = 'A') =>
+    request('/api/v1/tools/trace', { method: 'POST', body: JSON.stringify({ name, type }) }),
+  cacheStats: () => request('/api/v1/cache/stats'),
+  cacheInspect: (q = '', limit = 100) => {
+    const p = new URLSearchParams()
+    if (q) p.set('q', q)
+    p.set('limit', String(limit))
+    return request(`/api/v1/cache/inspect?${p}`)
+  },
+  cacheFlush: (body) =>
+    request('/api/v1/cache/flush', { method: 'POST', body: JSON.stringify(body || { scope: 'all' }) }),
+  securityBlocks: () => request('/api/v1/security/blocks'),
+  securityBan: (body) =>
+    request('/api/v1/security/ban', { method: 'POST', body: JSON.stringify(body || {}) }),
+  securityUnban: (prefix) =>
+    request(`/api/v1/security/ban?prefix=${encodeURIComponent(prefix)}`, { method: 'DELETE' }),
+  securityClearDynBlocks: () =>
+    request('/api/v1/security/dynblocks/clear', { method: 'POST', body: '{}' }),
+  listTokens: () => request('/api/v1/auth/tokens'),
+  createToken: (body) =>
+    request('/api/v1/auth/tokens', { method: 'POST', body: JSON.stringify(body || {}) }),
+  revokeToken: (id) =>
+    request(`/api/v1/auth/tokens?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
   secondary: () => request('/api/v1/secondary'),
   upsertSecondary: (body) =>
     request('/api/v1/secondary', { method: 'POST', body: JSON.stringify(body) }),

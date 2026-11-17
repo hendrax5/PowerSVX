@@ -4,6 +4,7 @@ import { api } from './api'
 import { AuthCtx, useAuth } from './auth'
 import Shell from './components/Shell'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { I18nProvider, useI18n } from './i18n'
 import { ThemeProvider } from './theme'
 import { LoadingBlock } from './ui'
 
@@ -11,12 +12,15 @@ const LoginPage = lazy(() => import('./features/auth/LoginPage'))
 const Dashboard = lazy(() => import('./features/dashboard/Dashboard'))
 const DomainsPage = lazy(() => import('./features/domains/DomainsPage'))
 const Lookup = lazy(() => import('./features/lookup/Lookup'))
+const CachePage = lazy(() => import('./features/cache/CachePage'))
+const SecurityPage = lazy(() => import('./features/security/SecurityPage'))
 const Analytics = lazy(() => import('./features/analytics/Analytics'))
 const AuditLog = lazy(() => import('./features/audit/AuditLog'))
 const SettingsPage = lazy(() => import('./features/settings/SettingsPage'))
 const TerminalPage = lazy(() => import('./features/terminal/TerminalPage'))
 
 function UpdateWatcher() {
+  const { t } = useI18n()
   const [pending, setPending] = useState(false)
   const buildRef = useRef('')
 
@@ -39,10 +43,10 @@ function UpdateWatcher() {
       }
     }
     check()
-    const t = setInterval(check, 45000)
+    const tmr = setInterval(check, 45000)
     return () => {
       alive = false
-      clearInterval(t)
+      clearInterval(tmr)
     }
   }, [])
 
@@ -52,14 +56,14 @@ function UpdateWatcher() {
       className="fixed bottom-4 right-4 z-50 max-w-sm border border-[var(--accent)]/50 bg-[var(--bg-elevated)] shadow-lg px-4 py-3 text-sm"
       role="status"
     >
-      <p className="font-medium">Update tersedia</p>
-      <p className="text-[var(--muted)] text-xs mt-1">Server sudah di-deploy ulang. Muat ulang untuk UI terbaru.</p>
+      <p className="font-medium">{t('update.title')}</p>
+      <p className="text-[var(--muted)] text-xs mt-1">{t('update.sub')}</p>
       <div className="flex gap-2 mt-3">
         <button type="button" className="btn btn-primary text-xs" onClick={() => window.location.reload()}>
-          Reload sekarang
+          {t('update.reload')}
         </button>
         <button type="button" className="btn btn-ghost text-xs" onClick={() => setPending(false)}>
-          Nanti
+          {t('update.later')}
         </button>
       </div>
     </div>
@@ -104,40 +108,44 @@ export default function App() {
   }
 
   return (
-    <ThemeProvider>
-      <AuthCtx.Provider value={value}>
-        <UpdateWatcher />
-        <ErrorBoundary>
-          <Suspense fallback={<div className="p-8"><LoadingBlock label="Loading page" /></div>}>
-            <Routes>
-              <Route path="/login" element={<LoginPage />} />
-              <Route
-                path="/*"
-                element={
-                  <RequireAuth>
-                    <Shell>
-                      <Suspense fallback={<LoadingBlock label="Loading feature" />}>
-                        <Routes>
-                          <Route path="/" element={<Dashboard />} />
-                          <Route path="/zones" element={<Navigate to="/" replace />} />
-                          <Route path="/domains" element={<DomainsPage />} />
-                          <Route path="/zones/:name" element={<Navigate to="/" replace />} />
-                          <Route path="/lookup" element={<Lookup />} />
-                          <Route path="/logs" element={<Navigate to="/analytics" replace />} />
-                          <Route path="/audit" element={<AuditLog />} />
-                          <Route path="/settings" element={<SettingsPage />} />
-                          <Route path="/terminal" element={<TerminalPage />} />
-                          <Route path="/analytics" element={<Analytics />} />
-                        </Routes>
-                      </Suspense>
-                    </Shell>
-                  </RequireAuth>
-                }
-              />
-            </Routes>
-          </Suspense>
-        </ErrorBoundary>
-      </AuthCtx.Provider>
-    </ThemeProvider>
+    <I18nProvider>
+      <ThemeProvider>
+        <AuthCtx.Provider value={value}>
+          <UpdateWatcher />
+          <ErrorBoundary>
+            <Suspense fallback={<div className="p-8"><LoadingBlock label="Loading page" /></div>}>
+              <Routes>
+                <Route path="/login" element={<LoginPage />} />
+                <Route
+                  path="/*"
+                  element={
+                    <RequireAuth>
+                      <Shell>
+                        <Suspense fallback={<LoadingBlock label="Loading feature" />}>
+                          <Routes>
+                            <Route path="/" element={<Dashboard />} />
+                            <Route path="/zones" element={<Navigate to="/" replace />} />
+                            <Route path="/domains" element={<DomainsPage />} />
+                            <Route path="/zones/:name" element={<Navigate to="/" replace />} />
+                            <Route path="/lookup" element={<Lookup />} />
+                            <Route path="/cache" element={<CachePage />} />
+                            <Route path="/security" element={<SecurityPage />} />
+                            <Route path="/logs" element={<Navigate to="/analytics" replace />} />
+                            <Route path="/audit" element={<AuditLog />} />
+                            <Route path="/settings" element={<SettingsPage />} />
+                            <Route path="/terminal" element={<TerminalPage />} />
+                            <Route path="/analytics" element={<Analytics />} />
+                          </Routes>
+                        </Suspense>
+                      </Shell>
+                    </RequireAuth>
+                  }
+                />
+              </Routes>
+            </Suspense>
+          </ErrorBoundary>
+        </AuthCtx.Provider>
+      </ThemeProvider>
+    </I18nProvider>
   )
 }

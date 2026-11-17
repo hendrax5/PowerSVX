@@ -52,3 +52,39 @@ func TestSignerRoundTrip(t *testing.T) {
 		t.Fatalf("dnskey answer: %v", resp2.Answer)
 	}
 }
+
+func TestSignerED25519NSEC3AndRollover(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSigner(dir)
+	zone := "isp.co.id."
+	if err := s.EnsureWithOptions(zone, SignOptions{Algorithm: dns.ED25519, NSEC3: true}); err != nil {
+		t.Fatal(err)
+	}
+	dsBefore, err := s.DS(zone)
+	if err != nil || dsBefore.Algorithm != dns.ED25519 {
+		t.Fatalf("unexpected DS: %+v err=%v", dsBefore, err)
+	}
+	if err := s.RolloverZSK(zone); err != nil {
+		t.Fatal(err)
+	}
+	dsAfter, err := s.DS(zone)
+	if err != nil || dsAfter.Digest != dsBefore.Digest {
+		t.Fatalf("KSK DS changed during ZSK rollover: before=%s after=%s", dsBefore.Digest, dsAfter.Digest)
+	}
+
+	req := new(dns.Msg)
+	req.SetQuestion("missing.isp.co.id.", dns.TypeA)
+	req.SetEdns0(1232, true)
+	resp := new(dns.Msg)
+	resp.SetRcode(req, dns.RcodeNameError)
+	s.SignDenialForNames(zone, "missing.isp.co.id.", []string{zone, "www.isp.co.id."}, req, resp)
+	hasNSEC3 := false
+	for _, rr := range resp.Ns {
+		if rr.Header().Rrtype == dns.TypeNSEC3 {
+			hasNSEC3 = true
+		}
+	}
+	if !hasNSEC3 {
+		t.Fatalf("expected NSEC3 record in denial section: %v", resp.Ns)
+	}
+}

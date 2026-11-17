@@ -71,6 +71,8 @@ func (a *API) handleAuth(w http.ResponseWriter, r *http.Request) {
 		a.withAuth(a.handleMe)(w, r)
 	case "users":
 		a.withAuth(a.handleAuthUsers)(w, r)
+	case "tokens":
+		a.withAuth(a.handleAuthTokens)(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -199,6 +201,77 @@ func (a *API) handleAuthUsers(w http.ResponseWriter, r *http.Request) {
 		}
 		if a.audit != nil {
 			a.audit.Record(audit.Event{Actor: p.Name, Role: p.Role, Action: "user_delete", Path: r.URL.Path, Status: http.StatusNoContent, Meta: map[string]string{"user": name}})
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *API) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
+	if a.tokens == nil {
+		http.Error(w, "token store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	p, _ := apiauth.PrincipalFrom(r.Context())
+	if strings.EqualFold(a.cfg.API.AuthType, "local") || strings.EqualFold(a.cfg.API.AuthType, "token") {
+		if p.Role != apiauth.RoleAdmin {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
+	switch r.Method {
+	case http.MethodGet:
+		list := a.tokens.List()
+		if list == nil {
+			list = []apiauth.StoredToken{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"tokens": list})
+	case http.MethodPost:
+		var body struct {
+			Name    string `json:"name"`
+			Role    string `json:"role"`
+			TTLDays int    `json:"ttl_days"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		meta, plain, err := a.tokens.Create(body.Name, body.Role, body.TTLDays)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if a.audit != nil {
+			a.audit.Record(audit.Event{
+				Actor: p.Name, Role: p.Role, Action: "token_create", Path: r.URL.Path, Status: http.StatusCreated,
+				Meta: map[string]string{"id": meta.ID, "name": meta.Name, "role": meta.Role},
+			})
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"id":         meta.ID,
+			"name":       meta.Name,
+			"role":       meta.Role,
+			"prefix":     meta.Prefix,
+			"created_at": meta.CreatedAt,
+			"expires_at": meta.ExpiresAt,
+			"token":      plain,
+		})
+	case http.MethodDelete:
+		id := strings.TrimSpace(r.URL.Query().Get("id"))
+		if id == "" {
+			http.Error(w, "id required", http.StatusBadRequest)
+			return
+		}
+		if err := a.tokens.Revoke(id); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if a.audit != nil {
+			a.audit.Record(audit.Event{
+				Actor: p.Name, Role: p.Role, Action: "token_revoke", Path: r.URL.Path, Status: http.StatusNoContent,
+				Meta: map[string]string{"id": id},
+			})
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:

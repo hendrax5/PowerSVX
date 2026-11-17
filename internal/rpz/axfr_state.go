@@ -13,7 +13,7 @@ type FeedState struct {
 	Zone       string    `json:"zone"`
 	Serial     uint32    `json:"serial"`
 	UpdatedAt  time.Time `json:"updated_at"`
-	LastMode   string    `json:"last_mode,omitempty"`   // full_axfr | ixfr | skipped | failed
+	LastMode   string    `json:"last_mode,omitempty"` // full_axfr | ixfr | skipped | failed
 	LastError  string    `json:"last_error,omitempty"`
 	LastMaster string    `json:"last_master,omitempty"`
 	OK         bool      `json:"ok"`
