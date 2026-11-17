@@ -279,14 +279,14 @@ func TestStreamAXFRNamesAndTSIG(t *testing.T) {
 	defer cancel()
 
 	var streamed []string
-	serial, master, err := StreamAXFRNames(ctx, zone, []string{addr}, TSIGAuth{Name: "feed-tsig.", Secret: secret}, func(name string) error {
+	serial, master, cnt, err := StreamAXFRNames(ctx, zone, []string{addr}, TSIGAuth{Name: "feed-tsig.", Secret: secret}, func(name string) error {
 		streamed = append(streamed, name)
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("StreamAXFRNames failed: %v", err)
 	}
-	if serial != 42 || master != addr || len(streamed) != 2 {
-		t.Fatalf("serial=%d master=%q streamed=%v", serial, master, streamed)
+	if serial != 42 || master != addr || cnt != 2 || len(streamed) != 2 {
+		t.Fatalf("serial=%d master=%q cnt=%d streamed=%v", serial, master, cnt, streamed)
 	}
 }

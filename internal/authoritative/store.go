@@ -115,9 +115,11 @@ func (s *Store) AddRecord(zone string, rec Record) {
 	rec.Name = config.NormalizeName(rec.Name)
 	oldSer := s.currentSOASerialLocked(zone)
 	s.zones[zone] = append(s.zones[zone], rec)
-	newSer, _ := s.bumpSOASerialLocked(zone)
-	if oldSer > 0 && newSer > oldSer {
-		s.appendIXFRLocked(zone, IXFRDelta{FromSerial: oldSer, ToSerial: newSer, Added: []Record{rec}})
+	if rec.Type != dns.TypeSOA {
+		newSer, _ := s.bumpSOASerialLocked(zone)
+		if oldSer > 0 && newSer > oldSer {
+			s.appendIXFRLocked(zone, IXFRDelta{FromSerial: oldSer, ToSerial: newSer, Added: []Record{rec}})
+		}
 	}
 }
 

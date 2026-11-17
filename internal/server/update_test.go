@@ -26,8 +26,11 @@ func TestApplyUpdateAddAndDelete(t *testing.T) {
 	if !auth.RRSetExists("example.com.", "www.example.com.", dns.TypeA) {
 		t.Fatal("A missing after add")
 	}
+	if got := auth.CurrentSOASerial("example.com."); got != 2 {
+		t.Fatalf("serial after update=%d want 2", got)
+	}
 	serial, ok := auth.BumpSOASerial("example.com.")
-	if !ok || serial != 2 {
+	if !ok || serial != 3 {
 		t.Fatalf("serial=%d ok=%v", serial, ok)
 	}
 

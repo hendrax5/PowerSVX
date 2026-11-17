@@ -1,84 +1,101 @@
 package api
 
 import (
+	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/miekg/dns"
+	"github.com/powersvx/powersvx/internal/blockcdb"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/rpz"
 	"github.com/powersvx/powersvx/internal/server"
 )
 
-func TestMultiPolicyCachePreservesUnchangedAXFRAndHostsFeeds(t *testing.T) {
+func TestMultiPolicyCDBPreservesUnchangedAXFRAndHostsFeeds(t *testing.T) {
 	dir := t.TempDir()
-	hostsFile := filepath.Join(dir, "local-hosts.txt")
-	if err := os.WriteFile(hostsFile, []byte("0.0.0.0 custom-ad.example\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	zone := "axfr-feed.test."
 
-	axfrPol := rpz.PolicyConfig{
-		Name:   "trustpositifkominfo",
-		Format: "axfr",
-		Zone:   "trustpositifkominfo.",
-	}
-	hostsPol := rpz.PolicyConfig{
-		Name:   "custom-hosts",
-		Format: "hosts",
-		Source: hostsFile,
-	}
-
-	// Pre-populate per-policy cache file for AXFR policy (simulates SOA unchanged skip on refresh).
-	axfrCache := rpzFeedCachePath(dir, axfrPol)
-	if err := os.MkdirAll(filepath.Dir(axfrCache), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(axfrCache, []byte("blocked-gambling.example\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Simulate partial update affecting only custom-hosts.
-	hostsCache := rpzFeedCachePath(dir, hostsPol)
-	if err := streamHostsFileToFeedFile(hostsFile, hostsCache); err != nil {
-		t.Fatal(err)
-	}
-
-	outPath := filepath.Join(dir, "merged.txt")
-	n, err := mergeFeedFiles([]string{axfrCache, hostsCache}, outPath)
+	// Start a mock SOA/AXFR server for the AXFR feed with fixed serial 100.
+	mux := dns.NewServeMux()
+	mux.HandleFunc(zone, func(w dns.ResponseWriter, req *dns.Msg) {
+		soa := &dns.SOA{
+			Hdr:    dns.RR_Header{Name: zone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60},
+			Ns:     "ns." + zone,
+			Mbox:   "h." + zone,
+			Serial: 100,
+		}
+		if len(req.Question) > 0 && req.Question[0].Qtype == dns.TypeSOA {
+			m := new(dns.Msg)
+			m.SetReply(req)
+			m.Answer = []dns.RR{soa}
+			_ = w.WriteMsg(m)
+			return
+		}
+		m := new(dns.Msg)
+		m.SetRcode(req, dns.RcodeRefused)
+		_ = w.WriteMsg(m)
+	})
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
+	}
+	addr := pc.LocalAddr().String()
+	udpSrv := &dns.Server{PacketConn: pc, Handler: mux}
+	go func() { _ = udpSrv.ActivateAndServe() }()
+	defer func() { _ = udpSrv.Shutdown() }()
+	time.Sleep(30 * time.Millisecond)
+
+	hostsFile := filepath.Join(dir, "local-hosts.txt")
+	if err := os.WriteFile(hostsFile, []byte("0.0.0.0 custom-ad.example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-seed per-policy AXFR cache and state at serial 100 so SOA check skips cleanly.
+	axfrCache := feedCachePath(dir, "trustpositifkominfo")
+	if err := writeFeedFileAtomic(axfrCache, []string{"blocked-gambling.example"}); err != nil {
+		t.Fatal(err)
+	}
+	st := rpz.LoadAxfrState(rpz.AxfrStatePath(dir))
+	_ = st.PutSuccess("trustpositifkominfo", zone, "full_axfr", addr, 100, "seeded")
+	// Ensure existing CDB exists (>0 entries in metadata).
+	if _, _, err := blockcdb.SyncNames(dir, []string{"blocked-gambling.example"}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &API{dataDir: dir, log: slog.Default(), srv: &server.Server{}}
+	policies := []rpz.PolicyConfig{
+		{
+			Name:    "trustpositifkominfo",
+			Format:  "axfr",
+			Zone:    zone,
+			Masters: []string{addr},
+		},
+		{
+			Name:   "custom-hosts",
+			Format: "hosts",
+			Source: hostsFile,
+		},
+	}
+
+	n, err := a.pullAndWriteBlockCDB(policies)
+	if err != nil {
+		t.Fatalf("pullAndWriteBlockCDB failed: %v", err)
 	}
 	if n != 2 {
-		t.Fatalf("merged entries=%d want 2", n)
+		t.Fatalf("merged CDB entries=%d want 2", n)
 	}
-	raw, err := os.ReadFile(outPath)
+	mergedRaw, err := os.ReadFile(filepath.Join(blockcdb.Dir(dir), blockcdb.DomainsFile))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := string(raw)
-	if !strings.Contains(s, "blocked-gambling.example") || !strings.Contains(s, "custom-ad.example") {
-		t.Fatalf("merged output missing expected domain: %s", s)
-	}
-
-	// Apply an incremental IXFR update on the AXFR policy without touching hostsCache.
-	if err := applyIXFRToFeedFile(axfrCache, []string{"added-malware.example"}, []string{"blocked-gambling.example"}); err != nil {
-		t.Fatal(err)
-	}
-	n2, err := mergeFeedFiles([]string{axfrCache, hostsCache}, outPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n2 != 2 {
-		t.Fatalf("merged after IXFR entries=%d want 2", n2)
-	}
-	raw2, err := os.ReadFile(outPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s2 := string(raw2)
-	if strings.Contains(s2, "blocked-gambling.example") || !strings.Contains(s2, "added-malware.example") || !strings.Contains(s2, "custom-ad.example") {
-		t.Fatalf("unexpected merged state after IXFR: %s", s2)
+	merged := string(mergedRaw)
+	if !strings.Contains(merged, "blocked-gambling.example") || !strings.Contains(merged, "custom-ad.example") {
+		t.Fatalf("merged CDB missing preserved AXFR or hosts domain: %s", merged)
 	}
 }
 
@@ -97,10 +114,10 @@ func TestHandleRPZNotifyMasterAuthorization(t *testing.T) {
 		},
 	}
 	a := &API{cfg: cfg, srv: &server.Server{}}
-	if !notifyMasterMatch([]string{"192.0.2.50:53"}, "192.0.2.50") {
+	if !notifyMasterMatch("192.0.2.50", []string{"192.0.2.50:53"}) {
 		t.Fatal("expected exact master IP to match")
 	}
-	if notifyMasterMatch([]string{"192.0.2.50:53"}, "198.51.100.7") {
+	if notifyMasterMatch("198.51.100.7", []string{"192.0.2.50:53"}) {
 		t.Fatal("unexpected IP match")
 	}
 	// Unauthorized source without TSIG must be refused (false).
