@@ -144,6 +144,17 @@ export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 export POWERSVX_VERSION="${POWERSVX_VERSION:-1.7.1}"
 export GOGC=50
 
+GHCR_USER_VAL="${GHCR_USER:-}"
+GHCR_TOKEN_VAL="${GHCR_TOKEN:-}"
+if [[ -z "$GHCR_TOKEN_VAL" && -f "$ROOT/.env" ]]; then
+  GHCR_USER_VAL="$(grep -E '^GHCR_USER=' "$ROOT/.env" | tail -n1 | cut -d= -f2- | tr -d "\"'\r" || true)"
+  GHCR_TOKEN_VAL="$(grep -E '^GHCR_TOKEN=' "$ROOT/.env" | tail -n1 | cut -d= -f2- | tr -d "\"'\r" || true)"
+fi
+if [[ -n "$GHCR_TOKEN_VAL" ]]; then
+  echo "    Logging in to ghcr.io for private image pull..."
+  printf '%s\n' "$GHCR_TOKEN_VAL" | docker login ghcr.io -u "${GHCR_USER_VAL:-hendrax5}" --password-stdin >/dev/null
+fi
+
 if [[ "${POWERSVX_BUILD_LOCAL:-0}" == "1" ]]; then
   docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml build powersvx
 else

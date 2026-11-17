@@ -141,6 +141,7 @@ services:
     logging: *powersvx-log
     environment:
       - TZ=${TZ:-Asia/Jakarta}
+      - DOCKER_CONFIG=/config
       - WATCHTOWER_LABEL_ENABLE=true
       - WATCHTOWER_CLEANUP=true
       - WATCHTOWER_INCLUDE_RESTARTING=true
@@ -148,6 +149,8 @@ services:
       - WATCHTOWER_SCHEDULE=${WATCHTOWER_SCHEDULE:-0 15 3 * * *}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Supports private GHCR via `sudo docker login ghcr.io` (reads config.json inside dir).
+      - ${DOCKER_CONFIG_DIR:-/root/.docker}:/config:ro
     restart: unless-stopped
 
 volumes:

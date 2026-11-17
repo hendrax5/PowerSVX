@@ -83,6 +83,14 @@ if docker inspect powersvx --format '{{.HostConfig.NetworkMode}}' 2>/dev/null | 
 elif [ -f "$ROOT/deploy/linux/docker-compose.linux.yml" ]; then
   COMPOSE+=(-f deploy/linux/docker-compose.linux.yml)
 fi
+if [ -z "${GHCR_TOKEN:-}" ] && [ -f "$ROOT/.env" ]; then
+  GHCR_USER="${GHCR_USER:-$(grep -E '^GHCR_USER=' "$ROOT/.env" | tail -n1 | cut -d= -f2- | tr -d "\"'\r" || true)}"
+  GHCR_TOKEN="$(grep -E '^GHCR_TOKEN=' "$ROOT/.env" | tail -n1 | cut -d= -f2- | tr -d "\"'\r" || true)"
+fi
+if [ -n "${GHCR_TOKEN:-}" ]; then
+  echo "==> logging in to ghcr.io"
+  printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-hendrax5}" --password-stdin >/dev/null
+fi
 if [ "${POWERSVX_PULL_IMAGE:-0}" = "1" ]; then
   "${COMPOSE[@]}" pull powersvx || "${COMPOSE[@]}" build powersvx
 else

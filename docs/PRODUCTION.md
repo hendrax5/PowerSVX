@@ -118,8 +118,8 @@ Set `POWERSVX_DNS_DATAPLANE=unbound` and stop dnsdist. Partial TrustPositif: `PO
 - See `deploy/linux/README.md` — systemd unit, `configs/powersvx.linux.toml`, `install.sh`, Docker override.
 - **Docker CD (`ghcr.io/hendrax5/powersvx`):**
   - Tag pushes (`v*`) build and push multi-arch images (`linux/amd64`, `linux/arm64`) as `:latest` + `:<version>` via `.github/workflows/release.yml`, and attach standalone Linux binaries (`make_latest: false` keeps `filter-seed` intact). Pushes to `main` publish `:edge` for staging.
-  - **Watchtower (`nickfedor/watchtower`):** runs via `docker-compose.yml` with `WATCHTOWER_LABEL_ENABLE=true`, `WATCHTOWER_CLEANUP=true`, and `WATCHTOWER_SCHEDULE=0 15 3 * * *` (`TZ=Asia/Jakarta`, 03:15 WIB daily). Only `powersvx` carries `com.centurylinklabs.watchtower.enable=true` — `dnsdist`, `Unbound`, and `Postgres` are never auto-restarted so `:53` stays uninterrupted.
-  - Ensure `ghcr.io/hendrax5/powersvx` package visibility is **Public** on GitHub (or run `docker login ghcr.io` on nodes if kept private).
+  - **Watchtower (`nickfedor/watchtower`):** runs via `docker-compose.yml` with `WATCHTOWER_LABEL_ENABLE=true`, `WATCHTOWER_CLEANUP=true`, `DOCKER_CONFIG=/config` (mounted from `${DOCKER_CONFIG_DIR:-/root/.docker}`), and `WATCHTOWER_SCHEDULE=0 15 3 * * *` (`TZ=Asia/Jakarta`, 03:15 WIB daily). Only `powersvx` carries `com.centurylinklabs.watchtower.enable=true` — `dnsdist`, `Unbound`, and `Postgres` are never auto-restarted so `:53` stays uninterrupted.
+  - **Public vs Private GHCR:** If `ghcr.io/hendrax5/powersvx` stays **Private**, create a GitHub PAT (`read:packages` scope only) and either run `sudo docker login ghcr.io -u hendrax5` on each node or set `GHCR_USER` + `GHCR_TOKEN` in `.env` — Watchtower reads `/root/.docker/config.json` automatically via `/config`.
 
 ## Deferred (enterprise)
 - Raft HA / multi-node failover
