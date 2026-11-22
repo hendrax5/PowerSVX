@@ -52,7 +52,6 @@ type API struct {
 	http     *http.Server
 	start    time.Time
 	webFS    fs.FS
-	reloadFn func() error
 	dataDir  string
 
 	unboundRPZEntries atomic.Int64
@@ -66,7 +65,6 @@ func New(cfg *config.Config, srv *server.Server, db *database.DB, tier *cache.Ti
 }
 
 func (a *API) SetWebFS(fsys fs.FS)                     { a.webFS = fsys }
-func (a *API) SetReloadZones(fn func() error)          { a.reloadFn = fn }
 func (a *API) SetEvents(bus *eventlog.Bus)             { a.events = bus }
 func (a *API) SetACME(m *acme.Manager)                 { a.acmeMgr = m }
 func (a *API) SetAudit(l *audit.Log)                   { a.audit = l }
@@ -706,14 +704,9 @@ func (a *API) handleZones(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "name required", http.StatusBadRequest)
 			return
 		}
-		if a.db != nil && a.cfg.Database.Enabled {
-			if _, err := a.db.CreateZone(r.Context(), body.Name); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			_ = a.reloadZones()
-		} else {
-			a.auth.UpsertZone(body.Name)
+		a.auth.CreateZone(body.Name)
+		if a.persistFailed(w) {
+			return
 		}
 		a.SyncAllDataplanes()
 		writeJSON(w, http.StatusCreated, map[string]any{"name": config.NormalizeName(body.Name)})
@@ -741,10 +734,8 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			payload := map[string]any{"name": config.NormalizeName(zone), "records": recordsDTO(recs)}
-			if a.db != nil && a.cfg.Database.Enabled {
-				if meta, err := a.db.GetZoneMeta(r.Context(), zone); err == nil {
-					payload["meta"] = meta
-				}
+			if meta, ok := a.auth.GetZoneMeta(zone); ok {
+				payload["meta"] = zoneMetaPayload(zone, meta)
 			}
 			writeJSON(w, http.StatusOK, payload)
 		case http.MethodPut, http.MethodPatch:
@@ -760,12 +751,19 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
-			if a.db == nil || !a.cfg.Database.Enabled {
-				http.Error(w, "zone meta requires database", http.StatusBadRequest)
+			if msg := validateMetaPatch(body.SOASerial, body.SOARefresh, body.SOARetry, body.SOAExpire, body.SOAMinimum); msg != "" {
+				http.Error(w, msg, http.StatusBadRequest)
 				return
 			}
-			if err := a.db.UpdateZoneMeta(r.Context(), zone, body.DNSSECEnabled, body.SOASerial, body.SOARefresh, body.SOARetry, body.SOAExpire, body.SOAMinimum); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+			meta, ok := a.auth.UpdateZoneMeta(zone, authoritative.ZoneMetaPatch{
+				DNSSECEnabled: body.DNSSECEnabled, SOASerial: body.SOASerial, SOARefresh: body.SOARefresh,
+				SOARetry: body.SOARetry, SOAExpire: body.SOAExpire, SOAMinimum: body.SOAMinimum,
+			})
+			if !ok {
+				http.Error(w, "zone not found", http.StatusNotFound)
+				return
+			}
+			if a.persistFailed(w) {
 				return
 			}
 			if body.DNSSECEnabled != nil && *body.DNSSECEnabled {
@@ -776,28 +774,21 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			meta, err := a.db.GetZoneMeta(r.Context(), zone)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+			out := zoneMetaPayload(zone, meta)
 			if sig := a.srv.Signer(); sig != nil && sig.Enabled(zone) {
-				meta["signing"] = true
+				out["signing"] = true
 				if ds, err := sig.DS(zone); err == nil && ds != nil {
-					meta["ds"] = ds.String()
+					out["ds"] = ds.String()
 				}
 			}
-			writeJSON(w, http.StatusOK, meta)
+			writeJSON(w, http.StatusOK, out)
 			return
 		case http.MethodDelete:
-			if a.db != nil && a.cfg.Database.Enabled {
-				if err := a.db.DeleteZone(r.Context(), zone); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				_ = a.reloadZones()
-			} else if !a.auth.DeleteZone(zone) {
+			if !a.auth.DeleteZone(zone) {
 				http.Error(w, "zone not found", http.StatusNotFound)
+				return
+			}
+			if a.persistFailed(w) {
 				return
 			}
 			a.SyncAllDataplanes()
@@ -879,10 +870,8 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			if a.db != nil && a.cfg.Database.Enabled {
-				on := true
-				_ = a.db.UpdateZoneMeta(r.Context(), zone, &on, nil, nil, nil, nil, nil)
-			}
+			on := true
+			a.auth.UpdateZoneMeta(zone, authoritative.ZoneMetaPatch{DNSSECEnabled: &on})
 			pol, _ := sig.Policy(normZone)
 			ds, _ := sig.DS(normZone)
 			out := map[string]any{
@@ -924,15 +913,9 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if a.db != nil && a.cfg.Database.Enabled {
-			if err := a.db.AddRecord(r.Context(), zone, rec); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			_ = a.reloadZones()
-		} else {
-			a.auth.UpsertZone(zone)
-			a.auth.AddRecord(zone, rec)
+		a.auth.AddRecords(zone, []authoritative.Record{rec})
+		if a.persistFailed(w) {
+			return
 		}
 		if config.DNSDistDataplane() {
 			go func(qname string) {
@@ -964,18 +947,13 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if a.db != nil && a.cfg.Database.Enabled {
-			if err := a.db.UpdateRecord(r.Context(), zone, body.OldName, body.OldType, rec); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			_ = a.reloadZones()
-		} else {
-			qt := authoritative.TypeFromString(body.OldType)
-			if !a.auth.UpdateRecord(zone, body.OldName, qt, rec) {
-				http.Error(w, "record not found", http.StatusNotFound)
-				return
-			}
+		qt := authoritative.TypeFromString(body.OldType)
+		if !a.auth.UpdateRecord(zone, body.OldName, qt, rec) {
+			http.Error(w, "record not found", http.StatusNotFound)
+			return
+		}
+		if a.persistFailed(w) {
+			return
 		}
 		if config.DNSDistDataplane() {
 			go func(qname, oldName string) {
@@ -997,15 +975,10 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "name required", http.StatusBadRequest)
 			return
 		}
-		if a.db != nil && a.cfg.Database.Enabled {
-			if err := a.db.DeleteRecord(r.Context(), zone, name, typ); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			_ = a.reloadZones()
-		} else {
-			qt := authoritative.TypeFromString(typ)
-			a.auth.DeleteRecord(zone, name, qt)
+		qt := authoritative.TypeFromString(typ)
+		a.auth.DeleteRecord(zone, name, qt)
+		if a.persistFailed(w) {
+			return
 		}
 		if config.DNSDistDataplane() {
 			go func(qname string) {
@@ -1044,23 +1017,10 @@ func (a *API) handleZoneImport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "zone parse failed: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if a.db != nil && a.cfg.Database.Enabled {
-		if _, err := a.db.CreateZone(r.Context(), zone); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		for _, rec := range recs {
-			if err := a.db.AddRecord(r.Context(), zone, rec); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
-		_ = a.reloadZones()
-	} else {
-		a.auth.UpsertZone(zone)
-		for _, rec := range recs {
-			a.auth.AddRecord(zone, rec)
-		}
+	a.auth.CreateZone(zone)
+	a.auth.AddRecords(zone, recs)
+	if a.persistFailed(w) {
+		return
 	}
 	a.SyncAllDataplanes()
 	a.srv.NotifySecondaries(zone)
@@ -2107,11 +2067,9 @@ func (a *API) handleBackup(w http.ResponseWriter, r *http.Request) {
 		for _, z := range zones {
 			recs, _ := a.auth.GetRecords(z.Name)
 			entry := map[string]any{"name": z.Name, "records": recordsDTO(recs)}
-			if a.db != nil && a.cfg.Database.Enabled {
-				if meta, err := a.db.GetZoneMeta(r.Context(), z.Name); err == nil {
-					entry["meta"] = meta
-				}
-			}
+		if meta, ok := a.auth.GetZoneMeta(z.Name); ok {
+			entry["meta"] = zoneMetaPayload(z.Name, meta)
+		}
 			if sig := a.srv.Signer(); sig != nil && sig.Enabled(z.Name) {
 				entry["dnssec_signing"] = true
 				if ds, err := sig.DS(z.Name); err == nil && ds != nil {
@@ -2140,27 +2098,16 @@ func (a *API) handleBackup(w http.ResponseWriter, r *http.Request) {
 			if z.Name == "" {
 				continue
 			}
-			if a.db != nil && a.cfg.Database.Enabled {
-				if _, err := a.db.CreateZone(r.Context(), z.Name); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				for _, rec := range z.Records {
-					if err := a.db.AddRecord(r.Context(), z.Name, rec.toRecord()); err != nil {
-						http.Error(w, err.Error(), http.StatusInternalServerError)
-						return
-					}
-				}
-			} else {
-				a.auth.UpsertZone(z.Name)
-				for _, rec := range z.Records {
-					a.auth.AddRecord(z.Name, rec.toRecord())
-				}
+			a.auth.CreateZone(z.Name)
+			recs := make([]authoritative.Record, 0, len(z.Records))
+			for _, rec := range z.Records {
+				recs = append(recs, rec.toRecord())
+			}
+			a.auth.AddRecords(z.Name, recs)
+			if a.persistFailed(w) {
+				return
 			}
 			imported++
-		}
-		if a.db != nil && a.cfg.Database.Enabled {
-			_ = a.reloadZones()
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"imported_zones": imported})
 	default:
@@ -2226,23 +2173,6 @@ func writeSSE(w http.ResponseWriter, ev eventlog.Event) error {
 	return err
 }
 
-func (a *API) reloadZones() error {
-	if a.reloadFn != nil {
-		return a.reloadFn()
-	}
-	if a.db == nil || !a.cfg.Database.Enabled {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	zones, err := a.db.LoadZones(ctx)
-	if err != nil {
-		return err
-	}
-	a.auth.Replace(zones)
-	return nil
-}
-
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -2256,4 +2186,33 @@ func LoadWebDir(dir string) (fs.FS, error) {
 		return nil, err
 	}
 	return os.DirFS(dir), nil
+}
+
+// persistFailed answers 500 when the last zone file write failed.
+func (a *API) persistFailed(w http.ResponseWriter) bool {
+	if err := a.auth.PersistError(); err != nil {
+		http.Error(w, "zone file write failed: "+err.Error(), http.StatusInternalServerError)
+		return true
+	}
+	return false
+}
+
+func zoneMetaPayload(zone string, m authoritative.ZoneMeta) map[string]any {
+	return map[string]any{
+		"name": config.NormalizeName(zone), "type": m.Type, "dnssec_enabled": m.DNSSECEnabled,
+		"soa_serial": m.SOASerial, "soa_refresh": m.SOARefresh, "soa_retry": m.SOARetry,
+		"soa_expire": m.SOAExpire, "soa_minimum": m.SOAMinimum,
+	}
+}
+
+func validateMetaPatch(serial *int64, refresh, retry, expire, minimum *int) string {
+	if serial != nil && (*serial < 0 || *serial > 4294967295) {
+		return "soa_serial out of range"
+	}
+	for _, v := range []*int{refresh, retry, expire, minimum} {
+		if v != nil && (*v < 0 || *v > 2147483647) {
+			return "soa timer out of range"
+		}
+	}
+	return ""
 }

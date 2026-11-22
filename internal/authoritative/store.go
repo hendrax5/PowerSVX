@@ -33,11 +33,14 @@ type IXFRDelta struct {
 
 const maxIXFRHistory = 64
 
-// Store holds authoritative zones loaded from PostgreSQL (or empty).
+// Store holds authoritative and secondary zones in memory. Authoritative Zones
+// are also written to one file each once EnablePersistence has been called.
 type Store struct {
 	mu    sync.RWMutex
 	zones map[string][]Record
 	ixfr  map[string][]IXFRDelta
+	meta  map[string]ZoneMeta
+	files *zoneFiles
 }
 
 func NewStore() *Store {
@@ -98,20 +101,28 @@ func (s *Store) UpsertZone(name string) {
 }
 
 func (s *Store) DeleteZone(name string) bool {
+	var job *persistJob
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.flush(job) }()
 	name = config.NormalizeName(name)
 	if _, ok := s.zones[name]; !ok {
 		return false
 	}
 	delete(s.zones, name)
+	job = s.captureLocked(name)
 	return true
 }
 
 func (s *Store) AddRecord(zone string, rec Record) {
+	var job *persistJob
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.flush(job) }()
 	zone = config.NormalizeName(zone)
+	s.addRecordLocked(zone, rec)
+	job = s.captureLocked(zone)
+}
+
+func (s *Store) addRecordLocked(zone string, rec Record) {
 	rec.Name = config.NormalizeName(rec.Name)
 	oldSer := s.currentSOASerialLocked(zone)
 	s.zones[zone] = append(s.zones[zone], rec)
@@ -124,8 +135,9 @@ func (s *Store) AddRecord(zone string, rec Record) {
 }
 
 func (s *Store) UpdateRecord(zone, oldName string, oldType uint16, rec Record) bool {
+	var job *persistJob
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.flush(job) }()
 	zone = config.NormalizeName(zone)
 	oldName = config.NormalizeName(oldName)
 	rec.Name = config.NormalizeName(rec.Name)
@@ -140,6 +152,7 @@ func (s *Store) UpdateRecord(zone, oldName string, oldType uint16, rec Record) b
 			if oldSer > 0 && newSer > oldSer {
 				s.appendIXFRLocked(zone, IXFRDelta{FromSerial: oldSer, ToSerial: newSer, Removed: []Record{oldRec}, Added: []Record{rec}})
 			}
+			job = s.captureLocked(zone)
 			return true
 		}
 	}
@@ -147,8 +160,9 @@ func (s *Store) UpdateRecord(zone, oldName string, oldType uint16, rec Record) b
 }
 
 func (s *Store) DeleteRecord(zone, name string, qtype uint16) int {
+	var job *persistJob
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.flush(job) }()
 	zone = config.NormalizeName(zone)
 	name = config.NormalizeName(name)
 	recs := s.zones[zone]
@@ -169,13 +183,15 @@ func (s *Store) DeleteRecord(zone, name string, qtype uint16) int {
 			s.appendIXFRLocked(zone, IXFRDelta{FromSerial: oldSer, ToSerial: newSer, Removed: removed})
 		}
 	}
+	job = s.captureLocked(zone)
 	return len(removed)
 }
 
 // DeleteRecordExact removes records matching name+type+content (+prio for MX).
 func (s *Store) DeleteRecordExact(zone string, want Record) int {
+	var job *persistJob
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.flush(job) }()
 	zone = config.NormalizeName(zone)
 	want.Name = config.NormalizeName(want.Name)
 	want.Content = strings.TrimSpace(want.Content)
@@ -200,6 +216,7 @@ func (s *Store) DeleteRecordExact(zone string, want Record) int {
 			s.appendIXFRLocked(zone, IXFRDelta{FromSerial: oldSer, ToSerial: newSer, Removed: removed})
 		}
 	}
+	job = s.captureLocked(zone)
 	return len(removed)
 }
 
@@ -318,8 +335,9 @@ func (s *Store) RRSetExists(zone, name string, qtype uint16) bool {
 
 // BumpSOASerial increments the zone SOA serial (creates none). Returns new serial.
 func (s *Store) BumpSOASerial(zone string) (uint32, bool) {
+	var job *persistJob
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.flush(job) }()
 	zone = config.NormalizeName(zone)
 	recs := s.zones[zone]
 	for i, r := range recs {
@@ -338,6 +356,7 @@ func (s *Store) BumpSOASerial(zone string) (uint32, bool) {
 		parts[2] = strconv.FormatUint(serial, 10)
 		recs[i].Content = strings.Join(parts, " ")
 		s.zones[zone] = recs
+		job = s.captureLocked(zone)
 		return uint32(serial), true
 	}
 	return 0, false
@@ -614,8 +633,9 @@ func TypeFromString(s string) uint16 {
 
 // ReplaceZoneRecords replaces all records for one zone (creates the zone if missing).
 func (s *Store) ReplaceZoneRecords(zone string, recs []Record) {
+	var job *persistJob
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.flush(job) }()
 	zone = config.NormalizeName(zone)
 	cp := make([]Record, len(recs))
 	copy(cp, recs)
@@ -623,6 +643,7 @@ func (s *Store) ReplaceZoneRecords(zone string, recs []Record) {
 		cp[i].Name = config.NormalizeName(cp[i].Name)
 	}
 	s.zones[zone] = cp
+	job = s.captureLocked(zone)
 }
 
 // RecordFromRR converts a wire RR into a store record (skips OPT).
