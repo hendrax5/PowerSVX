@@ -139,24 +139,7 @@ func TestValidatorAuthenticatesPositiveNXDOMAINAndNODATAFromANSECSignedZone(t *t
 		t.Skip("set POWERSVX_DOCKER_TESTS=1 to run the validator test (needs Docker)")
 	}
 
-	store := authoritative.NewStore()
-	signer := dnssec.NewSigner(t.TempDir())
-	store.UpsertZone(zone)
-	add := func(name string, typ uint16, content string) {
-		store.AddRecord(zone, authoritative.Record{Name: name, Type: typ, TTL: 300, Content: content})
-	}
-	add(zone, dns.TypeSOA, "ns1.example.com. hostmaster.example.com. 10 3600 600 86400 300")
-	add(zone, dns.TypeNS, "ns1.example.com.")
-	add("ns1.example.com.", dns.TypeA, "192.0.2.53")
-	add("www.example.com.", dns.TypeA, "192.0.2.10")
-	add("www.example.com.", dns.TypeTXT, "hello")
-	add("b.example.com.", dns.TypeA, "192.0.2.11")
-	add("a.z.example.com.", dns.TypeAAAA, "2001:db8::1") // z.example.com. is an empty non-terminal
-	if err := signer.EnsureWithOptions(zone, dnssec.SignOptions{Algorithm: dns.ECDSAP256SHA256}); err != nil {
-		t.Fatal(err)
-	}
-
-	srv := server.New(config.Default(), server.Deps{Auth: store, Signer: signer}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	signer, srv := buildZone(t, dnssec.SignOptions{Algorithm: dns.ECDSAP256SHA256})
 	port := listen(t, srv)
 	container := startValidator(t, trustAnchor(t, signer))
 
@@ -190,4 +173,28 @@ func TestValidatorAuthenticatesPositiveNXDOMAINAndNODATAFromANSECSignedZone(t *t
 			})
 		}
 	}
+}
+
+// buildZone loads the test zone into an Auth Backend and signs it with opts.
+// z.example.com. is an empty non-terminal.
+func buildZone(t *testing.T, opts dnssec.SignOptions) (*dnssec.Signer, *server.Server) {
+	t.Helper()
+	store := authoritative.NewStore()
+	signer := dnssec.NewSigner(t.TempDir())
+	store.UpsertZone(zone)
+	add := func(name string, typ uint16, content string) {
+		store.AddRecord(zone, authoritative.Record{Name: name, Type: typ, TTL: 300, Content: content})
+	}
+	add(zone, dns.TypeSOA, "ns1.example.com. hostmaster.example.com. 10 3600 600 86400 300")
+	add(zone, dns.TypeNS, "ns1.example.com.")
+	add("ns1.example.com.", dns.TypeA, "192.0.2.53")
+	add("www.example.com.", dns.TypeA, "192.0.2.10")
+	add("www.example.com.", dns.TypeTXT, "hello")
+	add("b.example.com.", dns.TypeA, "192.0.2.11")
+	add("a.z.example.com.", dns.TypeAAAA, "2001:db8::1")
+	if err := signer.EnsureWithOptions(zone, opts); err != nil {
+		t.Fatal(err)
+	}
+	srv := server.New(config.Default(), server.Deps{Auth: store, Signer: signer}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return signer, srv
 }

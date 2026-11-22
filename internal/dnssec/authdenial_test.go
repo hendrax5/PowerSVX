@@ -267,3 +267,143 @@ func TestNSECOnlyAnswersWhenDNSSECOKIsSet(t *testing.T) {
 		t.Fatalf("denial records without DO: %v", resp.Ns)
 	}
 }
+
+func nsec3ProofChecks(t *testing.T, ns []*dns.NSEC3, q string, nx bool, exists map[string]bool, seed int64) {
+	t.Helper()
+	match := func(name string) bool {
+		for _, n := range ns {
+			if n.Match(name) {
+				return true
+			}
+		}
+		return false
+	}
+	cover := func(name string) bool {
+		for _, n := range ns {
+			if n.Cover(name) {
+				return true
+			}
+		}
+		return false
+	}
+	cq := dns.CanonicalName(q)
+	if !nx {
+		if !match(cq) {
+			t.Fatalf("seed %d: no NSEC3 matches %s", seed, q)
+		}
+		return
+	}
+	ce := parentOf(cq)
+	for !exists[ce] {
+		ce = parentOf(ce)
+	}
+	if !match(ce) {
+		t.Fatalf("seed %d: closest encloser %s of %s has no matching NSEC3", seed, ce, q)
+	}
+	if nc := nextCloser(cq, ce); !cover(nc) {
+		t.Fatalf("seed %d: next closer %s not covered", seed, nc)
+	}
+	if w := "*." + ce; !cover(w) && !match(w) {
+		t.Fatalf("seed %d: wildcard %s not covered", seed, w)
+	}
+}
+
+// NSEC3 denial packs and verifies for random zones and random salts, including
+// for names whose hash ends in each of the 32 base32hex characters.
+func TestNSEC3ProofIsValidForRandomZonesAndSalts(t *testing.T) {
+	const zone = "example.com."
+	seed := time.Now().UnixNano()
+	r := rand.New(rand.NewSource(seed))
+	t.Logf("seed %d", seed)
+
+	s := NewSigner(t.TempDir())
+	if err := s.EnsureWithOptions(zone, SignOptions{Algorithm: dns.ECDSAP256SHA256, NSEC3: true}); err != nil {
+		t.Fatal(err)
+	}
+	zk, err := s.load(zone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	salt := zk.Policy.Salt
+	if salt == "" {
+		t.Fatal("NSEC3 policy without salt")
+	}
+
+	names := map[string][]uint16{zone: {dns.TypeSOA, dns.TypeNS}}
+	for i, n := 0, 1+r.Intn(12); i < n; i++ {
+		names[randomName(r, zone)] = []uint16{dns.TypeA}
+	}
+	exists := map[string]bool{}
+	for n := range names {
+		for p := dns.CanonicalName(n); ; p = parentOf(p) {
+			exists[p] = true
+			if p == zone {
+				break
+			}
+		}
+	}
+
+	var queries []string
+	for i := 0; i < 20; i++ {
+		queries = append(queries, randomName(r, zone))
+	}
+	for _, c := range []byte("0123456789ABCDEFGHIJKLMNOPQRSTUV") {
+		for i := 0; i < 100000; i++ {
+			n := "n" + strings.Repeat("x", r.Intn(4)) + string(rune('a'+r.Intn(26))) + string(rune('a'+r.Intn(26))) + string(rune('0'+i%10)) + ".example.com."
+			if h := nsec3Hash(n, salt); h[len(h)-1] == c {
+				queries = append(queries, n)
+				break
+			}
+		}
+	}
+
+	for _, q := range queries {
+		cq := dns.CanonicalName(q)
+		resp := new(dns.Msg)
+		resp.SetReply(denialReq())
+		resp.Ns = []dns.RR{&dns.SOA{Hdr: dns.RR_Header{Name: zone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 300}, Ns: "ns1." + zone, Mbox: "h." + zone, Serial: 1, Refresh: 1, Retry: 1, Expire: 1, Minttl: 60}}
+		nx := !exists[cq]
+		if nx {
+			resp.Rcode = dns.RcodeNameError
+		}
+		if err := s.signNSEC3Denial(zone, q, zk, names, time.Now().UTC(), resp); err != nil {
+			t.Fatalf("seed %d %s: %v", seed, q, err)
+		}
+		if _, err := resp.Pack(); err != nil {
+			t.Fatalf("seed %d %s (hash %s) does not pack: %v", seed, q, nsec3Hash(q, salt), err)
+		}
+		var ns []*dns.NSEC3
+		for _, rr := range resp.Ns {
+			if n, ok := rr.(*dns.NSEC3); ok {
+				ns = append(ns, n)
+			}
+		}
+		verifySet(t, resp.Ns, zk)
+		nsec3ProofChecks(t, ns, q, nx, exists, seed)
+	}
+}
+
+// The chain is closed: every record's next hash is the hash of the next record
+// in sorted order, and the last one wraps to the first.
+func TestNSEC3ChainIsClosedAndSortedForAnyZoneAndSalt(t *testing.T) {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	const zone = "example.com."
+	names := map[string][]uint16{}
+	for i := 0; i < 30; i++ {
+		names[randomName(r, zone)] = []uint16{dns.TypeA}
+	}
+	z := newDenialZone(zone, names)
+	c := z.nsec3Chain(randomSaltHex(1 + r.Intn(8)))
+	if len(c.entries) != len(z.exists) {
+		t.Fatalf("chain has %d records for %d names (empty non-terminals included)", len(c.entries), len(z.exists))
+	}
+	for i := range c.entries {
+		rr := c.record(i, 60)
+		if want := c.entries[(i+1)%len(c.entries)].hash; rr.NextDomain != want {
+			t.Fatalf("record %d next=%s want %s", i, rr.NextDomain, want)
+		}
+		if i > 0 && c.entries[i-1].hash >= c.entries[i].hash {
+			t.Fatalf("chain not sorted at %d", i)
+		}
+	}
+}
