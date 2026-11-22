@@ -27,6 +27,18 @@ max_size_mb = 512
 forwarders = ["9.9.9.9:53"]
 max_inflight = 2048
 
+[plugins]
+enabled = true
+dir = "/var/lib/powersvx/plugins"
+
+[api]
+rest_bind = "127.0.0.1:5380"
+grpc_enabled = true
+grpc_bind = "127.0.0.1:5381"
+
+[metrics]
+otel_enabled = true
+
 [rpz]
 hot_cache_max = 1000
 `
@@ -37,11 +49,11 @@ hot_cache_max = 1000
 	if err != nil {
 		t.Fatalf("a file with removed keys must still load: %v", err)
 	}
-	want := []string{"cache", "resolver.max_inflight", "rpz.hot_cache_max", "server.doh_port", "server.dot_port", "server.tls"}
+	want := []string{"api.grpc_bind", "api.grpc_enabled", "cache", "metrics.otel_enabled", "plugins", "resolver.max_inflight", "rpz.hot_cache_max", "server.doh_port", "server.dot_port", "server.tls"}
 	if !reflect.DeepEqual(cfg.RemovedKeys, want) {
 		t.Fatalf("removed keys = %v, want %v", cfg.RemovedKeys, want)
 	}
-	if cfg.Server.UDPPort != 5353 || len(cfg.Resolver.Forwarders) != 1 {
+	if cfg.Server.UDPPort != 5353 || cfg.API.RESTBind != "127.0.0.1:5380" || len(cfg.Resolver.Forwarders) != 1 {
 		t.Fatalf("kept keys lost: %+v", cfg.Server)
 	}
 }

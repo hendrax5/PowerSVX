@@ -131,7 +131,7 @@ Point nginx/Caddy to `http://127.0.0.1:5380` (or the host IP) with TLS. Keep `au
 ### 8. Reload runtime settings
 
 ```bash
-sudo systemctl reload powersvx   # SIGHUP: runtime-settings.json + plugins
+sudo systemctl reload powersvx   # SIGHUP: runtime-settings.json
 ```
 
 ### Layout
