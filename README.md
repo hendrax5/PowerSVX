@@ -37,7 +37,7 @@ git clone https://github.com/hendrax5/PowerSVX.git /home/hendra/powersvx && cd /
 | Authoritative & Slave | Multi-algo DNSSEC (ECDSA/ED25519/RSA) + NSEC3, BIND import/export, Secondary (Slave) RFC 1995 IXFR + AXFR, RFC 2845 TSIG, SOA timers & disk cache |
 | Control & UI | PowerSVX Go `:5380`, scoped API tokens, live SSE query stream, Cache Explorer, Security & Bans, DNS Lookup/Root Trace, EN/ID switcher |
 | Observability | Auto-provisioned **Grafana (`:3000`)** embedded in `/analytics`, **Prometheus (`127.0.0.1:9091`)**, **Node-Exporter (`127.0.0.1:9101`)** |
-| Encrypted DNS | DoT (`:853`), DoH/DoH3 (`:443`), DoQ (`:784`), outbound forwarders, ACME DNS-01 |
+| Encrypted DNS | DoT (`:853`), DoH/DoH3 (`:443`), DoQ (`:784/udp`; terminated by dnsdist when certs are mounted), outbound forwarders, ACME DNS-01 |
 | Intercept | MikroTik / iptables DNAT; Linux kernel `tproxy` (`IP_TRANSPARENT`) |
 | Automation | **Hermes** ops engine (`ops/HERMES.md`), `ops/probe.py`, auto-disk hygiene |
 
