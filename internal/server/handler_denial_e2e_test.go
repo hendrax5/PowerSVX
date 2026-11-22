@@ -205,3 +205,21 @@ func TestNSECBitmapDoesNotListTypesOnlyAnotherViewHas(t *testing.T) {
 	wantRcode(t, m, dns.RcodeSuccess)
 	wantNSEC(t, nsecsByOwner(m), "www.example.com.", "example.com.", dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC)
 }
+
+func TestSignedZoneNODATAForANameThatOnlyAWildcardCoversProvesTheWildcardHasNoSuchType(t *testing.T) {
+	h := nsecZone(t)
+	h.auth.AddRecord(zoneName, rec("*.w.example.com.", dns.TypeA, "192.0.2.77"))
+	m := h.q("foo.w.example.com.", dns.TypeAAAA, withDO())
+	wantRcode(t, m, dns.RcodeSuccess)
+	if len(m.Answer) != 0 {
+		t.Fatalf("NODATA carries answers: %v", m.Answer)
+	}
+	got := nsecsByOwner(m)
+	// Chain: example.com. b a.z *.w. foo.w sorts after *.w and before a.z? canonical
+	// order is by label from the right: b < w < z, so *.w is the last name before a.z.
+	wantNSEC(t, got, "*.w.example.com.", "a.z.example.com.", dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC)
+	if len(got) != 1 {
+		t.Fatalf("want the wildcard's NSEC (it also covers the name), got %v", m.Ns)
+	}
+	verifyEveryRRset(t, m, m.Ns, h.signer.DNSKEYs(zoneName))
+}
