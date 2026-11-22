@@ -15,6 +15,7 @@ On production hosts (`POWERSVX_DNS_DATAPLANE=dnsdist`, default):
 - **CDB refresh:** RFC 1982 serial comparison on SOA check first (skip unchanged policies while preserving their entries in the merged CDB); if serial advanced, stream AXFR or apply incremental **IXFR** delta with automatic AXFR fallback. Serials in `data/rpz-axfr-state.json`. `dnsdist` forwards `OpcodeNotify` directly to the Auth Backend (`127.0.0.1:5354`).
 - Spoof blocked A → `139.255.196.196` (Komdigi sinkhole). Regen conf: `deploy/linux/gen-dnsdist-conf.sh`.
 - **The Go process never answers public queries.** The Auth Backend binds loopback (`[server] bind_address = "127.0.0.1"`, port `5354`) and answers only Authoritative Zones and Secondary Zones; a name outside every hosted zone gets REFUSED, and so does any query whose source address is not loopback. Recursion, the resolver cache, the Filter check, rate limits, bans and query access rules run in dnsdist and Unbound only; the Control Plane stores those rules and pushes them. See `docs/adr/0001-dnsdist-is-the-only-dataplane.md`.
+- **Source addresses behind the Dataplane.** Other hosts can no longer reach the Auth Backend port directly. Queries, NOTIFY, zone transfers and updates arrive through dnsdist, so the handler sees the Dataplane's loopback address as the source. IP allow lists (secondary master list, `[transfer] allow_from`, `[update] allow_from`, Kominfo target addresses) and split-horizon or GeoDNS selection therefore do not distinguish clients; TSIG still gates transfers, updates and NOTIFY. Client-aware handling behind the Dataplane is tracked in ticket #36.
 
 ### Removed: Unbound on the public port
 
@@ -74,7 +75,7 @@ Only the dnsdist Dataplane exists. The `unbound`, `external` and `powersvx` (Go 
 - Outbound schemes: `host:53` (UDP), `tls://host:853` (DoT, optional `#sni`), `https://host/dns-query` (DoH).
 
 ## TLS (DoT / DoH / DoQ)
-- dnsdist terminates DoT, DoH and DoQ. The Go process starts no DoH or DoQ listener.
+- dnsdist terminates DoT, DoH and DoQ. The Go process starts no DoT, DoH or DoQ listener; `cert_file` and `key_file` are read by dnsdist and ACME only.
 - Place certs in `certs/` (`cert_file` / `key_file` in TOML).
 
 ## DNSSEC validation

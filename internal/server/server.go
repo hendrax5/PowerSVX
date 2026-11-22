@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -56,7 +55,6 @@ type Server struct {
 	tsig         *tsig.Store
 	views        *view.Matcher
 	geo          *geo.Resolver
-	tlsCfg       *tls.Config
 	events       *eventlog.Bus
 	acme         *acme.ChallengeStore
 	stats        *analytics.Collector
@@ -73,13 +71,11 @@ type Server struct {
 	udp          *dns.Server
 	udps         []*dns.Server // all UDP listeners (SO_REUSEPORT shard)
 	tcp          *dns.Server
-	dot          *dns.Server
 	queries      atomic.Uint64
 	blocked      atomic.Uint64
 	// invalidLogN samples the WARN for rejected wire messages (1/128).
 	invalidLogN atomic.Uint64
 	started     time.Time
-	dotOn       bool
 }
 
 type Deps struct {
@@ -93,7 +89,6 @@ type Deps struct {
 	TSIG    *tsig.Store
 	Views   *view.Matcher
 	Geo     *geo.Resolver
-	TLS     *tls.Config
 	Events  *eventlog.Bus
 	ACME    *acme.ChallengeStore
 	Stats   *analytics.Collector
@@ -142,7 +137,6 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 		tsig:     d.TSIG,
 		views:    d.Views,
 		geo:      d.Geo,
-		tlsCfg:   d.TLS,
 		events:   d.Events,
 		acme:     d.ACME,
 		stats:    d.Stats,
@@ -332,8 +326,7 @@ func protocolFromWriter(w dns.ResponseWriter) string {
 }
 
 // ListenAndServe starts the Auth Backend listeners: UDP and TCP on the
-// configured address (loopback unless the operator widens it) and DoT when TLS
-// is configured. Every listener refuses non-loopback sources.
+// configured address (loopback unless the operator widens it).
 func (s *Server) ListenAndServe() error {
 	handler := dns.HandlerFunc(s.serveFromDataplane)
 	var tsigMap map[string]string
@@ -400,17 +393,6 @@ func (s *Server) ListenAndServe() error {
 		errCh <- s.tcp.ListenAndServe()
 	}()
 
-	if s.tlsCfg != nil && s.cfg.Server.DoTPort > 0 {
-		dotAddr := s.cfg.ListenAddr(s.cfg.Server.DoTPort)
-		dotTLS := s.tlsCfg.Clone()
-		dotTLS.NextProtos = []string{"dot"}
-		s.dot = &dns.Server{Addr: dotAddr, Net: "tcp-tls", Handler: handler, TLSConfig: dotTLS, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap, DecorateReader: decorate}
-		s.dotOn = true
-		go func() {
-			s.log.Info("DoT listener starting", "addr", dotAddr)
-			errCh <- s.dot.ListenAndServe()
-		}()
-	}
 
 	return <-errCh
 }
@@ -420,9 +402,9 @@ func (s *Server) Shutdown() error {
 	defer cancel()
 	var err error
 	shutdownDNS := append([]*dns.Server{}, s.udps...)
-	shutdownDNS = append(shutdownDNS, s.tcp, s.dot)
+	shutdownDNS = append(shutdownDNS, s.tcp)
 	if len(s.udps) == 0 && s.udp != nil {
-		shutdownDNS = append([]*dns.Server{s.udp}, s.tcp, s.dot)
+		shutdownDNS = append([]*dns.Server{s.udp}, s.tcp)
 	}
 	for _, srv := range shutdownDNS {
 		if srv == nil {
@@ -443,19 +425,14 @@ func (s *Server) Blocked() uint64 { return s.blocked.Load() }
 
 func (s *Server) UDPAddr() string { return s.cfg.ListenAddr(s.cfg.Server.UDPPort) }
 
-func (s *Server) DoTAddr() string {
-	if !s.dotOn {
-		return ""
-	}
-	return s.cfg.ListenAddr(s.cfg.Server.DoTPort)
-}
+func (s *Server) DoTAddr() string { return "" }
 
-// DoH and DoQ are terminated by the Dataplane; the Go process no longer
+// DoT, DoH and DoQ are terminated by the Dataplane; the Go process no longer
 // serves them.
 func (s *Server) DoHAddr() string { return "" }
 func (s *Server) DoQAddr() string { return "" }
 
-func (s *Server) DoTEnabled() bool  { return s.dotOn }
+func (s *Server) DoTEnabled() bool  { return false }
 func (s *Server) DoHEnabled() bool  { return false }
 func (s *Server) DoH3Enabled() bool { return false }
 func (s *Server) DoQEnabled() bool  { return false }

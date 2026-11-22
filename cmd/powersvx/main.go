@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -39,7 +38,6 @@ import (
 	"github.com/powersvx/powersvx/internal/rpz"
 	"github.com/powersvx/powersvx/internal/secondary"
 	"github.com/powersvx/powersvx/internal/server"
-	"github.com/powersvx/powersvx/internal/tlsutil"
 	"github.com/powersvx/powersvx/internal/tsig"
 	"github.com/powersvx/powersvx/internal/view"
 	"github.com/powersvx/powersvx/internal/watchdog"
@@ -235,19 +233,6 @@ func main() {
 		defer func() { _ = geoRes.Close() }()
 	}
 
-	var tlsCfg *tls.Config
-	if cfg.TLSEnabled() {
-		tlsCfg, err = tlsutil.LoadServerTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
-		if err != nil {
-			// Do not abort DNS UDP/TCP — empty ./certs bind-mounts are a common deploy footgun.
-			log.Error("tls load failed; continuing without DoT/DoH/DoQ", "err", err,
-				"cert", cfg.Server.TLS.CertFile, "key", cfg.Server.TLS.KeyFile)
-			tlsCfg = nil
-		} else {
-			log.Info("TLS enabled", "cert", cfg.Server.TLS.CertFile)
-		}
-	}
-
 	if cfg.Metrics.PrometheusEnabled {
 		bind := cfg.Metrics.PrometheusBind
 		if bind == "" {
@@ -281,7 +266,7 @@ func main() {
 	dnsSrv := server.New(cfg, server.Deps{
 		Auth: auth, DNSSEC: sec, Signer: signer,
 		Limiter: limiter, RPZ: rpzEng, Allow: wl, Deny: bl, TSIG: tsigStore,
-		Views: views, Geo: geoRes, TLS: tlsCfg, Events: bus,
+		Views: views, Geo: geoRes, Events: bus,
 		ACME: acmeStore, Stats: stats, Anomaly: anom, Monitor: mon, Ring: qring,
 	}, log)
 
