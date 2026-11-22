@@ -115,4 +115,3 @@ done
 echo
 echo "Notes: CPU/mem sampled from /proc for the matched PID. Lower CPU-per-10k and"
 echo "lower peak memory at equal/higher QPS and stable p99 = the winner."
-echo "Existing Unbound A/B snapshot: scripts/ab-vs-unbound.sh"

@@ -453,7 +453,9 @@ func (s *Store) FindZone(qname string) string {
 func (s *Store) findZone(qname string) string {
 	best := ""
 	for z := range s.zones {
-		if qname == z || strings.HasSuffix(qname, "."+z) || strings.HasSuffix(qname, z) {
+		// A zone covers its own name and names below it, split on a label
+		// boundary: "badexample.com." is not inside "example.com.".
+		if qname == z || z == "." || strings.HasSuffix(qname, "."+z) {
 			if len(z) > len(best) {
 				best = z
 			}

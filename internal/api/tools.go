@@ -47,9 +47,7 @@ func resolveTargetEndpoint(target, proto string) (kind, addr string, useTLS bool
 	}
 	switch strings.ToLower(t) {
 	case "", "local", "default":
-		if p == "" || p == "internal" {
-			return "local", "", false
-		}
+		// The local resolver is the Dataplane; this process does not resolve.
 		addr = "127.0.0.1:53"
 	case "dnsdist":
 		addr = "127.0.0.1:53"
@@ -161,13 +159,7 @@ func (a *API) handleLookup(w http.ResponseWriter, r *http.Request) {
 		via  string
 		err  error
 	)
-	kind, _, _ := resolveTargetEndpoint(body.Target, body.Protocol)
-	if kind == "local" {
-		start := time.Now()
-		resp, _, err = a.srv.ServeDNSMsg(msg)
-		rtt = time.Since(start)
-		via = "powersvx-local"
-	} else {
+	{
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		resp, rtt, via, err = exchangeMsg(ctx, msg, body.Target, body.Protocol)
@@ -314,7 +306,10 @@ func (a *API) handleTrace(w http.ResponseWriter, r *http.Request) {
 			m := new(dns.Msg)
 			m.SetQuestion(dns.Fqdn(nextServer), dns.TypeA)
 			m.RecursionDesired = true
-			if rmsg, _, rerr := a.srv.ServeDNSMsg(m); rerr == nil {
+			glueCtx, glueCancel := context.WithTimeout(r.Context(), 3*time.Second)
+			rmsg, _, _, rerr := exchangeMsg(glueCtx, m, "local", "")
+			glueCancel()
+			if rerr == nil && rmsg != nil {
 				for _, rr := range rmsg.Answer {
 					if aRec, ok := rr.(*dns.A); ok {
 						nextIP = aRec.A.String()

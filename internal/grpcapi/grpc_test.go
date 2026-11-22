@@ -7,11 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/grpcapi"
 	"github.com/powersvx/powersvx/internal/grpcapi/pb"
-	"github.com/powersvx/powersvx/internal/resolver"
 	"github.com/powersvx/powersvx/internal/server"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -20,12 +18,7 @@ import (
 
 func TestGRPCHealthAndLookup(t *testing.T) {
 	cfg := config.Default()
-	cfg.Resolver.Mode = "forward"
-	cfg.Resolver.Forwarders = []string{"1.1.1.1:53"}
-	res := resolver.New(cfg.Resolver)
-	l1 := cache.NewL1(1000)
-	tier := cache.NewTier(l1, nil, time.Minute, time.Minute)
-	dnsSrv := server.New(cfg, server.Deps{Res: res, Cache: tier}, slog.Default())
+	dnsSrv := server.New(cfg, server.Deps{}, slog.Default())
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
