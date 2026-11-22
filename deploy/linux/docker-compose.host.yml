@@ -77,9 +77,10 @@ services:
       retries: 5
       start_period: 60s
 
-  # Public :53 — CDB blocklist + bank whitelist → Unbound backend
+  # Public :53 — CDB blocklist + bank whitelist → Unbound backend; DoT/DoH/DoQ when certs are mounted.
+  # The image tag is pinned on purpose: see "Pinned dnsdist version" in deploy/linux/README.md.
   dnsdist:
-    image: powerdns/dnsdist-19:latest
+    image: powerdns/dnsdist-19:1.9.16
     network_mode: host
     restart: unless-stopped
     depends_on:

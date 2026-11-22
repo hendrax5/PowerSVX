@@ -132,7 +132,7 @@ It also starts **Unbound on `127.0.0.1:5353`** as the default recursive backend 
 |-----------|---------|
 | 53 | DNS (PowerSVX) |
 | 127.0.0.1:5353 | Unbound recursive (loopback only) |
-| 853 / 443 / 784 | DoT / DoH / DoQ |
+| 853 / 443 / 784 | DoT / DoH / DoQ (TCP, TCP, UDP; served by dnsdist when certs are mounted in `./certs`) |
 | 5380 | API + UI |
 | 9100 | App metrics |
 | 9091 | Prometheus UI |
@@ -255,3 +255,9 @@ Fallback without Docker image builds: use the **systemd** path in section A (com
 - [ ] UI/API protected (`API_TOKEN` / admin password)
 - [ ] `systemctl status powersvx` or `docker ps` healthy; `dig @127.0.0.1 example.com` works
 - [ ] Query logs show real client IPs (not `172.18.0.1`)
+
+### Pinned dnsdist version
+
+The host override pins `powerdns/dnsdist-19:1.9.16` (the version running nodes report; its build includes DNS over QUIC). Never use `:latest`: a silent upgrade changes the Dataplane without a measurement. To bump it, change the tag in `deploy/linux/docker-compose.host.yml` and the `dnsdistImage` constant in `test/dataplane/blackbox_test.go`, run the Dataplane black-box test (`POWERSVX_DOCKER_TESTS=1 go test -count=1 ./test/dataplane/`) and a fresh Reference Load benchmark, and ship it as its own change.
+
+DoT, DoH and DoQ are enabled in the generated dnsdist config only when `fullchain.pem` and `privkey.pem` are mounted at `/etc/dnsdist/certs/`; open `853/tcp`, `443/tcp` and `784/udp` in the firewall. The Go listeners still serve the same ports until they are removed.
