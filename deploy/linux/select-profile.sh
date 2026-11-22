@@ -2,7 +2,7 @@
 # Choose the PowerSVX profile for this node: "full" or "core".
 #
 #   full  Core Profile + Observability Profile (Prometheus, Grafana, node-exporter)
-#   core  Core Profile only (dnsdist, Unbound, Control Plane, Postgres, Watchtower)
+#   core  Core Profile only (dnsdist, Unbound, Control Plane, Watchtower)
 #
 # Prints the profile on stdout and the reason on stderr.
 #

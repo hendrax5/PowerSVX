@@ -1647,6 +1647,11 @@ export default function Settings({ tools = {} }) {
 
           {section === 'logging' ? (
             <SettingSection id="settings-logging-heading" title="Query log" hint="Save queries to the database. Cap growth with size and retention guards.">
+              {saved && saved.query_history_available === false ? (
+                <p role="status" className="text-xs text-[var(--muted)] mb-3 leading-relaxed">
+                  {saved.query_history_note || 'Query history is unavailable: it needs the Observability Profile (Postgres).'}
+                </p>
+              ) : null}
               <SettingToggle
                 label="Enable query log"
                 hint="Record queries for the Logs view"
