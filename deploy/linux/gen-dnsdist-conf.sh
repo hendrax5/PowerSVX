@@ -109,7 +109,7 @@ TMP="${OUT}.tmp.$$"
   fi
   echo ""
   cat <<'TLSLUA'
--- Auto-enable DoT (:853) and DoH (:443) when TLS certificates are mounted at /etc/dnsdist/certs/
+-- Auto-enable DoT (:853), DoH (:443) and DoQ (UDP :784) when TLS certificates are mounted at /etc/dnsdist/certs/
 local function fileExists(p)
   local f = io.open(p, "r")
   if f ~= nil then f:close(); return true end
@@ -120,7 +120,8 @@ local tlsKey = "/etc/dnsdist/certs/privkey.pem"
 if fileExists(tlsCert) and fileExists(tlsKey) then
   addTLSLocal("0.0.0.0:853", tlsCert, tlsKey)
   addDOHLocal("0.0.0.0:443", tlsCert, tlsKey, "/dns-query")
-  infolog("powersvx DoT (:853) and DoH (:443) enabled with /etc/dnsdist/certs/")
+  addDOQLocal("0.0.0.0:784", tlsCert, tlsKey)
+  infolog("powersvx DoT (:853), DoH (:443) and DoQ (:784) enabled with /etc/dnsdist/certs/")
 end
 TLSLUA
   echo ""

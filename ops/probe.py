@@ -31,6 +31,7 @@ DIAGNOSTIC_COMMANDS = [
     ("DNS Dig Public (google.com)", "dig @127.0.0.1 -p 53 google.com +time=2 +tries=1 | tail -6"),
     ("DNS Dig Whitelist (bca.co.id)", "dig @127.0.0.1 -p 53 bca.co.id +short +time=2 | head -2"),
     ("DNS Dig Blocked Test", "dig @127.0.0.1 -p 53 gacor80819.bocoranmantap.cfd +short +time=2 | head -2"),
+    ("Configured Dataplane mode", "docker inspect powersvx --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep -E '^POWERSVX_DNS_DATAPLANE=' || echo 'POWERSVX_DNS_DATAPLANE unset (host default: dnsdist)'"),
     ("PowerSVX API Health", "curl -sS -m 5 http://127.0.0.1:5380/api/v1/health 2>/dev/null || echo 'API unreachable'"),
     ("dnsdist Live Stats", "curl -sS -m 3 -u dontcare:powersvx 'http://127.0.0.1:8083/jsonstat?command=stats' 2>/dev/null | python3 -c \"import sys,json;d=json.load(sys.stdin);ks=['queries','cache-hits','cache-misses','self-answered','downstream-timeouts','servfail-responses','acl-drops','rule-drop','uptime'];print({k:d.get(k) for k in ks})\" 2>/dev/null || echo 'dnsdist stats unreachable'"),
     ("Conntrack Limits", "sysctl net.netfilter.nf_conntrack_count net.netfilter.nf_conntrack_max 2>/dev/null || true"),

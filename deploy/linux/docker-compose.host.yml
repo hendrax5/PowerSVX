@@ -24,6 +24,8 @@ services:
       - GOGC=${GOGC:-50}
       - POWERSVX_DISABLE_QUERY_LOG=${POWERSVX_DISABLE_QUERY_LOG:-1}
       - POWERSVX_DNS_DATAPLANE=${POWERSVX_DNS_DATAPLANE:-dnsdist}
+      - POWERSVX_HOST_DEPLOYMENT=1
+      - POWERSVX_ALLOW_LEGACY_DATAPLANE=${POWERSVX_ALLOW_LEGACY_DATAPLANE:-}
       - POWERSVX_UNBOUND_RPZ_DIR=/data/unbound-rpz
       - POWERSVX_BLOCKLIST_DIR=/data/blocklist
       - POWERSVX_UNBOUND_CONTAINER=powersvx-unbound-1
@@ -75,9 +77,10 @@ services:
       retries: 5
       start_period: 60s
 
-  # Public :53 — CDB blocklist + bank whitelist → Unbound backend
+  # Public :53 — CDB blocklist + bank whitelist → Unbound backend; DoT/DoH/DoQ when certs are mounted.
+  # The image tag is pinned on purpose: see "Pinned dnsdist version" in deploy/linux/README.md.
   dnsdist:
-    image: powerdns/dnsdist-19:latest
+    image: powerdns/dnsdist-19:1.9.16
     network_mode: host
     restart: unless-stopped
     depends_on:
