@@ -145,15 +145,22 @@ func main() {
 			log.Error("migrate failed", "err", err)
 			os.Exit(1)
 		}
-		zones, err := db.LoadZones(ctx)
+		// One-time export of the legacy zones/records tables to zone files.
+		n, ran, err := authoritative.ExportFromSource(ctx, db, authoritative.ZonesDir(*dataDir))
 		cancel()
 		if err != nil {
-			log.Warn("zone load failed", "err", err)
-		} else {
-			auth.Replace(zones)
-			log.Info("zones loaded", "count", len(zones))
+			log.Error("zone export from database failed", "err", err)
+			os.Exit(1)
+		}
+		if ran {
+			log.Info("exported zones from database to files", "count", n, "dir", authoritative.ZonesDir(*dataDir))
 		}
 	}
+	zoneCount, err := auth.EnablePersistence(authoritative.ZonesDir(*dataDir))
+	if err != nil {
+		log.Error("zone files", "err", err)
+	}
+	log.Info("zones loaded", "count", zoneCount, "dir", authoritative.ZonesDir(*dataDir))
 
 	sec := dnssec.New(dnssec.ParseMode(cfg.Resolver.DNSSECMode, cfg.Resolver.DNSSECValidation))
 	signer := dnssec.NewSigner(filepath.Join(*dataDir, "dnssec"))
@@ -516,18 +523,6 @@ func main() {
 			log.Info("web UI mounted", "dir", dir)
 			break
 		}
-	}
-	if db != nil && cfg.Database.Enabled {
-		rest.SetReloadZones(func() error {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			zones, err := db.LoadZones(ctx)
-			if err != nil {
-				return err
-			}
-			auth.Replace(zones)
-			return nil
-		})
 	}
 	if err := rest.Start(); err != nil {
 		log.Error("api start failed", "err", err)
