@@ -1274,7 +1274,7 @@ func (a *API) settingsPayload() map[string]any {
 		"query_log_enabled":         f.QueryLog,
 		"query_history_available":   a.db != nil && a.cfg.Database.Enabled,
 		"query_history_note":        queryHistoryUnavailable,
-		"query_log_mask_ip":        a.cfg.Logging.QueryLogMaskIP,
+		"query_log_mask_ip":         a.cfg.Logging.QueryLogMaskIP,
 		"query_log_retention_days":  a.cfg.Logging.QueryLogRetentionDays,
 		"query_log_max_size_mb":     a.cfg.Logging.QueryLogMaxSizeMB,
 		"query_log_sample_rate":     a.cfg.Logging.QueryLogSampleRate,
@@ -2007,9 +2007,9 @@ func (a *API) handleBackup(w http.ResponseWriter, r *http.Request) {
 		for _, z := range zones {
 			recs, _ := a.auth.GetRecords(z.Name)
 			entry := map[string]any{"name": z.Name, "records": recordsDTO(recs)}
-		if meta, ok := a.auth.GetZoneMeta(z.Name); ok {
-			entry["meta"] = zoneMetaPayload(z.Name, meta)
-		}
+			if meta, ok := a.auth.GetZoneMeta(z.Name); ok {
+				entry["meta"] = zoneMetaPayload(z.Name, meta)
+			}
 			if sig := a.srv.Signer(); sig != nil && sig.Enabled(z.Name) {
 				entry["dnssec_signing"] = true
 				if ds, err := sig.DS(z.Name); err == nil && ds != nil {
