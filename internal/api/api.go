@@ -1624,61 +1624,11 @@ func hostsFullReloadDaytime(now time.Time) bool {
 }
 
 func (a *API) startRPZReload(sync bool) error {
-	if rpzUsesDNSDistDataplane() {
-		return a.startDNSDistCDBRefresh(sync)
-	}
-	eng := a.srv.RPZ()
-	if eng == nil {
-		return nil
-	}
-	if !eng.TryBeginLoad() {
-		return errRPZ("rpz sync already in progress")
-	}
-	policies := a.rpzPolicyConfigs(a.cfg.RPZ.Policies)
-	run := func() {
-		n, err := a.srv.ReloadRPZ(policies, 30*time.Minute)
-		eng.EndLoad(err)
-		if err != nil {
-			a.log.Warn("rpz reload failed", "err", err)
-			return
-		}
-		a.log.Info("rpz reloaded", "entries", n)
-	}
-	if sync {
-		run()
-		return nil
-	}
-	go run()
-	return nil
+	return a.startDNSDistCDBRefresh(sync)
 }
 
 func (a *API) startRPZAXFRRefresh(sync bool) error {
-	if rpzUsesDNSDistDataplane() {
-		return a.startDNSDistCDBRefresh(sync)
-	}
-	eng := a.srv.RPZ()
-	if eng == nil {
-		return nil
-	}
-	if !eng.TryBeginLoad() {
-		return errRPZ("rpz sync already in progress")
-	}
-	policies := a.rpzPolicyConfigs(a.cfg.RPZ.Policies)
-	run := func() {
-		n, err := a.srv.RefreshRPZAXFR(policies, 30*time.Minute)
-		eng.EndLoad(err)
-		if err != nil {
-			a.log.Warn("rpz axfr refresh failed", "err", err)
-			return
-		}
-		a.log.Info("rpz axfr refreshed", "entries", n)
-	}
-	if sync {
-		run()
-		return nil
-	}
-	go run()
-	return nil
+	return a.startDNSDistCDBRefresh(sync)
 }
 
 func notifyMasterMatch(clientIP string, masters []string) bool {

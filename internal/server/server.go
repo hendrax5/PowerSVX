@@ -272,7 +272,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	if s.auth != nil {
-		if rrs, inZone := s.auth.LookupScoped(qname, qtype, viewName, geoTag); inZone {
+		if res, inZone := s.auth.Resolve(qname, qtype, viewName, geoTag); inZone {
 			m := new(dns.Msg)
 			m.SetReply(req)
 			m.Authoritative = true
@@ -281,22 +281,29 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 				m.Answer = s.signer.DNSKEYs(zone)
 				m.Rcode = dns.RcodeSuccess
 				s.signer.SignResponse(zone, req, m)
-			} else if len(rrs) == 0 {
-				if s.auth.NameExists(zone, qname) {
-					m.Rcode = dns.RcodeSuccess // NODATA (name exists, qtype absent)
-				} else {
-					m.Rcode = dns.RcodeNameError // NXDOMAIN
-				}
-				if soaRRs, ok := s.auth.LookupScoped(zone, dns.TypeSOA, viewName, geoTag); ok && len(soaRRs) > 0 {
-					m.Ns = append(m.Ns, soaRRs[0])
-				}
-				if s.signer != nil && s.signer.Enabled(zone) {
-					s.signer.SignDenialForNames(zone, qname, s.auth.ZoneNames(zone), req, m)
-				}
 			} else {
-				m.Answer = rrs
-				if s.signer != nil && s.signer.Enabled(zone) {
-					s.signer.SignResponse(zone, req, m)
+				// Each zone's part of the answer is signed with that zone's key.
+				for _, seg := range res.Segments {
+					part := &dns.Msg{Answer: seg.RRs}
+					if qtype != dns.TypeDNSKEY && s.signer != nil && s.signer.Enabled(seg.Zone) {
+						s.signer.SignResponse(seg.Zone, req, part)
+					}
+					m.Answer = append(m.Answer, part.Answer...)
+				}
+				if res.Negative {
+					// The last name looked up has no data: NODATA, or NXDOMAIN
+					// when it does not exist (after any CNAMEs already answered).
+					if res.Exists {
+						m.Rcode = dns.RcodeSuccess
+					} else {
+						m.Rcode = dns.RcodeNameError
+					}
+					if soaRRs, ok := s.auth.LookupScoped(res.Zone, dns.TypeSOA, viewName, geoTag); ok && len(soaRRs) > 0 {
+						m.Ns = append(m.Ns, soaRRs[0])
+					}
+					if s.signer != nil && s.signer.Enabled(res.Zone) {
+						s.signer.SignDenialForNames(res.Zone, res.Name, s.auth.ZoneNames(res.Zone), req, m)
+					}
 				}
 			}
 			s.write(w, req, m)
@@ -444,12 +451,8 @@ func (s *Server) DNSSECMode() string {
 	return string(s.dnssec.Mode)
 }
 
-func (s *Server) RPZCount() int64 {
-	if s.rpz == nil {
-		return 0
-	}
-	return s.rpz.Count()
-}
+// RPZCount is 0: the Control Plane holds no Filter entries; the count comes from the CDB.
+func (s *Server) RPZCount() int64 { return 0 }
 
 // udpBufSize is the EDNS/UDP pack budget from config (clamped 1232–4096).
 func (s *Server) udpBufSize() uint16 {
@@ -458,30 +461,8 @@ func (s *Server) udpBufSize() uint16 {
 	}
 	return config.NormalizeEDNSBufferSize(s.cfg.Resolver.EDNSBufferSize)
 }
-
 func (s *Server) RPZ() *rpz.Engine { return s.rpz }
 
-// ReloadRPZ replaces the in-memory blocklist from policy sources (file or HTTP).
-func (s *Server) ReloadRPZ(policies []rpz.PolicyConfig, timeout time.Duration) (int, error) {
-	if s.rpz == nil {
-		return 0, nil
-	}
-	if timeout <= 0 {
-		timeout = 30 * time.Minute
-	}
-	return s.rpz.LoadPolicies(policies, timeout)
-}
-
-// RefreshRPZAXFR updates AXFR feeds via IXFR/SOA without re-downloading hosts feeds.
-func (s *Server) RefreshRPZAXFR(policies []rpz.PolicyConfig, timeout time.Duration) (int, error) {
-	if s.rpz == nil {
-		return 0, nil
-	}
-	if timeout <= 0 {
-		timeout = 30 * time.Minute
-	}
-	return s.rpz.RefreshAXFR(policies, timeout)
-}
 
 // RuntimeFlags are feature toggles editable via the API/UI.
 type RuntimeFlags struct {

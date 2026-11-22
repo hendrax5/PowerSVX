@@ -109,7 +109,7 @@ If `list_forwards` cannot connect, the control interface is disabled: Unbound is
 
 ## TLS (DoT / DoH / DoQ)
 - dnsdist terminates DoT, DoH and DoQ. The Go process starts no DoT, DoH or DoQ listener; `cert_file` and `key_file` are read by dnsdist and ACME only.
-- Place certs in `certs/` (`cert_file` / `key_file` in TOML).
+- Place certs in `certs/`. dnsdist reads them; the `[server.tls]` section and `dot_port`, `doh_port`, `doq_port` are ignored since version 2, see [CONFIG-REMOVED.md](CONFIG-REMOVED.md) (it lists every key that no longer has a meaning).
 
 ## DNSSEC validation
 - Validation is done by Unbound. The Go process no longer validates; `[resolver] dnssec_mode` is pushed to the Unbound runtime config.
