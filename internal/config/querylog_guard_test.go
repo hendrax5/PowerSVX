@@ -4,25 +4,22 @@ import "testing"
 
 func TestQueryLogForcedOff(t *testing.T) {
 	t.Setenv("POWERSVX_DISABLE_QUERY_LOG", "1")
-	t.Setenv("POWERSVX_DNS_DATAPLANE", "powersvx")
 	if !QueryLogForcedOff() {
 		t.Fatal("expected forced off")
 	}
-	cfg := &Config{}
-	cfg.Logging.QueryLogEnabled = true
-	ApplyQueryLogGuard(cfg)
-	if cfg.Logging.QueryLogEnabled {
-		t.Fatal("guard should disable query log on Go dataplane")
-	}
 }
 
-func TestQueryLogGuardSkipsDnsdistDataplane(t *testing.T) {
+// The Go process is never on :53, so the guard has nothing to protect and the
+// query_log toggle is kept, whatever POWERSVX_DNS_DATAPLANE says.
+func TestQueryLogGuardKeepsTheToggle(t *testing.T) {
 	t.Setenv("POWERSVX_DISABLE_QUERY_LOG", "1")
-	t.Setenv("POWERSVX_DNS_DATAPLANE", "dnsdist")
-	cfg := &Config{}
-	cfg.Logging.QueryLogEnabled = true
-	ApplyQueryLogGuard(cfg)
-	if !cfg.Logging.QueryLogEnabled {
-		t.Fatal("dnsdist dataplane keeps the query_log toggle")
+	for _, mode := range []string{"dnsdist", "", "powersvx"} {
+		t.Setenv("POWERSVX_DNS_DATAPLANE", mode)
+		cfg := &Config{}
+		cfg.Logging.QueryLogEnabled = true
+		ApplyQueryLogGuard(cfg)
+		if !cfg.Logging.QueryLogEnabled {
+			t.Fatalf("mode %q: the query_log toggle must be kept", mode)
+		}
 	}
 }

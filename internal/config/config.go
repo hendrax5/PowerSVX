@@ -303,7 +303,7 @@ type PluginsConfig struct {
 func Default() *Config {
 	return &Config{
 		Server: ServerConfig{
-			BindAddress: "0.0.0.0",
+			BindAddress: "127.0.0.1", // the Auth Backend is reached only by the local Dataplane
 			UDPPort:     5353,
 			TCPPort:     5353,
 			DoTPort:     853,
@@ -618,7 +618,7 @@ func (c *Config) DSN() string {
 func (c *Config) ListenAddr(port int) string {
 	host := c.Server.BindAddress
 	if host == "" {
-		host = "0.0.0.0"
+		host = "127.0.0.1"
 	}
 	return fmt.Sprintf("%s:%d", host, port)
 }

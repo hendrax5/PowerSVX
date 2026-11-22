@@ -36,15 +36,14 @@ func TestCheckDataplane(t *testing.T) {
 		{"external rejected", "external", true, "", "", true},
 		{"powersvx rejected", "powersvx", true, "", "", true},
 		{"unknown value rejected", "bogus", true, "", "", true},
-		{"unbound ignores the escape hatch", "unbound", true, "", "1", true},
-		{"external ignores the escape hatch", "external", true, "", "1", true},
-		{"powersvx with escape hatch", "powersvx", true, "", "1", false},
-		{"escape hatch other than 1 does not count", "unbound", true, "", "0", true},
-		{"unset off host keeps development default", "", false, "", "", false},
-		{"empty off host keeps development default", "", true, "", "", false},
+		{"unbound ignores the old escape hatch", "unbound", true, "", "1", true},
+		{"external ignores the old escape hatch", "external", true, "", "1", true},
+		{"powersvx ignores the old escape hatch", "powersvx", true, "", "1", true},
+		{"unknown value ignores the old escape hatch", "bogus", true, "1", "1", true},
+		{"unset means dnsdist", "", false, "", "", false},
+		{"empty means dnsdist", "", true, "", "", false},
 		{"unset on host means dnsdist", "", false, "1", "", false},
 		{"unbound on host rejected", "unbound", true, "1", "", true},
-		{"unbound on host ignores the escape hatch", "unbound", true, "1", "1", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -60,22 +59,20 @@ func TestCheckDataplane(t *testing.T) {
 	}
 }
 
-func TestUnsetModeOnHostIsDnsdist(t *testing.T) {
-	setDataplaneEnv(t, "", false, "1", "")
-	if DNSDataplane() != "dnsdist" {
-		t.Fatalf("got %q", DNSDataplane())
-	}
-	setDataplaneEnv(t, "", false, "", "")
-	if DNSDataplane() != "powersvx" {
-		t.Fatalf("development default changed: %q", DNSDataplane())
+func TestUnsetModeIsDnsdistEverywhere(t *testing.T) {
+	for _, host := range []string{"1", ""} {
+		setDataplaneEnv(t, "", false, host, "")
+		if DNSDataplane() != "dnsdist" {
+			t.Fatalf("host=%q: got %q", host, DNSDataplane())
+		}
 	}
 }
 
 func TestRejectionMessageNamesModeAndRemedy(t *testing.T) {
 	for mode, want := range map[string][]string{
-		"unbound":  {"unbound", "has been removed", "POWERSVX_ALLOW_LEGACY_DATAPLANE does not", "dnsdist", "docs/PRODUCTION.md"},
-		"external": {"external", "has been removed", "POWERSVX_ALLOW_LEGACY_DATAPLANE does not", "dnsdist", "docs/PRODUCTION.md"},
-		"powersvx": {"powersvx", "next major version", "dnsdist", "docs/PRODUCTION.md"},
+		"unbound":  {"unbound", "has been removed", "dnsdist", "docs/PRODUCTION.md"},
+		"external": {"external", "has been removed", "dnsdist", "docs/PRODUCTION.md"},
+		"powersvx": {"powersvx", "Go resolver", "has been removed", "dnsdist", "docs/PRODUCTION.md"},
 	} {
 		setDataplaneEnv(t, mode, true, "", "")
 		msg := CheckDataplane().Error()
@@ -84,12 +81,14 @@ func TestRejectionMessageNamesModeAndRemedy(t *testing.T) {
 				t.Errorf("%s: message %q lacks %q", mode, msg, w)
 			}
 		}
+		if strings.Contains(msg, "ALLOW_LEGACY") {
+			t.Errorf("%s: message still mentions the void escape hatch: %q", mode, msg)
+		}
 	}
 }
 
 // The shell guard and the Control Plane must tell the operator the same thing,
-// for the removed Unbound mode (with and without the escape hatch) and for the
-// Go resolver.
+// with and without the old escape hatch.
 func TestShellGuardUsesTheSameMessage(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh")
@@ -99,7 +98,7 @@ func TestShellGuardUsesTheSameMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range []struct{ mode, legacy string }{
-		{"unbound", ""}, {"unbound", "1"}, {"external", "1"}, {"powersvx", ""},
+		{"unbound", ""}, {"unbound", "1"}, {"external", "1"}, {"powersvx", ""}, {"powersvx", "1"},
 	} {
 		setDataplaneEnv(t, c.mode, true, "", c.legacy)
 		want := CheckDataplane().Error()

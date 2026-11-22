@@ -8,12 +8,13 @@ On production hosts (`POWERSVX_DNS_DATAPLANE=dnsdist`, default):
 |------|---------|-------|
 | Public DNS + CDB blocklist + bank whitelist | **dnsdist** | `:53` |
 | Recurse-only backend | **Unbound** | `127.0.0.1:5353` |
-| UI / API / AXFR→CDB sync / Kominfo outbound AXFR | **PowerSVX** | `:5380`, auth/AXFR `:5354` |
+| UI / API / AXFR→CDB sync / Kominfo outbound AXFR | **PowerSVX** (Control Plane) | `:5380` |
+| Authoritative Zones and Secondary Zones (Auth Backend) | **PowerSVX** | `127.0.0.1:5354`, reached only through dnsdist |
 
 - Komdigi AXFR / hosts feeds → per-policy feed caches (`data/blocklist/feeds/`) merged into `data/blocklist/domains.cdb` (full list, mmap; no Unbound 1.5M RPZ cap). Banks filtered from CDB + dnsdist `SuffixMatchNode`.
-- **CDB refresh:** RFC 1982 serial comparison on SOA check first (skip unchanged policies while preserving their entries in the merged CDB); if serial advanced, stream AXFR or apply incremental **IXFR** delta with automatic AXFR fallback. Serials in `data/rpz-axfr-state.json`. `dnsdist` forwards `OpcodeNotify` directly to PowerSVX (`:5354`).
+- **CDB refresh:** RFC 1982 serial comparison on SOA check first (skip unchanged policies while preserving their entries in the merged CDB); if serial advanced, stream AXFR or apply incremental **IXFR** delta with automatic AXFR fallback. Serials in `data/rpz-axfr-state.json`. `dnsdist` forwards `OpcodeNotify` directly to the Auth Backend (`127.0.0.1:5354`).
 - Spoof blocked A → `139.255.196.196` (Komdigi sinkhole). Regen conf: `deploy/linux/gen-dnsdist-conf.sh`.
-- **Do not put Go PowerSVX back on public `:53`.** See `ops/HERMES.md`.
+- **The Go process never answers public queries.** The Auth Backend binds loopback (`[server] bind_address = "127.0.0.1"`, port `5354`) and answers only Authoritative Zones and Secondary Zones; a name outside every hosted zone gets REFUSED, and so does any query whose source address is not loopback. Recursion, the resolver cache, the Filter check, rate limits, bans and query access rules run in dnsdist and Unbound only; the Control Plane stores those rules and pushes them. See `docs/adr/0001-dnsdist-is-the-only-dataplane.md`.
 
 ### Removed: Unbound on the public port
 
@@ -25,23 +26,22 @@ The mode in which Unbound answered clients directly on `:53` with RPZ zonefiles 
 2. Regenerate the configs: `bash deploy/linux/gen-unbound-conf.sh` and `bash deploy/linux/gen-dnsdist-conf.sh`.
 3. Recreate the stack with `bash deploy/linux/apply-update.sh`. The first Filter sync fills the CDB (`data/blocklist/`); the old `data/unbound-rpz/*.rpz` zonefiles are no longer read and can be deleted.
 
-`POWERSVX_ALLOW_LEGACY_DATAPLANE=1` does **not** bring the mode back: there is no code left to run it, and both the update and the Control Plane refuse it.
+`POWERSVX_ALLOW_LEGACY_DATAPLANE` no longer has any effect: there is no code left to run the mode, and both the update and the Control Plane refuse it.
 
 ### Removed Dataplane modes: the guard
 
-Only the dnsdist Dataplane has a future. The `unbound` and `external` modes are already removed; the `powersvx` (Go resolver) mode is being removed in the next major version of PowerSVX. A node configured for any of them is never updated silently:
+Only the dnsdist Dataplane exists. The `unbound`, `external` and `powersvx` (Go resolver) modes are removed. A node configured for any of them is never updated silently:
 
 - The Control Plane exits at start with a message naming the configured mode and the fix.
 - `deploy/linux/apply-update.sh` and `bootstrap-node.sh` run `deploy/linux/dataplane-guard.sh` first and stop with the same message before touching containers.
-- An unset `POWERSVX_DNS_DATAPLANE` means dnsdist on a host deployment (`deploy/linux/docker-compose.host.yml` sets `POWERSVX_HOST_DEPLOYMENT=1`). Off host, local development keeps its Go default.
+- An unset `POWERSVX_DNS_DATAPLANE` means dnsdist everywhere. In local development there is no Dataplane to push to: the process still starts as a Control Plane, and its pushes to dnsdist and Unbound fail quietly.
 - To fix a node: set `POWERSVX_DNS_DATAPLANE=dnsdist`, regenerate configs with `deploy/linux/gen-dnsdist-conf.sh`, and recreate the stack.
-- Labs and local development can keep the Go resolver for now with `POWERSVX_ALLOW_LEGACY_DATAPLANE=1`. It never applies to `unbound` or `external`. Never set it on a production node.
 - `python ops/probe.py` prints each node's configured mode.
 
 ## Query ACL
 - `[acl] allow_query` — CIDRs/IPs allowed to query DNS. **Empty = allow all.**
 - `[acl] deny_query` — always refused (wins over allow).
-- Editable in UI Settings (no restart). Denied clients get REFUSED.
+- Editable in UI Settings (no restart). The Control Plane stores the rules and writes them to dnsdist, which refuses denied clients.
 - Separate from `[transfer] allow_from` (AXFR only) and rate-limit `whitelist` (rate-limit bypass only).
 
 ## Auth / RBAC
@@ -73,15 +73,12 @@ Only the dnsdist Dataplane has a future. The `unbound` and `external` modes are 
 - Default resolver mode is **recursive**. Global `[resolver] forwarders` plus optional `[[resolver.forward_zones]]` are used when `mode=forward` or `forward_on_fail=true`. Editable in Settings.
 - Outbound schemes: `host:53` (UDP), `tls://host:853` (DoT, optional `#sni`), `https://host/dns-query` (DoH).
 
-## TLS (DoT / DoH / DoH3 / DoQ)
-- Minimum TLS 1.3 for encrypted DNS listeners.
+## TLS (DoT / DoH / DoQ)
+- dnsdist terminates DoT, DoH and DoQ. The Go process starts no DoH or DoQ listener.
 - Place certs in `certs/` (`cert_file` / `key_file` in TOML).
 
-## DNSSEC validation (recursive / forward)
-- Modes: `off` | `opportunistic` | `validate` (`[resolver] dnssec_mode`).
-- Trusts upstream AD; verifies in-message RRSIG when DNSKEY is present.
-- NXDOMAIN/NODATA: consumes NSEC3/NSEC denial covers when present (incomplete proofs do not SERVFAIL).
-- Full root-anchored chain-of-trust still deferred.
+## DNSSEC validation
+- Validation is done by Unbound. The Go process no longer validates; `[resolver] dnssec_mode` is pushed to the Unbound runtime config.
 
 ## Backup / restore
 - `GET /api/v1/backup` — export zones + records (+ DS if signing).
@@ -127,7 +124,6 @@ Only the dnsdist Dataplane has a future. The `unbound` and `external` modes are 
 - PostgreSQL query logging requires `query_log_enabled = true`; `query_log_mask_ip = true` masks /24 (IPv4) or /48 (IPv6); hourly purge respects `query_log_retention_days`.
 - High-rate live telemetry uses the in-memory 20k ring buffer rather than writing every packet synchronously to PostgreSQL.
 - Grafana container binds `127.0.0.1:3000` with `GF_AUTH_ANONYMOUS_ENABLED=false` (expose only via TLS reverse proxy / SSH tunnel).
-- Lua plugins run with a 50ms execution timeout context (`plugin.go`) so buggy scripts cannot stall workers.
 
 ## Core Profile and Observability Profile
 - Core: `dnsdist`, `unbound`, `powersvx`, `postgres` (until Postgres is optional), `watchtower`. Observability: `prometheus`, `grafana`, `node-exporter`.
@@ -135,7 +131,7 @@ Only the dnsdist Dataplane has a future. The `unbound` and `external` modes are 
 - Existing nodes are unaffected until `POWERSVX_PROFILE=core` is set: the plain `docker compose ... up -d` and `apply-update.sh` keep starting everything.
 
 ## Reload
-- `SIGHUP` / `systemctl reload powersvx` reloads `runtime-settings.json` flags, query ACL, and plugins.
+- `SIGHUP` / `systemctl reload powersvx` reloads `runtime-settings.json` flags and the query ACL.
 - Data directory: `--data-dir` (default `./data`; Linux package uses `/var/lib/powersvx`).
 
 ## Linux deploy & Docker CD (Auto-Update)
