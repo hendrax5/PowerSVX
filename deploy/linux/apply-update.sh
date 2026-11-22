@@ -8,6 +8,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+# Stop before touching anything when this node is on a Dataplane mode being removed.
+sh "$ROOT/deploy/linux/dataplane-guard.sh" "$ROOT" || exit 1
+
 echo "==> disk free"
 df -h / | tail -1
 
