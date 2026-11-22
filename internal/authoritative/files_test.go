@@ -81,23 +81,6 @@ func TestZoneChangesSurviveRestart(t *testing.T) {
 	}
 }
 
-func TestMetaPatchSyncsSOARecord(t *testing.T) {
-	s := openStore(t, t.TempDir())
-	s.CreateZone("example.com")
-	s.AddRecords("example.com", []Record{soa("5")})
-	serial, minimum := int64(42), 120
-	m, _ := s.UpdateZoneMeta("example.com", ZoneMetaPatch{SOASerial: &serial, SOAMinimum: &minimum})
-	if m.SOASerial != 42 || m.SOAMinimum != 120 {
-		t.Fatalf("%+v", m)
-	}
-	if got := s.CurrentSOASerial("example.com"); got != 42 {
-		t.Fatalf("SOA record serial = %d", got)
-	}
-	if _, ok := s.UpdateZoneMeta("nope.test", ZoneMetaPatch{}); ok {
-		t.Fatal("unknown zone must not update")
-	}
-}
-
 func TestSecondaryZonesAreNotWrittenAsFiles(t *testing.T) {
 	dir := t.TempDir()
 	s := openStore(t, dir)
@@ -314,5 +297,48 @@ func TestFailedExportLeavesNothingBehind(t *testing.T) {
 	_ = os.Remove(stray)
 	if n, ran, err := ExportFromSource(context.Background(), src, dir); err != nil || !ran || n != 1 {
 		t.Fatalf("retry: n=%d ran=%v err=%v", n, ran, err)
+	}
+}
+
+func servedSOA(t *testing.T, s *Store) string {
+	t.Helper()
+	rrs, ok := s.Lookup("example.com.", dns.TypeSOA)
+	if !ok || len(rrs) != 1 {
+		t.Fatalf("SOA lookup: ok=%v rrs=%v", ok, rrs)
+	}
+	return rrs[0].String()
+}
+
+// Before this change the SOA a resolver saw came from the stored SOA record
+// only: the metadata columns never reached it, and each record change moved
+// the serial forward by one. Metadata updates must not change either.
+func TestMetaUpdateDoesNotChangeServedSOA(t *testing.T) {
+	plain := NewStore() // behaviour of the base branch: no persistence, no metadata
+	files := openStore(t, t.TempDir())
+	plain.UpsertZone("example.com")
+	plain.AddRecord("example.com", soa("5"))
+	files.CreateZone("example.com")
+	files.AddRecords("example.com", []Record{soa("5")})
+
+	serial, refresh, minimum := int64(900), 7200, 60
+	on := true
+	files.UpdateZoneMeta("example.com", ZoneMetaPatch{SOASerial: &serial, SOARefresh: &refresh, SOAMinimum: &minimum, DNSSECEnabled: &on})
+	if got, want := servedSOA(t, files), servedSOA(t, plain); got != want {
+		t.Fatalf("metadata update changed the served SOA:\n got %s\nwant %s", got, want)
+	}
+
+	// Same serial rules afterwards: +1 per record change, timers untouched.
+	for _, s := range []*Store{plain, files} {
+		s.AddRecord("example.com", Record{Name: "a.example.com.", Type: dns.TypeA, Content: "192.0.2.1", TTL: 60})
+		s.DeleteRecord("example.com", "a.example.com.", dns.TypeA)
+	}
+	if got, want := servedSOA(t, files), servedSOA(t, plain); got != want || !strings.Contains(got, " 7 3600 600 86400 300") {
+		t.Fatalf("serial rules differ:\n got %s\nwant %s", got, want)
+	}
+	if m, _ := files.GetZoneMeta("example.com"); m.SOASerial != 900 || m.SOARefresh != 7200 || !m.DNSSECEnabled {
+		t.Fatalf("stored meta %+v", m)
+	}
+	if _, ok := files.UpdateZoneMeta("nope.test", ZoneMetaPatch{}); ok {
+		t.Fatal("unknown zone must not update")
 	}
 }

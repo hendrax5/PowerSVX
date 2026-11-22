@@ -15,3 +15,4 @@ Postgres held two things: authoritative zones with their records, and the query 
 
 - The first start of a version with this change exports the `zones` and `records` tables to files once. After that the tables are never read.
 - A node with no Postgres has no query-log history, only the live sampled stream.
+- Records marked `disabled` in the old `records` table are not exported: they were never served, and nothing in the API or console can set that flag.

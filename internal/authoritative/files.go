@@ -373,29 +373,11 @@ func (s *Store) metaLocked(zone string) ZoneMeta {
 	if !ok {
 		m = DefaultZoneMeta()
 	}
-	for _, r := range s.zones[zone] {
-		if r.Type != dns.TypeSOA {
-			continue
-		}
-		p := strings.Fields(r.Content)
-		if len(p) < 7 {
-			break
-		}
-		ser, e1 := strconv.ParseInt(p[2], 10, 64)
-		rf, e2 := strconv.Atoi(p[3])
-		rt, e3 := strconv.Atoi(p[4])
-		ex, e4 := strconv.Atoi(p[5])
-		mn, e5 := strconv.Atoi(p[6])
-		if e1 == nil && e2 == nil && e3 == nil && e4 == nil && e5 == nil {
-			m.SOASerial, m.SOARefresh, m.SOARetry, m.SOAExpire, m.SOAMinimum = ser, rf, rt, ex, mn
-		}
-		break
-	}
 	return m
 }
 
-// GetZoneMeta returns the zone's metadata. SOA values come from the zone's SOA
-// record when it has one, since that is what the Dataplane serves.
+// GetZoneMeta returns the stored zone metadata. Like the legacy zones table it
+// is informational: the SOA served comes from the zone's SOA record alone.
 func (s *Store) GetZoneMeta(zone string) (ZoneMeta, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -406,8 +388,8 @@ func (s *Store) GetZoneMeta(zone string) (ZoneMeta, bool) {
 	return s.metaLocked(zone), true
 }
 
-// UpdateZoneMeta applies a patch, keeps the SOA record in step with the SOA
-// fields, persists the zone and returns the new metadata.
+// UpdateZoneMeta applies a patch, persists the zone and returns the new
+// metadata. It never touches the SOA record (as before this change).
 func (s *Store) UpdateZoneMeta(zone string, p ZoneMetaPatch) (ZoneMeta, bool) {
 	var job *persistJob
 	s.mu.Lock()
@@ -439,22 +421,6 @@ func (s *Store) UpdateZoneMeta(zone string, p ZoneMetaPatch) (ZoneMeta, bool) {
 		m.SOAMinimum = *p.SOAMinimum
 	}
 	s.meta[zone] = m
-	recs := s.zones[zone]
-	for i, r := range recs {
-		if r.Type != dns.TypeSOA {
-			continue
-		}
-		parts := strings.Fields(r.Content)
-		if len(parts) >= 7 {
-			parts[2] = strconv.FormatInt(m.SOASerial, 10)
-			parts[3] = strconv.Itoa(m.SOARefresh)
-			parts[4] = strconv.Itoa(m.SOARetry)
-			parts[5] = strconv.Itoa(m.SOAExpire)
-			parts[6] = strconv.Itoa(m.SOAMinimum)
-			recs[i].Content = strings.Join(parts, " ")
-		}
-		break
-	}
 	job = s.captureLocked(zone)
 	return s.metaLocked(zone), true
 }

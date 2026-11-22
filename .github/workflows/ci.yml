@@ -27,5 +27,5 @@ jobs:
         run: |
           npm install --no-audit --no-fund
           npm run build
-      - name: Dataplane black-box test (Docker)
-        run: POWERSVX_DOCKER_TESTS=1 go test -v -count=1 -timeout 10m ./test/dataplane/
+      - name: Docker tests (Dataplane black-box, zone export from Postgres)
+        run: POWERSVX_DOCKER_TESTS=1 go test -v -count=1 -timeout 10m ./test/dataplane/ ./test/zonesexport/
