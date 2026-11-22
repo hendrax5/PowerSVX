@@ -7,8 +7,9 @@
 #   docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \
 #     -f deploy/linux/docker-compose.bench-small.yml up -d dnsdist unbound powersvx postgres
 #
-# Naming the services keeps the observability services (Prometheus, Grafana, node-exporter,
-# Watchtower) stopped. Postgres is still listed because the Control Plane does not start
+# Naming the services keeps the Observability Profile (Prometheus, Grafana, node-exporter)
+# stopped. Watchtower is part of the Core Profile and is left out because it does not serve DNS
+# small. Postgres is still listed because the Control Plane does not start
 # without it yet; that goes away when Postgres becomes optional.
 services:
   powersvx:

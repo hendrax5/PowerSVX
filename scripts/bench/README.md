@@ -126,7 +126,7 @@ Things that are not equal, so say them when you quote a result:
 
 ### PowerSVX at small size
 
-Until Postgres is optional, the Core Profile needs four containers: dnsdist, Unbound, the Control Plane and Postgres. Name them so that the observability containers stay stopped, and size the configuration for the small node:
+Until Postgres is optional, the Core Profile needs four containers for this benchmark: dnsdist, Unbound, the Control Plane and Postgres (Watchtower is Core too, but is left out of the slice). Name them so that the Observability Profile (Prometheus, Grafana, node-exporter) stays stopped, and size the configuration for the small node:
 
 ```bash
 sudo scripts/bench/size-slice.sh up

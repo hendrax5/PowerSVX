@@ -1,0 +1,19 @@
+# Core Profile overlay: Dataplane + Control Plane only.
+#
+# Core Profile:          dnsdist, unbound, powersvx, postgres, watchtower
+# Observability Profile: prometheus, grafana, node-exporter
+#
+# Without this file nothing changes: a plain `docker compose -f docker-compose.yml
+# -f deploy/linux/docker-compose.host.yml up -d` still starts every service.
+# Adding this file puts the Observability Profile behind the compose profile
+# "observability", so `up -d` leaves it alone. Bootstrap and apply-update add it
+# when POWERSVX_PROFILE=core (see deploy/linux/select-profile.sh).
+#
+# Postgres stays in Core until the Control Plane can start without it.
+services:
+  node-exporter:
+    profiles: [observability]
+  prometheus:
+    profiles: [observability]
+  grafana:
+    profiles: [observability]

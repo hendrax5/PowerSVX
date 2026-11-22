@@ -86,6 +86,12 @@ if docker inspect powersvx --format '{{.HostConfig.NetworkMode}}' 2>/dev/null | 
 elif [ -f "$ROOT/deploy/linux/docker-compose.linux.yml" ]; then
   COMPOSE+=(-f deploy/linux/docker-compose.linux.yml)
 fi
+# POWERSVX_PROFILE=core (environment or .env) is the only thing that changes the stack here;
+# unset means full, whatever the host memory.
+PROFILE="$(sh "$ROOT/deploy/linux/select-profile.sh" -e)" || exit 1
+if [ "$PROFILE" = "core" ]; then
+  COMPOSE+=(-f deploy/linux/docker-compose.core.yml)
+fi
 if [ -z "${GHCR_TOKEN:-}" ] && [ -f "$ROOT/.env" ]; then
   GHCR_USER="${GHCR_USER:-$(grep -E '^GHCR_USER=' "$ROOT/.env" | tail -n1 | cut -d= -f2- | tr -d "\"'\r" || true)}"
   GHCR_TOKEN="$(grep -E '^GHCR_TOKEN=' "$ROOT/.env" | tail -n1 | cut -d= -f2- | tr -d "\"'\r" || true)"
@@ -107,8 +113,14 @@ else
   "${COMPOSE[@]}" up -d --no-deps --force-recreate unbound powersvx
 fi
 
-echo "==> metrics & auto-update stack (node-exporter + prometheus + grafana + watchtower)"
-"${COMPOSE[@]}" up -d --no-deps --force-recreate node-exporter prometheus grafana watchtower || true
+if [ "$PROFILE" = "core" ]; then
+  echo "==> auto-update (watchtower); Core Profile, removing Observability containers"
+  "${COMPOSE[@]}" up -d --no-deps --force-recreate watchtower || true
+  "${COMPOSE[@]}" rm -sf node-exporter prometheus grafana || true
+else
+  echo "==> metrics & auto-update stack (node-exporter + prometheus + grafana + watchtower)"
+  "${COMPOSE[@]}" up -d --no-deps --force-recreate node-exporter prometheus grafana watchtower || true
+fi
 
 echo "==> prune docker build cache + unused images"
 chmod +x "$ROOT/deploy/linux/docker-prune-after-update.sh" 2>/dev/null || true

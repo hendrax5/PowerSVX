@@ -7,9 +7,12 @@
 #   2. unbound (Port 5353 loopback recursive resolver)
 #   3. powersvx (Port 5380 Web UI + REST API control-plane)
 #   4. postgres (Port 5433 persistent storage for query logs & auth)
-#   5. prometheus (Port 9091 metrics aggregator)
-#   6. grafana (Port 3000 auto-provisioned dashboards embedded in UI)
-#   7. node-exporter (Port 9101 host telemetry)
+#   5. prometheus (Port 9091 metrics aggregator)   [Observability Profile]
+#   6. grafana (Port 3000 auto-provisioned dashboards embedded in UI)   [Observability Profile]
+#   7. node-exporter (Port 9101 host telemetry)   [Observability Profile]
+#
+# POWERSVX_PROFILE=core starts only the Core Profile; hosts under 4 GB of memory
+# select it automatically. See deploy/linux/select-profile.sh.
 # ==============================================================================
 
 set -euo pipefail
@@ -156,13 +159,32 @@ if [[ -n "$GHCR_TOKEN_VAL" ]]; then
   printf '%s\n' "$GHCR_TOKEN_VAL" | docker login ghcr.io -u "${GHCR_USER_VAL:-hendrax5}" --password-stdin >/dev/null
 fi
 
-if [[ "${POWERSVX_BUILD_LOCAL:-0}" == "1" ]]; then
-  docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml build powersvx
-else
-  docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml pull powersvx \
-    || docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml build powersvx
+PROFILE="$(sh "$ROOT/deploy/linux/select-profile.sh")" || exit 1
+PROFILE_EXPLICIT=0
+sh "$ROOT/deploy/linux/select-profile.sh" -x && PROFILE_EXPLICIT=1 || true
+COMPOSE=(docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml)
+if [[ "$PROFILE" == "core" ]]; then
+  echo "    Core Profile: starting dnsdist, unbound, powersvx, postgres, watchtower only."
+  COMPOSE+=(-f deploy/linux/docker-compose.core.yml)
+  # Persist an automatic choice so apply-update.sh keeps the same profile.
+  if [[ "$PROFILE_EXPLICIT" == "0" ]]; then
+    echo "POWERSVX_PROFILE=core" >> .env
+    echo "    Saved POWERSVX_PROFILE=core to .env (remove it to return to full)."
+  fi
 fi
-docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d
+
+if [[ "${POWERSVX_BUILD_LOCAL:-0}" == "1" ]]; then
+  "${COMPOSE[@]}" build powersvx
+else
+  "${COMPOSE[@]}" pull powersvx \
+    || "${COMPOSE[@]}" build powersvx
+fi
+"${COMPOSE[@]}" up -d
+# Only an explicit POWERSVX_PROFILE=core removes Observability containers; an automatic
+# choice never touches containers that are already there.
+if [[ "$PROFILE" == "core" && "$PROFILE_EXPLICIT" == "1" ]]; then
+  "${COMPOSE[@]}" rm -sf node-exporter prometheus grafana
+fi
 
 # 7. Verification & Health Summary
 echo "==> [7/7] Verifying services..."
@@ -191,6 +213,10 @@ echo "[✓] Deployment Complete! Services are now live:"
 echo "    - Public DNS (dnsdist):       Port 53 (UDP/TCP)"
 echo "    - Backend Recursive (Unbound): Port 5353 (127.0.0.1)"
 echo "    - PowerSVX Web UI & REST API: http://$(hostname -I | awk '{print $1}'):5380"
+if [[ "$PROFILE" != "core" ]]; then
 echo "    - Grafana Analytics:          http://$(hostname -I | awk '{print $1}'):3000 (auto-embedded)"
 echo "    - Prometheus Metrics:         http://$(hostname -I | awk '{print $1}'):9091"
+else
+  echo "    - Profile: core (no Grafana, Prometheus or node-exporter)"
+fi
 echo ""
