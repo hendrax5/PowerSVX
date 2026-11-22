@@ -20,13 +20,18 @@
 #   -t SEC    length of each search step (default 30)
 #   -m SEC    length of the final measurement (default 120)
 #   -L PCT    highest loss that still counts as keeping up (default 0.1)
+#   -P MS     highest p99 latency that still counts as keeping up (default 5;
+#             0 turns the latency limit off)
 #   -n NOTE   free-text note stored in the results file
 #
 # What it does:
 #   1. waits until the server answers DNS;
 #   2. warms the server by sending every distinct query once;
-#   3. finds the highest rate at which loss stays at or below the limit:
-#      an unthrottled run first, then a binary search below it;
+#   3. finds the highest rate at which the server keeps up, meaning loss and
+#      p99 latency both stay within their limits: an unthrottled run first,
+#      then a binary search below it. Latency matters as much as loss here:
+#      dnsperf never has more than -q queries outstanding, so an overloaded
+#      server shows up as rising latency before it shows up as loss;
 #   4. measures at that rate, recording latency percentiles;
 #   5. samples per-service memory on the server halfway through step 4.
 #
@@ -45,13 +50,13 @@ READY="${BENCH_READY:-$here/../../deploy/linux/dns-ready.sh}"
 
 server="" queries="" label="" port=53 outdir="./results" ssh_dest=""
 clients=100 threads="$(nproc 2>/dev/null || echo 2)" outstanding=10000
-warm_qps=2000 step_s=30 measure_s=120 max_loss=0.1 note=""
+warm_qps=2000 step_s=30 measure_s=120 max_loss=0.1 max_p99=5 note=""
 pause="${BENCH_PAUSE:-2}"
 
 die() { echo "bench: $*" >&2; exit 2; }
 log() { echo "bench: $*" >&2; }
 
-while getopts "s:d:l:p:o:S:c:T:q:W:t:m:L:n:" opt; do
+while getopts "s:d:l:p:o:S:c:T:q:W:t:m:L:P:n:" opt; do
   case "$opt" in
     s) server="$OPTARG" ;;
     d) queries="$OPTARG" ;;
@@ -66,6 +71,7 @@ while getopts "s:d:l:p:o:S:c:T:q:W:t:m:L:n:" opt; do
     t) step_s="$OPTARG" ;;
     m) measure_s="$OPTARG" ;;
     L) max_loss="$OPTARG" ;;
+    P) max_p99="$OPTARG" ;;
     n) note="$OPTARG" ;;
     *) die "unknown option (see the header of this script)" ;;
   esac
@@ -107,13 +113,16 @@ measure() {
 
 kept_up() {
   awk -v loss="${R[loss_pct]}" -v limit="$max_loss" -v done="${R[completed]}" \
-    'BEGIN { exit !(done > 0 && loss <= limit) }'
+      -v p99="${R[latency_p99_ms]:-}" -v maxp="$max_p99" \
+    'BEGIN { exit !(done > 0 && loss <= limit && (maxp == 0 || (p99 != "" && p99 + 0 <= maxp))) }'
 }
+
+num() { [ -n "${1:-}" ] && printf '%s' "$1" || printf 'null'; }
 
 steps=""
 record_step() { # $1 requested rate
-  steps+="${steps:+,}{\"requested_qps\":$1,\"achieved_qps\":${R[qps]},\"loss_pct\":${R[loss_pct]}}"
-  log "  rate=$1 achieved=${R[qps]} qps loss=${R[loss_pct]}%"
+  steps+="${steps:+,}{\"requested_qps\":$1,\"achieved_qps\":${R[qps]},\"loss_pct\":${R[loss_pct]},\"p99_ms\":$(num "${R[latency_p99_ms]:-}")}"
+  log "  rate=$1 achieved=${R[qps]} qps loss=${R[loss_pct]}% p99=${R[latency_p99_ms]:-n/a}ms"
 }
 
 log "1/5 waiting for $server:$port to answer"
@@ -124,7 +133,7 @@ sort -u "$queries" >"$work/distinct.txt"
 "$DNSPERF" -s "$server" -p "$port" -d "$work/distinct.txt" -n 1 -Q "$warm_qps" -c "$clients" -T "$threads" -t 5 \
   >"$work/warm.txt" 2>&1 || true
 
-log "3/5 searching for the highest rate with loss <= ${max_loss}%"
+log "3/5 searching for the highest rate with loss <= ${max_loss}% and p99 <= ${max_p99}ms"
 measure 0 "$step_s" "$work/step-0.txt"
 record_step 0
 limited_by="server"
@@ -144,7 +153,7 @@ else
     if kept_up; then lo="$mid"; else hi="$mid"; fi
   done
   best="$lo"
-  [ "$best" -gt 0 ] || die "no rate was found at which loss stays at or below ${max_loss}%"
+  [ "$best" -gt 0 ] || die "no rate was found at which the server stays within the loss and latency limits"
 fi
 
 log "4/5 measuring for ${measure_s}s at $([ "$best" -gt 0 ] && echo "$best qps" || echo "full speed")"
@@ -179,7 +188,6 @@ json_lines() { # file -> JSON array of strings
   done <"$1"
   printf ']'
 }
-num() { [ -n "${1:-}" ] && printf '%s' "$1" || printf 'null'; }
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 out="$outdir/${label}-${stamp}.json"
@@ -190,6 +198,7 @@ cat >"$out" <<EOF
   "note": "$(json_str "$note")",
   "passed": $passed,
   "max_loss_pct": $max_loss,
+  "max_p99_ms": $max_p99,
   "max_qps": ${R[qps]},
   "limited_by": "$limited_by",
   "loss_pct": ${R[loss_pct]},

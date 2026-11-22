@@ -2,7 +2,7 @@
 
 Measures a DNS server under the Reference Load and writes one results file per run. Use it to take a Baseline and to judge every tuning change against it.
 
-It reports the highest query rate at which loss stays at or below 0.1%, the latency percentiles at that rate, and per-service memory on the server.
+It reports the highest query rate at which the server keeps up (loss at or below 0.1% and p99 latency at or below 5 ms), the latency percentiles at that rate, and per-service memory on the server.
 
 ## Before you start
 
@@ -19,10 +19,12 @@ From the repository root, on the load generator:
 docker build -f scripts/bench/Dockerfile -t powersvx-bench .
 ```
 
+If the build cannot resolve package mirrors, add `--network host`. This was seen on a node set up by `bootstrap-node.sh`, where containers on the default bridge could not resolve names.
+
 ## 2. Get the two name lists
 
 - **Popular names**, most popular first: a public top-sites list such as [Tranco](https://tranco-list.eu). Both plain names and `rank,name` CSV work. Note the list's ID or date in the run note so the run can be repeated.
-- **Filter names**, one per line: a sample of the names the Filter on the server blocks. On a node, the per-policy feed caches live under `data/blocklist/feeds/`; check that the file you pick is a plain list of names.
+- **Filter names**, one per line: a sample of the names the Filter on the server blocks. On a node, the per-policy feed caches under `data/blocklist/feeds/` are in this format (wildcard entries such as `*.example.com` are accepted). They hold millions of names; take a sample, for example every 300th line.
 
 Neither list contains customer data. Do not use customer query logs.
 
@@ -57,14 +59,16 @@ Commit the results file under `docs/bench/`.
 |---|---|
 | `max_qps` | Answered queries per second in the final measurement |
 | `loss_pct` | Share of queries not answered within 2 seconds in the final measurement |
-| `passed` | Whether the final measurement stayed within the loss limit |
-| `limited_by` | `server`: the search found the rate above which the server drops queries. `load generator`: the server answered everything this machine could send, so the true limit is higher |
+| `passed` | Whether the final measurement stayed within the loss and p99 limits |
+| `limited_by` | `server`: the search found the rate above which the server loses queries or answers late. `load generator`: the server kept up with everything this machine could send, so the true limit is higher |
 | `latency_ms` | Average and percentiles over all answers in the final measurement |
-| `search_steps` | Every rate that was tried, with the loss seen at each |
+| `search_steps` | Every rate that was tried, with the loss and p99 seen at each |
 | `server.memory_under_load` | `docker stats` on the server, sampled halfway through the final measurement |
 
 Things to keep in mind:
 
+- Overload shows up as latency before it shows up as loss. dnsperf keeps at most `-q` queries outstanding, so a saturated server answers everything, late. That is why p99 is part of the limit; `-P 0` turns it off.
+- Near the limit, p99 varies from step to step. Use longer steps (`-t`) for a number you intend to publish.
 - When `limited_by` is `load generator`, the number is a floor, not the server's limit. Add threads (`-T`), clients (`-c`) or a second load generator before comparing two systems.
 - Latency covers cache hits and misses together. The client cannot tell them apart, and after warm-up nearly all answers come from cache.
 - Cache misses go to the real internet. The warm-up rate (`-W`, default 2000 qps) is kept low on purpose; do not raise it carelessly.

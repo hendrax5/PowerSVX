@@ -181,7 +181,7 @@ type result struct {
 }
 
 // benchmark runs the harness against a pretend server of the given capacity and returns the results file.
-func benchmark(t *testing.T, capacity string, withRemote bool) result {
+func benchmark(t *testing.T, capacity string, withRemote bool, extraEnv ...string) result {
 	t.Helper()
 	port := startDNS(t)
 	dir := t.TempDir()
@@ -199,6 +199,7 @@ func benchmark(t *testing.T, capacity string, withRemote bool) result {
 		"FAKE_FLOOD=20000",
 		"BENCH_PAUSE=0",
 	}
+	env = append(env, extraEnv...)
 	if withRemote {
 		env = append(env, "BENCH_REMOTE=bash "+filepath.Join(here, "testdata", "fake-remote.sh"))
 	}
@@ -236,6 +237,21 @@ func TestFindsTheHighestRateTheServerKeepsUpWith(t *testing.T) {
 	}
 	if r.QuerySet.Lines != 3 || r.QuerySet.Distinct != 2 || len(r.QuerySet.SHA256) != 64 {
 		t.Fatalf("expected the query set to be described, got %+v", r.QuerySet)
+	}
+}
+
+func TestTreatsLateAnswersAsNotKeepingUp(t *testing.T) {
+	requireBash(t)
+	// Past its capacity this server loses nothing and answers everything late.
+	r := benchmark(t, "5000", false, "FAKE_QUEUE=1")
+	if r.LimitedBy != "server" {
+		t.Fatalf("expected the server to be the limit when answers arrive late, got %q", r.LimitedBy)
+	}
+	if r.MaxQPS < 4500 || r.MaxQPS > 5000 {
+		t.Fatalf("expected a maximum close to the server capacity of 5000 qps, got %.0f", r.MaxQPS)
+	}
+	if !r.Passed || r.Latency.P99 == nil || *r.Latency.P99 > 5 {
+		t.Fatalf("expected the final measurement to stay within the latency limit, got passed=%v latency=%+v", r.Passed, r.Latency)
 	}
 }
 
