@@ -184,3 +184,14 @@ func sanitizeUnboundAddrs(in []string) []string {
 	}
 	return out
 }
+
+// Dir is where the runtime drop-in configs are written for Unbound (bind-mounted).
+func Dir(dataDir string) string {
+	if d := strings.TrimSpace(os.Getenv("POWERSVX_UNBOUND_RPZ_DIR")); d != "" {
+		return d
+	}
+	if dataDir == "" {
+		dataDir = "./data"
+	}
+	return filepath.Join(dataDir, "unbound-rpz")
+}

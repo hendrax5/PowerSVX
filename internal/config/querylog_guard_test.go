@@ -16,21 +16,13 @@ func TestQueryLogForcedOff(t *testing.T) {
 	}
 }
 
-func TestQueryLogGuardSkipsUnboundDataplane(t *testing.T) {
+func TestQueryLogGuardSkipsDnsdistDataplane(t *testing.T) {
 	t.Setenv("POWERSVX_DISABLE_QUERY_LOG", "1")
-	t.Setenv("POWERSVX_DNS_DATAPLANE", "unbound")
+	t.Setenv("POWERSVX_DNS_DATAPLANE", "dnsdist")
 	cfg := &Config{}
 	cfg.Logging.QueryLogEnabled = true
 	ApplyQueryLogGuard(cfg)
 	if !cfg.Logging.QueryLogEnabled {
-		t.Fatal("unbound dataplane should keep query_log for sampler toggle")
-	}
-	t.Setenv("POWERSVX_UNBOUND_QUERYLOG", "")
-	if UnboundQueryLogAllowed() {
-		t.Fatal("unbound querylog must default OFF")
-	}
-	t.Setenv("POWERSVX_UNBOUND_QUERYLOG", "1")
-	if !UnboundQueryLogAllowed() {
-		t.Fatal("expected unbound querylog when explicitly enabled")
+		t.Fatal("dnsdist dataplane keeps the query_log toggle")
 	}
 }

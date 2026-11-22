@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -300,24 +299,7 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 	checks := map[string]any{}
 	status := "healthy"
 	dataplane := config.DNSDataplane()
-	if dataplane == "unbound" {
-		checks["dns_dataplane"] = map[string]any{"status": "pass", "engine": "unbound", "public_dns": ":53"}
-		// Public DNS is Unbound — probe loopback :53.
-		udpOK := map[string]any{"status": "pass", "addr": "0.0.0.0:53", "engine": "unbound"}
-		if c, err := net.DialTimeout("udp", "127.0.0.1:53", 500*time.Millisecond); err != nil {
-			udpOK["status"] = "fail"
-			udpOK["err"] = err.Error()
-			status = "degraded"
-		} else {
-			_ = c.Close()
-		}
-		checks["dns_udp"] = udpOK
-		if st, err := unboundrpz.Stats(); err == nil {
-			checks["unbound"] = map[string]any{"status": "pass", "stats": st}
-		} else {
-			checks["unbound"] = map[string]any{"status": "degraded", "err": err.Error()}
-		}
-	} else if dataplane == "dnsdist" {
+	if dataplane == "dnsdist" {
 		checks["dns_dataplane"] = map[string]any{"status": "pass", "engine": "dnsdist-cdb", "public_dns": ":53", "backend": "127.0.0.1:5353"}
 		udpOK := map[string]any{"status": "pass", "addr": "0.0.0.0:53", "engine": "dnsdist"}
 		if c, err := net.DialTimeout("udp", "127.0.0.1:53", 500*time.Millisecond); err != nil {
@@ -396,11 +378,6 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 	}
 	checks["cache"] = map[string]any{"status": "pass", "hit_ratio": ratio, "l1_size": size}
 	rpzDetail := map[string]any{"status": "pass", "entries": a.srv.RPZCount(), "policies": len(a.cfg.RPZ.Policies)}
-	if config.UnboundDataplane() {
-		a.refreshUnboundEntryCount()
-		rpzDetail["entries"] = a.unboundRPZEntryCount()
-		rpzDetail["engine"] = "unbound"
-	}
 	if config.DNSDistDataplane() {
 		a.refreshUnboundEntryCount()
 		rpzDetail["entries"] = a.unboundRPZEntryCount()
@@ -413,7 +390,7 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 			if status == "healthy" {
 				status = "degraded"
 			}
-		} else if !config.UnboundDataplane() && !config.DNSDistDataplane() && a.srv.RPZCount() == 0 {
+		} else if !config.DNSDistDataplane() && a.srv.RPZCount() == 0 {
 			loading := false
 			if eng := a.srv.RPZ(); eng != nil {
 				loading = eng.LoadStatus().Loading
@@ -428,7 +405,7 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 					status = "degraded"
 				}
 			}
-		} else if (config.UnboundDataplane() || config.DNSDistDataplane()) && a.unboundRPZEntryCount() == 0 {
+		} else if config.DNSDistDataplane() && a.unboundRPZEntryCount() == 0 {
 			rpzDetail["status"] = "pass"
 			rpzDetail["reason"] = "waiting for filter sync"
 		} else if config.DNSDistDataplane() && a.unboundRPZEntryCount() > 0 {
@@ -622,16 +599,6 @@ func (a *API) statusPayload() map[string]any {
 			out["dnsdist_self_answered"] = uint64(st["self-answered"])
 			out["dnsdist_latency_avg100"] = st["latency-avg100"]
 		}
-	} else if config.UnboundDataplane() {
-		out["mode"] = "unbound"
-		out["udp_addr"] = "0.0.0.0:53 (Unbound)"
-		out["rpz_entries"] = a.unboundRPZEntryCount()
-		if st, err := unboundrpz.Stats(); err == nil {
-			out["queries_total"] = uint64(st["total.num.queries"])
-			out["cache_hits"] = uint64(st["total.num.cachehits"])
-			out["cache_misses"] = uint64(st["total.num.cachemiss"])
-			out["unbound_rpz_actions"] = uint64(unboundrpz.RPZActionTotal(st))
-		}
 	}
 	for k, v := range versionFields() {
 		out[k] = v
@@ -679,16 +646,6 @@ func (a *API) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	payload["health"] = a.healthPayload(r.Context())
 	payload["dns_dataplane"] = config.DNSDataplane()
-	if config.UnboundDataplane() {
-		if st, err := unboundrpz.Stats(); err == nil {
-			payload["unbound"] = st
-			q := st["total.num.queries"]
-			h := st["total.num.cachehits"]
-			if q > 0 {
-				payload["unbound_cache_hit_ratio"] = h / q
-			}
-		}
-	}
 	writeJSON(w, http.StatusOK, payload)
 }
 
@@ -1122,8 +1079,8 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.QueryLog != nil {
 			cur.QueryLog = *body.QueryLog
-			// Go-edge guard only — Unbound dataplane uses the same toggle for logfile sampling.
-			if config.QueryLogForcedOff() && !config.UnboundDataplane() {
+			// Go-edge guard only.
+			if config.QueryLogForcedOff() {
 				cur.QueryLog = false
 			}
 		}
@@ -1225,13 +1182,6 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			if err := a.srv.SetQueryACL(allow, deny); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
-			}
-			if config.UnboundDataplane() {
-				_ = unboundrpz.WriteAccessControl(
-					filepath.Join(unboundrpz.Dir(a.dataDir), "access-control.conf"), allow)
-				if err := unboundrpz.TryReload(); err != nil {
-					a.log.Warn("unbound reload after ACL update", "err", err)
-				}
 			}
 			a.SyncDNSDistACL()
 		}
@@ -1498,7 +1448,7 @@ func (a *API) rpzPayload() map[string]any {
 		pols = []config.RPZPolicyTOML{}
 	}
 	entries := a.srv.RPZCount()
-	if config.UnboundDataplane() || config.DNSDistDataplane() {
+	if config.DNSDistDataplane() {
 		a.refreshUnboundEntryCount()
 		entries = a.unboundRPZEntryCount()
 	}
@@ -1663,9 +1613,6 @@ func (a *API) startRPZReload(sync bool) error {
 	if rpzUsesDNSDistDataplane() {
 		return a.startDNSDistCDBRefresh(sync)
 	}
-	if rpzUsesUnboundDataplane() {
-		return a.startUnboundRPZReload(sync)
-	}
 	eng := a.srv.RPZ()
 	if eng == nil {
 		return nil
@@ -1695,9 +1642,6 @@ func (a *API) startRPZAXFRRefresh(sync bool) error {
 	if rpzUsesDNSDistDataplane() {
 		return a.startDNSDistCDBRefresh(sync)
 	}
-	if rpzUsesUnboundDataplane() {
-		return a.startUnboundAXFRRefresh(sync)
-	}
 	eng := a.srv.RPZ()
 	if eng == nil {
 		return nil
@@ -1714,7 +1658,6 @@ func (a *API) startRPZAXFRRefresh(sync bool) error {
 			return
 		}
 		a.log.Info("rpz axfr refreshed", "entries", n)
-		a.exportAXFRToUnbound(policies)
 	}
 	if sync {
 		run()
@@ -2018,17 +1961,6 @@ func (a *API) handleQueryLogs(w http.ResponseWriter, r *http.Request) {
 		"enabled":       a.cfg.Logging.QueryLogEnabled,
 		"dns_dataplane": config.DNSDataplane(),
 		"sample_rate":   a.cfg.Logging.QueryLogSampleRate,
-	}
-	if config.UnboundDataplane() {
-		out["source"] = "unbound_sample"
-		out["unbound_querylog"] = config.UnboundQueryLogAllowed()
-		if a.cfg.Logging.QueryLogEnabled && config.UnboundQueryLogAllowed() {
-			out["note"] = "Unbound dataplane: sampled query lines (default ~5%, max ~40/s) from Unbound logfile -> Postgres. protocol=unbound; rcode may be -1."
-		} else if config.UnboundQueryLogAllowed() {
-			out["note"] = "Unbound query sampling is available — enable Query log in Settings to write samples to Postgres."
-		} else {
-			out["note"] = "Unbound querylog disabled (POWERSVX_UNBOUND_QUERYLOG=0)."
-		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

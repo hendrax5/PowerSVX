@@ -10,16 +10,16 @@ func TestDNSDataplane(t *testing.T) {
 	if DNSDataplane() != "powersvx" {
 		t.Fatal(DNSDataplane())
 	}
-	t.Setenv("POWERSVX_DNS_DATAPLANE", "unbound")
-	if !UnboundDataplane() || DNSDistDataplane() {
-		t.Fatal("expected unbound")
-	}
 	t.Setenv("POWERSVX_DNS_DATAPLANE", "dnsdist")
-	if !DNSDistDataplane() || UnboundDataplane() {
+	if !DNSDistDataplane() {
 		t.Fatal("expected dnsdist")
 	}
-	if !FilterDataplane() {
-		t.Fatal("filter dataplane")
+	// The removed Unbound mode never selects a Dataplane; CheckDataplane refuses it.
+	for _, v := range []string{"unbound", "external"} {
+		t.Setenv("POWERSVX_DNS_DATAPLANE", v)
+		if DNSDistDataplane() || DNSDataplane() != "powersvx" {
+			t.Fatalf("%s must not select a serving Dataplane, got %q", v, DNSDataplane())
+		}
 	}
 	os.Unsetenv("POWERSVX_DNS_DATAPLANE")
 }

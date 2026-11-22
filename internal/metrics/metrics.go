@@ -108,10 +108,6 @@ var (
 		Name: "powersvx_unbound_cache_misses",
 		Help: "Unbound total.num.cachemiss (dataplane cumulative)",
 	})
-	UnboundRPZActions = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "powersvx_unbound_rpz_actions",
-		Help: "Sum of Unbound num.rpz.action.* excluding passthru",
-	})
 	UnboundRecursionAvg = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "powersvx_unbound_recursion_time_avg_seconds",
 		Help: "Unbound total.recursion.time.avg",

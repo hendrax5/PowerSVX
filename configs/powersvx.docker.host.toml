@@ -113,7 +113,6 @@ api_token = "${API_TOKEN}"
 [logging]
 level = "warn"
 format = "json"
-# Unbound dataplane: UI toggle enables logfile sampler → Postgres (not Go :53).
 query_log_enabled = true
 query_log_destination = "postgresql"
 query_log_retention_days = 3
