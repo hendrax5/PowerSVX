@@ -21,8 +21,18 @@ if [ -z "$MODE" ]; then
   esac
 fi
 
-MEM_KB=$(awk '/MemTotal:/ {print $2}' /proc/meminfo)
-NPROC=$(nproc 2>/dev/null || echo 4)
+# POWERSVX_HOST_CPUS / POWERSVX_HOST_MEM_MB size the config for a smaller node than
+# the machine it is generated on (benchmarks at a fixed size).
+case "${POWERSVX_HOST_MEM_MB:-}" in
+  '') MEM_KB=$(awk '/MemTotal:/ {print $2}' /proc/meminfo) ;;
+  *[!0-9]*) echo "POWERSVX_HOST_MEM_MB must be a whole number of MB" >&2; exit 1 ;;
+  *) MEM_KB=$((POWERSVX_HOST_MEM_MB * 1024)) ;;
+esac
+case "${POWERSVX_HOST_CPUS:-}" in
+  '') NPROC=$(nproc 2>/dev/null || echo 4) ;;
+  *[!0-9]*|0) echo "POWERSVX_HOST_CPUS must be a positive whole number" >&2; exit 1 ;;
+  *) NPROC=$POWERSVX_HOST_CPUS ;;
+esac
 case $NPROC in
   ''|*[!0-9]*) NPROC=4 ;;
 esac

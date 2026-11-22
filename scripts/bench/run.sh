@@ -23,6 +23,12 @@
 #   -P MS     highest p99 latency that still counts as keeping up (default 5;
 #             0 turns the latency limit off)
 #   -n NOTE   free-text note stored in the results file
+#   -y SYSTEM what is under test, for example powersvx or technitium (default: unknown)
+#   -Z SIZE   full or small: the size the system was limited to (default: full)
+#   -R REGEX  which containers on the server count as the system, matched against
+#             container names; their memory and images are recorded (default: all).
+#             Use it so that observability containers do not count as part of the
+#             system, for example 'dnsdist|unbound|^powersvx$|postgres' or '^technitium-bench$'
 #
 # What it does:
 #   1. waits until the server answers DNS;
@@ -48,6 +54,7 @@ DNSPERF="${DNSPERF:-dnsperf}"
 READY="${BENCH_READY:-$here/../../deploy/linux/dns-ready.sh}"
 [ -f "$READY" ] || READY="$here/dns-ready.sh"
 
+system="unknown" sysize="full" containers=""
 server="" queries="" label="" port=53 outdir="./results" ssh_dest=""
 clients=100 threads="$(nproc 2>/dev/null || echo 2)" outstanding=10000
 warm_qps=2000 step_s=30 measure_s=120 max_loss=0.1 max_p99=5 note=""
@@ -56,7 +63,7 @@ pause="${BENCH_PAUSE:-2}"
 die() { echo "bench: $*" >&2; exit 2; }
 log() { echo "bench: $*" >&2; }
 
-while getopts "s:d:l:p:o:S:c:T:q:W:t:m:L:P:n:" opt; do
+while getopts "s:d:l:p:o:S:c:T:q:W:t:m:L:P:n:y:Z:R:" opt; do
   case "$opt" in
     s) server="$OPTARG" ;;
     d) queries="$OPTARG" ;;
@@ -73,6 +80,9 @@ while getopts "s:d:l:p:o:S:c:T:q:W:t:m:L:P:n:" opt; do
     L) max_loss="$OPTARG" ;;
     P) max_p99="$OPTARG" ;;
     n) note="$OPTARG" ;;
+    y) system="$OPTARG" ;;
+    Z) sysize="$OPTARG" ;;
+    R) containers="$OPTARG" ;;
     *) die "unknown option (see the header of this script)" ;;
   esac
 done
@@ -80,6 +90,8 @@ done
 [ -n "$server" ] || die "-s server is required"
 [ -s "$queries" ] || die "-d query set '$queries' is missing or empty"
 [[ "$label" =~ ^[A-Za-z0-9._-]+$ ]] || die "-l label must use only letters, digits, dot, dash and underscore"
+[[ "$system" =~ ^[A-Za-z0-9._-]+$ ]] || die "-y system must use only letters, digits, dot, dash and underscore"
+case "$sysize" in full | small) ;; *) die "-Z must be full or small" ;; esac
 command -v "$DNSPERF" >/dev/null 2>&1 || die "dnsperf not found (set DNSPERF or use the load generator image)"
 
 work="$(mktemp -d)"
@@ -161,7 +173,8 @@ mem_file="$work/mem.txt"
 : >"$mem_file"
 (
   sleep $((measure_s / 2))
-  remote "docker stats --no-stream --format '{{.Name}} {{.MemUsage}} {{.CPUPerc}}'" >"$mem_file" 2>/dev/null || true
+  remote "docker stats --no-stream --format '{{.Name}} {{.MemUsage}} {{.CPUPerc}}'" 2>/dev/null |
+    { grep -E -- "${containers:-.}" || true; } >"$mem_file" || true
 ) &
 sampler=$!
 sleep "$pause"
@@ -174,7 +187,8 @@ log "5/5 collecting server details"
 target_cpus="$(remote nproc 2>/dev/null || true)"
 target_mem_kb="$(remote 'grep -m1 MemTotal: /proc/meminfo' 2>/dev/null | tr -dc '0-9' || true)"
 target_kernel="$(remote 'uname -r' 2>/dev/null || true)"
-remote "docker ps --format '{{.Names}} {{.Image}}'" >"$work/images.txt" 2>/dev/null || true
+remote "docker ps --format '{{.Names}} {{.Image}}'" 2>/dev/null |
+  { grep -E -- "${containers:-.}" || true; } >"$work/images.txt" || true
 
 json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/  /g' | tr -d '\r\n'; }
 json_lines() { # file -> JSON array of strings
@@ -194,6 +208,8 @@ out="$outdir/${label}-${stamp}.json"
 cat >"$out" <<EOF
 {
   "label": "$(json_str "$label")",
+  "system": "$(json_str "$system")",
+  "size": "$sysize",
   "taken_at_utc": "$stamp",
   "note": "$(json_str "$note")",
   "passed": $passed,

@@ -4,10 +4,10 @@
 FROM debian:trixie-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends dnsperf openssh-client ca-certificates \
+ && apt-get install -y --no-install-recommends dnsperf openssh-client ca-certificates jq \
  && rm -rf /var/lib/apt/lists/*
 
-COPY scripts/bench/gen-queryset.sh scripts/bench/parse-dnsperf.sh scripts/bench/run.sh /opt/bench/
+COPY scripts/bench/gen-queryset.sh scripts/bench/parse-dnsperf.sh scripts/bench/run.sh scripts/bench/compare.sh /opt/bench/
 COPY deploy/linux/dns-ready.sh /opt/bench/dns-ready.sh
 
 WORKDIR /work

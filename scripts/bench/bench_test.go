@@ -159,6 +159,8 @@ func startDNS(t *testing.T) string {
 
 type result struct {
 	Label     string  `json:"label"`
+	System    string  `json:"system"`
+	Size      string  `json:"size"`
 	Passed    bool    `json:"passed"`
 	MaxQPS    float64 `json:"max_qps"`
 	LimitedBy string  `json:"limited_by"`
@@ -183,6 +185,25 @@ type result struct {
 // benchmark runs the harness against a pretend server of the given capacity and returns the results file.
 func benchmark(t *testing.T, capacity string, withRemote bool, extraEnv ...string) result {
 	t.Helper()
+	return readResult(t, benchmarkFile(t, capacity, withRemote, extraEnv, nil))
+}
+
+func readResult(t *testing.T, path string) result {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("results file %q: %v", path, err)
+	}
+	var r result
+	if err := json.Unmarshal(raw, &r); err != nil {
+		t.Fatalf("results file is not valid JSON: %v\n%s", err, raw)
+	}
+	return r
+}
+
+// benchmarkFile runs the harness against a pretend server and returns the path of the results file.
+func benchmarkFile(t *testing.T, capacity string, withRemote bool, extraEnv, extraArgs []string) string {
+	t.Helper()
 	port := startDNS(t)
 	dir := t.TempDir()
 	queries := filepath.Join(dir, "queries.txt")
@@ -206,18 +227,140 @@ func benchmark(t *testing.T, capacity string, withRemote bool, extraEnv ...strin
 	if err := os.Chmod(filepath.Join(here, "testdata", "fake-dnsperf.sh"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out := run(t, env, "./run.sh", "-s", "127.0.0.1", "-p", port, "-d", queries, "-l", "unit",
-		"-o", dir, "-t", "1", "-m", "2", "-T", "1")
-	path := strings.TrimSpace(out)
-	raw, err := os.ReadFile(path)
+	args := []string{"-s", "127.0.0.1", "-p", port, "-d", queries, "-l", "unit",
+		"-o", dir, "-t", "1", "-m", "2", "-T", "1"}
+	out := run(t, env, "./run.sh", append(args, extraArgs...)...)
+	return strings.TrimSpace(out)
+}
+
+func TestRecordsTheSystemItsSizeAndOnlyTheNamedContainers(t *testing.T) {
+	requireBash(t)
+	path := benchmarkFile(t, "5000", true, nil, []string{"-y", "technitium", "-Z", "small", "-R", "^unbound"})
+	r := readResult(t, path)
+	if r.System != "technitium" || r.Size != "small" {
+		t.Fatalf("expected system technitium at small size, got %q at %q", r.System, r.Size)
+	}
+	if len(r.Server.MemoryUnderLoad) != 1 || !strings.HasPrefix(r.Server.MemoryUnderLoad[0], "unbound ") {
+		t.Fatalf("expected memory for the unbound container only, got %v", r.Server.MemoryUnderLoad)
+	}
+	if len(r.Server.Images) != 0 {
+		t.Fatalf("expected no images for containers outside the filter, got %v", r.Server.Images)
+	}
+}
+
+func TestDefaultsToUnknownSystemAtFullSize(t *testing.T) {
+	requireBash(t)
+	r := benchmark(t, "5000", false)
+	if r.System != "unknown" || r.Size != "full" {
+		t.Fatalf("expected unknown system at full size, got %q at %q", r.System, r.Size)
+	}
+}
+
+func TestRejectsAnInvalidSize(t *testing.T) {
+	requireBash(t)
+	if _, _, err := tryRun(nil, "./run.sh", "-s", "127.0.0.1", "-d", "testdata/popular.csv", "-l", "x", "-Z", "medium"); err == nil {
+		t.Fatal("expected -Z medium to be refused")
+	}
+}
+
+func requireJQ(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not available")
+	}
+}
+
+func compare(t *testing.T, a, b string) (string, error) {
+	t.Helper()
+	out, errOut, err := tryRun(nil, "./compare.sh", a, b)
 	if err != nil {
-		t.Fatalf("results file %q: %v", path, err)
+		if _, ok := err.(*exec.ExitError); !ok {
+			t.Fatalf("compare.sh: %v\n%s", err, errOut)
+		}
 	}
-	var r result
-	if err := json.Unmarshal(raw, &r); err != nil {
-		t.Fatalf("results file is not valid JSON: %v\n%s", err, raw)
+	return out, err
+}
+
+func TestComparesTwoRunsOfTheSameKindSideBySide(t *testing.T) {
+	requireBash(t)
+	requireJQ(t)
+	a := benchmarkFile(t, "5000", true, nil, []string{"-y", "powersvx"})
+	b := benchmarkFile(t, "2500", true, nil, []string{"-y", "technitium"})
+	out, err := compare(t, a, b)
+	if err != nil {
+		t.Fatalf("expected comparable runs to exit 0: %v\n%s", err, out)
 	}
-	return r
+	for _, want := range []string{"COMPARABLE: yes", "powersvx", "technitium", "max qps:  A is", "memory:   A uses", "memory under load"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in the comparison:\n%s", want, out)
+		}
+	}
+}
+
+func TestRefusesToCompareRunsOfDifferentSizes(t *testing.T) {
+	requireBash(t)
+	requireJQ(t)
+	a := benchmarkFile(t, "5000", true, nil, []string{"-y", "powersvx"})
+	b := benchmarkFile(t, "5000", true, nil, []string{"-y", "technitium", "-Z", "small"})
+	out, err := compare(t, a, b)
+	if err == nil {
+		t.Fatalf("expected runs of different sizes to be reported as not comparable:\n%s", out)
+	}
+	for _, want := range []string{"COMPARABLE: no", "the sizes differ"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in the comparison:\n%s", want, out)
+		}
+	}
+}
+
+func TestRefusesToCompareDifferentQuerySets(t *testing.T) {
+	requireBash(t)
+	requireJQ(t)
+	a := benchmarkFile(t, "5000", true, nil, nil)
+	raw, err := os.ReadFile(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := filepath.Join(t.TempDir(), "other.json")
+	edited := strings.Replace(string(raw), `"sha256": "`, `"sha256": "0000`, 1)
+	if edited == string(raw) {
+		t.Fatal("could not edit the query set digest in the results file")
+	}
+	if err := os.WriteFile(b, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := compare(t, a, b)
+	if err == nil || !strings.Contains(out, "the query sets differ") {
+		t.Fatalf("expected different query sets to be reported as not comparable (err=%v):\n%s", err, out)
+	}
+}
+
+func TestSaysWhenMemoryOrHardwareWasNotRecorded(t *testing.T) {
+	requireBash(t)
+	requireJQ(t)
+	a := benchmarkFile(t, "5000", false, nil, nil)
+	b := benchmarkFile(t, "5000", false, nil, nil)
+	out, err := compare(t, a, b)
+	if err != nil {
+		t.Fatalf("expected runs with the same missing details to exit 0: %v\n%s", err, out)
+	}
+	for _, want := range []string{"memory was not recorded", "server hardware was not recorded"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in the comparison:\n%s", want, out)
+		}
+	}
+}
+
+func TestCompareRejectsAFileThatIsNotAResult(t *testing.T) {
+	requireBash(t)
+	requireJQ(t)
+	bad := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(bad, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := tryRun(nil, "./compare.sh", bad, bad); err == nil {
+		t.Fatal("expected a file that is not a results file to be refused")
+	}
 }
 
 func TestFindsTheHighestRateTheServerKeepsUpWith(t *testing.T) {

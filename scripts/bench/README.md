@@ -74,6 +74,87 @@ Things to keep in mind:
 - Cache misses go to the real internet. The warm-up rate (`-W`, default 2000 qps) is kept low on purpose; do not raise it carelessly.
 - Names that do not exist all sit under one made-up top-level name and come from a fixed pool, so the run does not flood the root servers with junk.
 
-## Comparing two systems
+## Comparing PowerSVX with Technitium
 
-Run the same query set, from the same load generator, against each system on the same hardware, one after the other. Change only the label. Everything else in the two results files should match, including `query_set.sha256` and the `load_generator` block.
+Both systems run on the same server, one after the other, at two sizes: `full` (the whole machine) and `small` (2 CPUs and 2 GB). Everything below runs on the server, as root, from a checkout of this repository.
+
+### The two sizes
+
+`small` is a cgroup slice shared by everything under test, so the three PowerSVX containers together are held to the same CPUs and memory as the single Technitium container. CPUs are pinned with a cpuset (the first N CPUs), so the system sees N CPUs, as on a real N-vCPU node.
+
+```bash
+sudo scripts/bench/size-slice.sh up            # 2 CPUs, 2048 MB, no swap; -c and -m change them
+sudo scripts/bench/size-slice.sh status
+sudo scripts/bench/size-slice.sh down          # refuses while anything still runs in the slice
+```
+
+It needs cgroup v2 and systemd 244 or newer. A reboot removes the slice. On a 12-vCPU node it was checked to give a container 2 CPUs (four busy loops used exactly 12 CPU-seconds in 6 seconds) and to kill a 3 GB allocation at the 2 GB cap.
+
+Keep the load generator off the slice's CPUs, or better on another machine: `docker run --cpuset-cpus 4-9 ...` for a same-host check.
+
+### Technitium
+
+```bash
+sudo scripts/bench/technitium.sh up -f filter.txt -a 192.0.2.20/32 \
+     [-b 192.0.2.10] [-z small]
+sudo scripts/bench/technitium.sh settings > results/technitium-settings.json
+sudo scripts/bench/technitium.sh down
+```
+
+`-f` is the same Filter file you gave `gen-queryset.sh`. `-a` is required: it is the list of networks allowed to recurse, normally the load generator's address. There is no open-resolver default. The script refuses to start if port 53 is taken, so stop PowerSVX's dnsdist first (this is the host-network mode used for measurements; `-N bridge` is only for functional checks).
+
+`up` ends with checks through the server itself: a Filter name must get the sinkhole address, `example.com` must resolve by recursion, and the DNS port must answer from outside the container. It fails otherwise.
+
+What the fair configuration is, and why:
+
+| Setting | Value | Why |
+|---|---|---|
+| Version | pinned release 15.6.2 (image digest recorded by `settings`) | repeatable; bump it in its own change |
+| Resolution | full recursion from the root servers, no forwarders | as PowerSVX's Unbound |
+| Recursion | allowed only for `-a` | never an open resolver |
+| Filter | the Filter names as a block list, answered with the sinkhole addresses: A to `139.255.196.196`, AAAA to `::`, other types NOERROR with no data | the same answers as the dnsdist rules; names match their subdomains in both |
+| Query log | off (`logQueries=false`) | per-query logging costs throughput and is off in the PowerSVX runs |
+| Cache | 1,000,000 entries, minimum TTL 60 s | the default of 10,000 entries cannot hold the query set; 60 s matches dnsdist's packet cache |
+| Everything else | the release's defaults | including dashboard statistics, which stay on |
+| Web console | 127.0.0.1 only; the admin password is generated into the state directory and never printed | the console is not part of the measurement and must not be exposed |
+
+Things that are not equal, so say them when you quote a result:
+
+- Technitium keeps its dashboard statistics; PowerSVX keeps its own counters. Neither is turned off.
+- Technitium's maximum record TTL is 7 days against dnsdist's 1 day; names in the query set are all re-asked within one run, so it does not change what is measured.
+- Technitium's own default is to listen on all addresses on port 53, and the script only moves it to the address and port you asked for after it has started (there is no environment variable for this). This was not observed to disturb a host where dnsdist held specific addresses on port 53, but do not start it on a host where another service must keep answering on port 53.
+
+### PowerSVX at small size
+
+Until Postgres is optional, the Core Profile needs four containers: dnsdist, Unbound, the Control Plane and Postgres. Name them so that the observability containers stay stopped, and size the configuration for the small node:
+
+```bash
+sudo scripts/bench/size-slice.sh up
+eval "$(scripts/bench/size-slice.sh env)"       # POWERSVX_HOST_CPUS=2, POWERSVX_HOST_MEM_MB=2048
+bash deploy/linux/gen-unbound-conf.sh && bash deploy/linux/gen-dnsdist-conf.sh
+eval "$(deploy/linux/calc-mem-env.sh)"
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \
+  -f deploy/linux/docker-compose.bench-small.yml up -d dnsdist unbound powersvx postgres
+```
+
+The generators size caches and thread counts from the host's CPUs and memory. Without `POWERSVX_HOST_CPUS` and `POWERSVX_HOST_MEM_MB` a 2 GB slice on an 8 GB host would run a configuration meant for 8 GB.
+
+### Running and comparing
+
+Run `run.sh` twice from the load generator with the same query set and settings, changing only the system:
+
+```bash
+run.sh -s SERVER -S admin@SERVER -d queries.txt -l powersvx-small -y powersvx   -Z small \
+       -R 'dnsdist|unbound|^powersvx$|postgres'
+run.sh -s SERVER -S admin@SERVER -d queries.txt -l technitium-small -y technitium -Z small \
+       -R '^technitium-bench$'
+compare.sh results/powersvx-small-*.json results/technitium-small-*.json
+```
+
+`-S` (ssh with a key; password prompts are not supported) is what records the server's CPUs, memory and per-container memory. `-R` limits that to the containers that belong to the system, so Prometheus or Grafana running on the same host do not count against it. Memory is `docker stats` usage, which excludes reclaimable page cache.
+
+`compare.sh` prints the two runs side by side and ends with `COMPARABLE: yes` or `no`. It says no, and exits 1, when the query sets, the load generator settings, the dnsperf versions, the sizes, the loss and p99 limits or the server hardware differ. It adds notes when the load generator was the limit, when a final measurement fell outside the limits, and when memory or hardware was not recorded.
+
+### The Filter: sample or full
+
+A 1-in-300 sample of the Filter (about 50,000 names) is enough to measure query throughput. It is not enough to compare memory: the production Filter has about 20 million names, and holding them is a large part of both systems' footprint. For the memory comparison use the full feed on both sides. Technitium loads it into memory; at the `small` size that may not fit in 2 GB, which is itself a result worth recording.

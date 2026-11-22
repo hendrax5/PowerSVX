@@ -1,0 +1,21 @@
+# Run the Core services inside the benchmark size slice (2 CPUs, 2 GB by default).
+#
+#   sudo scripts/bench/size-slice.sh up
+#   eval "$(scripts/bench/size-slice.sh env)"
+#   bash deploy/linux/gen-unbound-conf.sh && bash deploy/linux/gen-dnsdist-conf.sh
+#   eval "$(deploy/linux/calc-mem-env.sh)"
+#   docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \
+#     -f deploy/linux/docker-compose.bench-small.yml up -d dnsdist unbound powersvx postgres
+#
+# Naming the services keeps the observability services (Prometheus, Grafana, node-exporter,
+# Watchtower) stopped. Postgres is still listed because the Control Plane does not start
+# without it yet; that goes away when Postgres becomes optional.
+services:
+  powersvx:
+    cgroup_parent: powersvx-bench.slice
+  unbound:
+    cgroup_parent: powersvx-bench.slice
+  dnsdist:
+    cgroup_parent: powersvx-bench.slice
+  postgres:
+    cgroup_parent: powersvx-bench.slice
