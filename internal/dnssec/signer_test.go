@@ -77,7 +77,7 @@ func TestSignerED25519NSEC3AndRollover(t *testing.T) {
 	req.SetEdns0(1232, true)
 	resp := new(dns.Msg)
 	resp.SetRcode(req, dns.RcodeNameError)
-	s.SignDenialForNames(zone, "missing.isp.co.id.", []string{zone, "www.isp.co.id."}, req, resp)
+	s.SignDenialForNames(zone, "missing.isp.co.id.", map[string][]uint16{zone: {dns.TypeSOA}, "www.isp.co.id.": {dns.TypeA}}, req, resp)
 	hasNSEC3 := false
 	for _, rr := range resp.Ns {
 		if rr.Header().Rrtype == dns.TypeNSEC3 {

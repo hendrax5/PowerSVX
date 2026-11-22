@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -230,21 +229,23 @@ func (s *Signer) SignResponse(zone string, req, resp *dns.Msg) {
 }
 
 // SignDenial attaches signed NSEC/NSEC3 denial RRs for NXDOMAIN/NODATA when DO is set.
-func (s *Signer) SignDenial(zone, qname string, req, resp *dns.Msg) {
-	s.SignDenialForNames(zone, qname, nil, req, resp)
+func (s *Signer) SignDenial(zone, qname string, req, resp *dns.Msg) error {
+	return s.SignDenialForNames(zone, qname, nil, req, resp)
 }
 
-// SignDenialForNames builds a proper canonically ordered NSEC chain (or NSEC3 hash records)
-// using the zone's active owner names so validators never reject self-referential NSEC loops.
-func (s *Signer) SignDenialForNames(zone, qname string, ownerNames []string, req, resp *dns.Msg) {
+// SignDenialForNames adds the signed proof that qname (NXDOMAIN) or its type
+// (NODATA) does not exist, when the request has DO set. resp.Rcode says which
+// of the two it is. names maps every owner name of the zone, in the view being
+// answered, to the record types it has; it is what the NSEC chain is built from.
+func (s *Signer) SignDenialForNames(zone, qname string, names map[string][]uint16, req, resp *dns.Msg) error {
 	if s == nil || resp == nil {
-		return
+		return nil
 	}
 	zone = config.NormalizeName(zone)
 	qname = config.NormalizeName(qname)
 	zk, err := s.load(zone)
 	if err != nil {
-		return
+		return nil
 	}
 	wantDO := false
 	if req != nil {
@@ -253,90 +254,16 @@ func (s *Signer) SignDenialForNames(zone, qname string, ownerNames []string, req
 		}
 	}
 	if !wantDO {
-		return
+		return nil
 	}
 	now := time.Now().UTC()
 	inc := now.Add(30 * 24 * time.Hour)
 
 	if zk.Policy.NSEC3 {
 		s.appendNSEC3Denial(zone, qname, zk, now, inc, resp)
-		return
+		return nil
 	}
-
-	// Build sorted unique canonical owner list anchored at zone apex.
-	seen := map[string]struct{}{zone: {}}
-	for _, n := range ownerNames {
-		cn := dns.CanonicalName(config.NormalizeName(n))
-		if cn != "" && !strings.HasPrefix(cn, "*.") {
-			seen[cn] = struct{}{}
-		}
-	}
-	sorted := make([]string, 0, len(seen))
-	for k := range seen {
-		sorted = append(sorted, k)
-	}
-	sort.Strings(sorted)
-
-	owner := zone
-	next := zone
-	cq := dns.CanonicalName(qname)
-	exact := false
-	for _, cand := range sorted {
-		if cand == cq {
-			exact = true
-			break
-		}
-	}
-	if exact {
-		owner = cq
-		for i, cand := range sorted {
-			if cand == cq {
-				next = sorted[(i+1)%len(sorted)]
-				break
-			}
-		}
-	} else {
-		// Find predecessor owner < cq < next
-		idx := sort.SearchStrings(sorted, cq)
-		if idx == 0 || idx >= len(sorted) {
-			owner = sorted[len(sorted)-1]
-			next = sorted[0]
-		} else {
-			owner = sorted[idx-1]
-			next = sorted[idx]
-		}
-	}
-
-	nsec := &dns.NSEC{
-		Hdr: dns.RR_Header{
-			Name:   owner,
-			Rrtype: dns.TypeNSEC,
-			Class:  dns.ClassINET,
-			Ttl:    300,
-		},
-		NextDomain: next,
-		TypeBitMap: []uint16{dns.TypeA, dns.TypeAAAA, dns.TypeNS, dns.TypeSOA, dns.TypeTXT, dns.TypeRRSIG, dns.TypeNSEC, dns.TypeDNSKEY},
-	}
-	resp.Ns = append(resp.Ns, nsec)
-	sig := &dns.RRSIG{
-		Hdr: dns.RR_Header{
-			Name:   owner,
-			Rrtype: dns.TypeRRSIG,
-			Class:  dns.ClassINET,
-			Ttl:    300,
-		},
-		TypeCovered: dns.TypeNSEC,
-		Algorithm:   zk.ZSK.Algorithm,
-		Labels:      uint8(dns.CountLabel(owner)),
-		OrigTtl:     300,
-		Expiration:  uint32(inc.Unix()),
-		Inception:   uint32(now.Unix()),
-		KeyTag:      zk.ZSK.KeyTag(),
-		SignerName:  zone,
-	}
-	if err := sig.Sign(zk.ZSKPriv, []dns.RR{nsec}); err == nil {
-		resp.Ns = append(resp.Ns, sig)
-	}
+	return s.signNSECDenial(zone, qname, zk, names, now, resp)
 }
 
 func (s *Signer) appendNSEC3Denial(zone, qname string, zk *zoneKeys, now, inc time.Time, resp *dns.Msg) {

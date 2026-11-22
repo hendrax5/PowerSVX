@@ -3,7 +3,6 @@ package authoritative
 import (
 	"fmt"
 	"net"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -604,26 +603,6 @@ func (s *Store) ExportBINDZone(zone string) (string, bool) {
 		}
 	}
 	return b.String(), true
-}
-
-// ZoneNames returns sorted FQDN names for all unique owners in zone (used by DNSSEC NSEC chain).
-func (s *Store) ZoneNames(zone string) []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	zone = config.NormalizeName(zone)
-	seen := map[string]struct{}{zone: {}}
-	for _, r := range s.zones[zone] {
-		n := config.NormalizeName(r.Name)
-		if !strings.HasPrefix(n, "*.") {
-			seen[n] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(seen))
-	for k := range seen {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
 
 func TypeFromString(s string) uint16 {

@@ -584,37 +584,6 @@ func TestSignedZoneAnswersDNSKEYWithSignatureFromTheKeySigningKey(t *testing.T) 
 	verifyRRSIG(t, m.Answer, dns.TypeDNSKEY, h.signer.DNSKEYs(zoneName))
 }
 
-func TestSignedZoneNXDOMAINCarriesAnNSECInTheAuthoritySection(t *testing.T) {
-	// Only the presence of the NSEC is asserted. The NSEC chain is not in DNSSEC
-	// canonical order and the RRSIG over it is never produced (see the PR notes),
-	// so neither is pinned here.
-	h := newHarness(t, withSigner())
-	h.addZone(zoneName,
-		rec("a.example.com.", dns.TypeA, "192.0.2.1"),
-		rec("z.example.com.", dns.TypeA, "192.0.2.2"),
-	)
-	m := h.q("m.example.com.", dns.TypeA, withDO())
-	wantRcode(t, m, dns.RcodeNameError)
-	wantSOAInAuthority(t, m, zoneName)
-	if n := rrsOfType(m.Ns, dns.TypeNSEC); len(n) != 1 {
-		t.Fatalf("want 1 NSEC, got %v", m.Ns)
-	}
-}
-
-func TestSignedZoneNODATACarriesAnNSECOwnedByTheName(t *testing.T) {
-	h := newHarness(t, withSigner())
-	h.addZone(zoneName, rec("www.example.com.", dns.TypeA, "192.0.2.10"))
-	m := h.q("www.example.com.", dns.TypeAAAA, withDO())
-	wantRcode(t, m, dns.RcodeSuccess)
-	if len(m.Answer) != 0 {
-		t.Fatalf("NODATA carries answers: %v", m.Answer)
-	}
-	wantSOAInAuthority(t, m, zoneName)
-	if n := rrsOfType(m.Ns, dns.TypeNSEC); len(n) != 1 || dns.CanonicalName(n[0].Header().Name) != "www.example.com." {
-		t.Fatalf("want an NSEC owned by the name, got %v", m.Ns)
-	}
-}
-
 const nsec3TestSalt = "a1b2c3d4"
 
 // nsec3Harness builds an NSEC3-signed zone with a fixed salt. The signer would

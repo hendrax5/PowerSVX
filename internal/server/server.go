@@ -282,7 +282,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 				m.Rcode = dns.RcodeSuccess
 				s.signer.SignResponse(zone, req, m)
 			} else if len(rrs) == 0 {
-				if s.auth.NameExists(zone, qname) {
+				if s.auth.NameExists(zone, qname) || s.auth.IsEmptyNonTerminal(zone, qname) {
 					m.Rcode = dns.RcodeSuccess // NODATA (name exists, qtype absent)
 				} else {
 					m.Rcode = dns.RcodeNameError // NXDOMAIN
@@ -291,7 +291,9 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 					m.Ns = append(m.Ns, soaRRs[0])
 				}
 				if s.signer != nil && s.signer.Enabled(zone) {
-					s.signer.SignDenialForNames(zone, qname, s.auth.ZoneNames(zone), req, m)
+					if err := s.signer.SignDenialForNames(zone, qname, s.auth.ZoneNameTypes(zone, viewName, geoTag), req, m); err != nil && s.log != nil {
+						s.log.Warn("dnssec denial incomplete", "zone", zone, "qname", qname, "err", err)
+					}
 				}
 			} else {
 				m.Answer = rrs
