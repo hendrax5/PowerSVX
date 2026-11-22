@@ -154,3 +154,94 @@ func TestRetriesUntilTheWaitRunsOut(t *testing.T) {
 		t.Fatalf("expected the check to retry while waiting, got %d queries", len(got))
 	}
 }
+
+// startResolver models a resolver that answers .invalid by itself, as Unbound does, and
+// resolves every other name only when recursion works. With recursion broken (a forward
+// loop) it answers those with SERVFAIL, which is what the Dataplane did in ticket #40.
+func startResolver(t *testing.T, recursionWorks bool) *responder {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	_, port, _ := net.SplitHostPort(pc.LocalAddr().String())
+	r := &responder{port: port}
+	srv := &dns.Server{
+		PacketConn: pc,
+		Handler: dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
+			name := q.Question[0].Name
+			r.mu.Lock()
+			r.names = append(r.names, name)
+			r.mu.Unlock()
+			m := new(dns.Msg)
+			switch {
+			case strings.HasSuffix(name, ".invalid."):
+				m.SetRcode(q, dns.RcodeNameError)
+			case recursionWorks:
+				m.SetRcode(q, dns.RcodeNameError) // a fresh label under a real domain does not exist
+			default:
+				m.SetRcode(q, dns.RcodeServerFailure)
+			}
+			_ = w.WriteMsg(m)
+		}),
+	}
+	go func() { _ = srv.ActivateAndServe() }()
+	t.Cleanup(func() { _ = srv.Shutdown() })
+	return r
+}
+
+func TestRecursionCheckFailsWhenRecursionIsBroken(t *testing.T) {
+	requireBash(t)
+	r := startResolver(t, false)
+	if ready(t, r, "-r") {
+		t.Fatal("expected not ready: the resolver cannot recurse")
+	}
+	// The local-name check cannot see this fault, which is why -r exists.
+	if !ready(t, r, "-u", "invalid") {
+		t.Fatal("a fresh .invalid name is answered locally, so it passes with recursion broken")
+	}
+}
+
+func TestRecursionCheckPassesWhenRecursionWorks(t *testing.T) {
+	requireBash(t)
+	r := startResolver(t, true)
+	if !ready(t, r, "-r") || !ready(t, r, "-r") {
+		t.Fatal("expected ready on both runs while recursion works")
+	}
+	got := r.asked()
+	if len(got) != 2 || got[0] == got[1] {
+		t.Fatalf("expected two different fresh names, got %v", got)
+	}
+	for _, n := range got {
+		if !strings.HasSuffix(n, ".example.com.") {
+			t.Fatalf("expected a fresh label under the real name example.com., got %q", n)
+		}
+	}
+}
+
+func TestRecursionCheckUsesTheNameGiven(t *testing.T) {
+	requireBash(t)
+	r := startResolver(t, true)
+	if !ready(t, r, "-r", "example.net") {
+		t.Fatal("expected ready")
+	}
+	if got := r.asked(); len(got) != 1 || !strings.HasSuffix(got[0], ".example.net.") {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestRecursionCheckRefusesNamesAnsweredLocally(t *testing.T) {
+	requireBash(t)
+	for _, name := range []string{"invalid", "ready.invalid", "test", "x.localhost", "corp.local", "1.0.0.127.in-addr.arpa"} {
+		r := startResolver(t, true)
+		cmd := exec.Command("bash", "./dns-ready.sh", "-s", "127.0.0.1", "-p", r.port, "-t", "1", "-r", name)
+		out, err := cmd.CombinedOutput()
+		ee, ok := err.(*exec.ExitError)
+		if !ok || ee.ExitCode() != 2 {
+			t.Fatalf("-r %s: want exit 2, got err=%v\n%s", name, err, out)
+		}
+		if got := r.asked(); len(got) != 0 {
+			t.Fatalf("-r %s must not send a query, sent %v", name, got)
+		}
+	}
+}

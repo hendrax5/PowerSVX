@@ -58,6 +58,9 @@ if [ "$POWERSVX_DNS_DATAPLANE" = "dnsdist" ] || [ "$POWERSVX_DNS_DATAPLANE" = "c
   bash "$ROOT/deploy/linux/gen-dnsdist-conf.sh" "$ROOT/configs/dnsdist/dnsdist.conf"
 fi
 
+echo "==> check the Unbound configuration (before Unbound is recreated)"
+bash "$ROOT/deploy/linux/check-unbound-conf.sh" "$ROOT" || exit 1
+
 echo "==> recreate stack (logging limits + retention)"
 export GIT_COMMIT="${GIT_COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -122,9 +125,14 @@ echo "==> status"
 docker ps --format 'table {{.Names}}\t{{.Status}}' | head -20
 df -h / | tail -1
 
-echo "==> readiness (port 53 answers)"
+echo "==> readiness (port 53 answers, then a real name resolves by recursion)"
 if ! bash "$ROOT/deploy/linux/dns-ready.sh" -w "${POWERSVX_READY_WAIT:-90}" -u invalid; then
   echo "update applied but port 53 is not answering" >&2
+  exit 1
+fi
+if ! bash "$ROOT/deploy/linux/dns-ready.sh" -w "${POWERSVX_READY_WAIT:-90}" -r "${POWERSVX_READY_NAME:-example.com}"; then
+  echo "update applied but recursion is not working (port 53 answers local names only)." >&2
+  echo "Check: docker exec powersvx-unbound-1 unbound-control list_forwards ; docs/PRODUCTION.md, \"Unbound forwards to itself\"" >&2
   exit 1
 fi
 echo "done."

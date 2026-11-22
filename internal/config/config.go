@@ -326,9 +326,10 @@ func Default() *Config {
 			ServeStale: true, StaleTTL: 60, PrefetchPct: 10,
 		},
 		Resolver: ResolverConfig{
-			// Default: Unbound hybrid (loopback). Host compose starts Unbound on :5353.
-			Mode:          "forward",
-			Forwarders:    []string{"127.0.0.1:5353"},
+			// Default: Unbound recurses by itself. A forwarder on Unbound's own address
+			// (127.0.0.1:5353) would make it forward to itself.
+			Mode:          "recursive",
+			Forwarders:    nil,
 			ForwardOnFail: false,
 			DNSSECMode:    "off", QNameMinimization: true,
 			EDNSBufferSize: 1232, TimeoutMS: 3000,

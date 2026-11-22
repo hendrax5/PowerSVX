@@ -52,6 +52,7 @@ type API struct {
 	dataDir  string
 
 	unboundRPZEntries atomic.Int64
+	unboundSync       unboundSyncState
 
 	rpzAutoMu   sync.Mutex
 	rpzAutoStop chan struct{}
@@ -314,6 +315,12 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 		} else {
 			checks["unbound"] = map[string]any{"status": "degraded", "err": err.Error(), "addr": "127.0.0.1:5353"}
 			if status == "healthy" {
+				status = "degraded"
+			}
+		}
+		if rt := a.unboundSync.health(); rt != nil {
+			checks["unbound_runtime"] = rt
+			if rt["status"] != "pass" && status == "healthy" {
 				status = "degraded"
 			}
 		}
