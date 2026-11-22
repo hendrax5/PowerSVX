@@ -67,21 +67,6 @@ func (a *API) handleDomainLookup(w http.ResponseWriter, r *http.Request) {
 		"in_rpz":       false,
 		"block_source": "",
 	}
-	if eng := a.srv.RPZ(); eng != nil && eng.Enabled() {
-		hit, ok := eng.Lookup(norm)
-		if ok {
-			hit.Action = rpz.Action(allowlist.BankSafeRPZAction(norm, string(hit.Action)))
-			if hit.Action == rpz.ActionPass {
-				ok = false
-				hit = rpz.Hit{}
-			} else if hit.Action == rpz.ActionNXDOMAIN {
-				hit.Target = ""
-			}
-			out["in_rpz"] = ok
-			out["action"] = string(hit.Action)
-			out["target"] = hit.Target
-		}
-	}
 	if out["in_rpz"] != true {
 		if matched, ok, err := blockcdb.LookupCDBSuffix(filepath.Join(cdbDir, blockcdb.CDBFile), norm); err == nil && ok {
 			act := allowlist.BankSafeRPZAction(norm, "redirect")

@@ -84,7 +84,7 @@ func TestParseIXFRDeltaAndFull(t *testing.T) {
 	}
 }
 
-func TestPullAXFRNamesAndLoadPolicies(t *testing.T) {
+func TestPullAXFRNames(t *testing.T) {
 	mux := dns.NewServeMux()
 	mux.HandleFunc("block.test.", func(w dns.ResponseWriter, req *dns.Msg) {
 		if len(req.Question) == 0 {
@@ -174,47 +174,6 @@ func TestPullAXFRNamesAndLoadPolicies(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("names=%v", names)
-	}
-
-	dir := t.TempDir()
-	eng := New(true)
-	if err := eng.OpenDisk(dir); err != nil {
-		t.Fatal(err)
-	}
-	defer eng.Close()
-	eng.SetAxfrState(LoadAxfrState(AxfrStatePath(dir)))
-
-	n, err := eng.LoadPolicies([]PolicyConfig{{
-		Name:    "kominfo-axfr",
-		Format:  "axfr",
-		Zone:    "block.test.",
-		Masters: []string{addr},
-		Action:  ActionNXDOMAIN,
-	}}, 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n < 1 {
-		t.Fatalf("entries=%d", n)
-	}
-	hit, ok := eng.Lookup("bad.")
-	if !ok || hit.Action != ActionNXDOMAIN {
-		t.Fatalf("lookup: ok=%v hit=%+v", ok, hit)
-	}
-
-	// SOA unchanged → RefreshAXFR skips transfer
-	n2, err := eng.RefreshAXFR([]PolicyConfig{{
-		Name:    "kominfo-axfr",
-		Format:  "axfr",
-		Zone:    "block.test.",
-		Masters: []string{addr},
-		Action:  ActionNXDOMAIN,
-	}}, 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n2 < 1 {
-		t.Fatalf("refresh entries=%d", n2)
 	}
 }
 

@@ -61,6 +61,9 @@ func main() {
 		log.Error("config load failed", "err", err)
 		os.Exit(1)
 	}
+	for _, key := range cfg.RemovedKeys {
+		log.Warn("config key ignored since version 2", "key", key, "see", "docs/CONFIG-REMOVED.md")
+	}
 	if err := os.MkdirAll(*dataDir, 0o755); err != nil {
 		log.Error("data-dir create failed", "dir", *dataDir, "err", err)
 		os.Exit(1)
@@ -77,13 +80,6 @@ func main() {
 	_, _ = blockcdb.WriteBanksWhitelist(*dataDir)
 	log.Info("dns dataplane dnsdist+CDB — PowerSVX is control-plane",
 		"auth_udp", cfg.Server.UDPPort, "api", cfg.API.RESTBind, "blocklist", blockcdb.Dir(*dataDir))
-	cacheMB, inflight, memMB, cpus := cfg.Autosize()
-	log.Info("autosize",
-		"cache_max_size_mb", cacheMB,
-		"max_inflight", inflight,
-		"host_mem_mb", memMB,
-		"cpus", cpus,
-	)
 
 	auth := authoritative.NewStore()
 	var db *database.DB
@@ -185,14 +181,7 @@ func main() {
 	}
 
 	rpzEng := rpz.New(cfg.RPZ.Enabled)
-	if cfg.RPZ.HotCacheMax > 0 {
-		rpzEng.SetHotCacheSize(cfg.RPZ.HotCacheMax)
-	}
-	if err := rpzEng.OpenDisk(filepath.Join(*dataDir, "rpz-store")); err != nil {
-		log.Warn("rpz disk store unavailable", "err", err)
-	}
 	rpzEng.SetAxfrState(rpz.LoadAxfrState(rpz.AxfrStatePath(*dataDir)))
-	defer func() { _ = rpzEng.Close() }()
 
 	wl := allowlist.New(allowlist.DefaultPath(*dataDir))
 	if err := wl.Load(); err != nil {
@@ -382,7 +371,6 @@ func main() {
 		"ecs", cfg.Resolver.ECSEnabled,
 		"geodns", cfg.GeoDNS.Enabled,
 		"split_horizon", cfg.SplitHorizon.Enabled,
-		"tls", cfg.TLSEnabled(),
 		"acme", cfg.ACME.Enabled,
 		"query_log", cfg.Logging.QueryLogEnabled,
 		"api", cfg.API.RESTBind,

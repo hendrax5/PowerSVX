@@ -12,11 +12,11 @@ import (
 	"github.com/powersvx/powersvx/internal/allowlist"
 	"github.com/powersvx/powersvx/internal/api"
 	"github.com/powersvx/powersvx/internal/authoritative"
+	"github.com/powersvx/powersvx/internal/blockcdb"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/denylist"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
-	"github.com/powersvx/powersvx/internal/rpz"
 	"github.com/powersvx/powersvx/internal/server"
 )
 
@@ -171,10 +171,13 @@ func TestWhitelistAndDomainLookup(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	wl := allowlist.New("")
 	bl := denylist.New("")
-	eng := rpz.New(true)
-	eng.Replace(map[string]rpz.Action{"bad.example.com.": rpz.ActionNXDOMAIN})
-	srv := server.New(cfg, server.Deps{Auth: auth, Allow: wl, Deny: bl, RPZ: eng}, log)
+	dataDir := t.TempDir()
+	if _, _, err := blockcdb.SyncNames(dataDir, []string{"bad.example.com."}); err != nil {
+		t.Fatal(err)
+	}
+	srv := server.New(cfg, server.Deps{Auth: auth, Allow: wl, Deny: bl}, log)
 	a := api.New(cfg, srv, nil, auth, log)
+	a.SetDataDir(dataDir)
 	h := a.Handler()
 	authH := func(method, url string, body io.Reader) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, url, body)
