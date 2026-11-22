@@ -14,7 +14,6 @@ import (
 type Config struct {
 	Server       ServerConfig       `toml:"server"`
 	Database     DatabaseConfig     `toml:"database"`
-	Cache        CacheConfig        `toml:"cache"`
 	Resolver     ResolverConfig     `toml:"resolver"`
 	API          APIConfig          `toml:"api"`
 	Logging      LoggingConfig      `toml:"logging"`
@@ -30,6 +29,10 @@ type Config struct {
 	SplitHorizon SplitHorizonConfig `toml:"split_horizon"`
 	ACME         ACMEConfig         `toml:"acme"`
 	Plugins      PluginsConfig      `toml:"plugins"`
+
+	// RemovedKeys are the version 1 keys the file still sets. They are ignored;
+	// the caller logs one warning per key.
+	RemovedKeys []string `toml:"-"`
 }
 
 // ACLConfig controls which clients may send DNS queries.
@@ -50,21 +53,11 @@ type ServerConfig struct {
 	BindAddress string `toml:"bind_address"`
 	UDPPort     int    `toml:"udp_port"`
 	TCPPort     int    `toml:"tcp_port"`
-	DoTPort     int    `toml:"dot_port"`
-	DoHPort     int    `toml:"doh_port"`
-	DoQPort     int    `toml:"doq_port"`
 	Workers     int    `toml:"workers"`
 	// TProxy enables IP_TRANSPARENT on UDP/TCP DNS sockets (Linux only).
 	// Needed for nftables/iptables TPROXY where the packet destination stays
 	// non-local (e.g. 8.8.8.8). Not required for MikroTik/iptables DNAT.
 	TProxy bool      `toml:"tproxy"`
-	TLS    TLSConfig `toml:"tls"`
-}
-
-type TLSConfig struct {
-	Enabled  bool   `toml:"enabled"`
-	CertFile string `toml:"cert_file"`
-	KeyFile  string `toml:"key_file"`
 }
 
 type DatabaseConfig struct {
@@ -78,43 +71,18 @@ type DatabaseConfig struct {
 	Enabled        bool   `toml:"enabled"`
 }
 
-type CacheConfig struct {
-	Type       string `toml:"type"`
-	Path       string `toml:"path"`
-	MaxSizeMB  int    `toml:"max_size_mb"`
-	TTLSeconds int    `toml:"ttl_seconds"`
-	// MinTTL floors positive-answer cache lifetime (0 = honor upstream TTL only).
-	MinTTL      int `toml:"min_ttl"`
-	NegativeTTL int `toml:"negative_ttl"`
-	// ServeStale answers briefly past Expiry while a background refresh runs.
-	ServeStale bool `toml:"serve_stale"`
-	// StaleTTL seconds past Expiry that stale answers may still be served (0 = 60 when ServeStale).
-	StaleTTL int `toml:"stale_ttl"`
-	// PrefetchPct triggers async refresh when remaining fresh TTL is below this % (0 = off).
-	PrefetchPct int `toml:"prefetch_pct"`
-}
-
 type ResolverConfig struct {
 	Mode       string   `toml:"mode"`
 	Forwarders []string `toml:"forwarders"`
 	// ForwardZones routes queries for matching domains to specific upstreams
 	// (longest-suffix match). Checked before recursion and before global forwarders.
 	ForwardZones  []ForwardZoneConfig `toml:"forward_zones"`
-	RootHintsFile string              `toml:"root_hints_file"`
 	// ForwardOnFail: when mode=recursive, fall back to forwarders if root iteration fails.
 	ForwardOnFail     bool   `toml:"forward_on_fail"`
 	DNSSECValidation  bool   `toml:"dnssec_validation"`
 	DNSSECMode        string `toml:"dnssec_mode"`
-	QNameMinimization bool   `toml:"qname_minimization"`
 	EDNSBufferSize    uint16 `toml:"edns_buffer_size"`
-	TimeoutMS         int    `toml:"timeout_ms"`
-	// MaxInflight caps concurrent recursive/forward resolves (0 = Autosize from CPU).
-	MaxInflight int `toml:"max_inflight"`
-	// FallbackTimeoutMS is the short budget for forward_on_fail after recursive fails (0 = auto ~20% of TimeoutMS, capped 500ms).
-	FallbackTimeoutMS int   `toml:"fallback_timeout_ms"`
-	ECSEnabled        bool  `toml:"ecs_enabled"`
-	ECSPrefixV4       uint8 `toml:"ecs_prefix_v4"`
-	ECSPrefixV6       uint8 `toml:"ecs_prefix_v6"`
+	ECSEnabled        bool   `toml:"ecs_enabled"`
 }
 
 // ForwardZoneConfig is a conditional/stub forwarder for a domain suffix.
@@ -193,7 +161,6 @@ type LoggingConfig struct {
 	Level                 string `toml:"level"`
 	Format                string `toml:"format"`
 	QueryLogEnabled       bool   `toml:"query_log_enabled"`
-	QueryLogDestination   string `toml:"query_log_destination"`
 	QueryLogRetentionDays int    `toml:"query_log_retention_days"`
 	// QueryLogMaxSizeMB hard-caps query_logs on-disk size (table+indexes). 0 = no size cap.
 	// Oldest rows are deleted first when over the limit. Recommended 1024–5120 on small VPS.
@@ -241,10 +208,6 @@ type RPZConfig struct {
 	// AxfrUpdateInterval is the refresh cadence for format=axfr feeds (seconds; 0 = off).
 	// Independent of UpdateInterval. Default 86400 (24h).
 	AxfrUpdateInterval int `toml:"axfr_update_interval"`
-	// HotCacheMax is max exact RPZ hits kept in RAM in cold/disk mode (0 = default 500k).
-	HotCacheMax int `toml:"hot_cache_max"`
-	// HotSeedTopN periodically seeds the RPZ hot cache from the top blocked qnames (0 = off).
-	HotSeedTopN int `toml:"hot_seed_top_n"`
 }
 
 type MetricsConfig struct {
@@ -306,39 +269,25 @@ func Default() *Config {
 			BindAddress: "127.0.0.1", // the Auth Backend is reached only by the local Dataplane
 			UDPPort:     5353,
 			TCPPort:     5353,
-			DoTPort:     853,
-			DoHPort:     8443,
-			DoQPort:     784,
 			Workers:     0,
-			TLS: TLSConfig{
-				Enabled:  false,
-				CertFile: "./certs/fullchain.pem",
-				KeyFile:  "./certs/privkey.pem",
-			},
 		},
 		Database: DatabaseConfig{
 			Type: "postgres", Host: "localhost", Port: 5432,
 			Database: "PowerSVX", User: "PowerSVX", MaxConnections: 20,
-		},
-		Cache: CacheConfig{
-			Type: "badger", Path: "./data/cache", MaxSizeMB: 512,
-			TTLSeconds: 300, MinTTL: 120, NegativeTTL: 60,
-			ServeStale: true, StaleTTL: 60, PrefetchPct: 10,
 		},
 		Resolver: ResolverConfig{
 			// Default: Unbound hybrid (loopback). Host compose starts Unbound on :5353.
 			Mode:          "forward",
 			Forwarders:    []string{"127.0.0.1:5353"},
 			ForwardOnFail: false,
-			DNSSECMode:    "off", QNameMinimization: true,
-			EDNSBufferSize: 1232, TimeoutMS: 3000,
-			MaxInflight: 1024, FallbackTimeoutMS: 400,
-			ECSEnabled: true, ECSPrefixV4: 24, ECSPrefixV6: 56,
+			DNSSECMode:    "off",
+			EDNSBufferSize: 1232,
+			ECSEnabled:     true,
 		},
 		API: APIConfig{RESTEnabled: true, RESTBind: "0.0.0.0:5380", GRPCEnabled: false, GRPCBind: "0.0.0.0:5381", AuthType: "none"},
 		Logging: LoggingConfig{
 			Level: "info", Format: "json", QueryLogEnabled: false,
-			QueryLogDestination: "postgresql", QueryLogRetentionDays: 30,
+			QueryLogRetentionDays: 30,
 			QueryLogMaxSizeMB: 5120, QueryLogMaskIP: true, QueryLogSampleRate: 0.05,
 		},
 		RateLimit: RateLimitConfig{
@@ -373,9 +322,11 @@ func Load(path string) (*Config, error) {
 		normalizeResolverBuffers(cfg)
 		return cfg, nil
 	}
-	if _, err := toml.DecodeFile(path, cfg); err != nil {
+	md, err := toml.DecodeFile(path, cfg)
+	if err != nil {
 		return nil, fmt.Errorf("load config %s: %w", path, err)
 	}
+	cfg.RemovedKeys = removedKeysIn(md)
 	expandEnv(cfg)
 	applyDatabaseEnv(cfg)
 	normalizeDNSSEC(cfg)
@@ -635,8 +586,6 @@ func (c *Config) ListenAddr(port int) string {
 	}
 	return fmt.Sprintf("%s:%d", host, port)
 }
-
-func (c *Config) TLSEnabled() bool { return c.Server.TLS.Enabled }
 
 func NormalizeName(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
