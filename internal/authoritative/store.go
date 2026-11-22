@@ -366,45 +366,6 @@ func (s *Store) Lookup(qname string, qtype uint16) (rrs []dns.RR, foundZone bool
 	return s.LookupScoped(qname, qtype, "", "")
 }
 
-func (s *Store) LookupScoped(qname string, qtype uint16, viewName, geoTag string) (rrs []dns.RR, foundZone bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	qname = config.NormalizeName(qname)
-	viewName = strings.ToLower(viewName)
-	geoTag = strings.ToUpper(geoTag)
-
-	zone := s.findZone(qname)
-	if zone == "" {
-		return nil, false
-	}
-	foundZone = true
-
-	var candidates []Record
-	for _, rec := range s.zones[zone] {
-		name := config.NormalizeName(rec.Name)
-		if name != qname && !wildcardMatch(rec.Name, qname) {
-			continue
-		}
-		if rec.Type != qtype && qtype != dns.TypeANY {
-			continue
-		}
-		if !viewOK(rec.View, viewName) {
-			continue
-		}
-		candidates = append(candidates, rec)
-	}
-
-	picked := pickGeo(candidates, geoTag)
-	for _, rec := range picked {
-		rr, err := buildRR(rec)
-		if err != nil || rr == nil {
-			continue
-		}
-		rrs = append(rrs, rr)
-	}
-	return rrs, foundZone
-}
-
 func viewOK(recView, clientView string) bool {
 	recView = strings.ToLower(strings.TrimSpace(recView))
 	if recView == "" || recView == "*" {
@@ -461,15 +422,6 @@ func (s *Store) findZone(qname string) string {
 		}
 	}
 	return best
-}
-
-func wildcardMatch(pattern, qname string) bool {
-	pattern = config.NormalizeName(pattern)
-	if !strings.HasPrefix(pattern, "*.") {
-		return false
-	}
-	suffix := pattern[1:]
-	return strings.HasSuffix(qname, suffix)
 }
 
 // RecordToRR converts a store record to a wire RR (nil if unsupported/invalid).

@@ -4,7 +4,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/miekg/dns"
 	"github.com/powersvx/powersvx/internal/config"
 )
 
@@ -44,24 +43,4 @@ func (s *Store) ZoneNameTypes(zone, viewName, geoTag string) map[string][]uint16
 		sort.Slice(types, func(i, j int) bool { return types[i] < types[j] })
 	}
 	return out
-}
-
-// IsEmptyNonTerminal reports whether name owns no record in the zone but has a
-// name below it that does (RFC 4592 section 2.2.2): the name exists, so a query
-// for it is NODATA, never NXDOMAIN.
-func (s *Store) IsEmptyNonTerminal(zone, name string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	zone = config.NormalizeName(zone)
-	name = config.NormalizeName(name)
-	if name == zone || !dns.IsSubDomain(zone, name) {
-		return false
-	}
-	suffix := "." + name
-	for _, r := range s.zones[zone] {
-		if strings.HasSuffix(config.NormalizeName(r.Name), suffix) {
-			return true
-		}
-	}
-	return false
 }

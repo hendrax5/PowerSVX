@@ -173,7 +173,8 @@ func (z *denialZone) nsecAt(i int, ttl uint32) *dns.NSEC {
 // nsecProof returns the NSEC records that prove the negative answer: for
 // NXDOMAIN the NSEC covering qname plus the one covering the wildcard at the
 // closest encloser, for NODATA the NSEC that matches qname (or, for an empty
-// non-terminal, the one that covers it).
+// non-terminal, the one that covers it; for a name that exists only through a
+// wildcard, the NSEC covering the name and the one matching the wildcard).
 func (z *denialZone) nsecProof(qname string, nxdomain bool, ttl uint32) []*dns.NSEC {
 	qname = dns.CanonicalName(qname)
 	var idx []int
@@ -185,7 +186,10 @@ func (z *denialZone) nsecProof(qname string, nxdomain bool, ttl uint32) []*dns.N
 		}
 	}
 	add(z.coverIndex(qname))
-	if nxdomain {
+	if nxdomain || !z.exists[qname] {
+		// NXDOMAIN, or NODATA for a name that only a wildcard makes exist: the
+		// wildcard at the closest encloser is covered, or matched when it exists
+		// (RFC 4035 sections 3.1.3.2 and 3.1.3.4).
 		add(z.coverIndex("*." + z.closestEncloser(qname)))
 	}
 	out := make([]*dns.NSEC, 0, len(idx))
@@ -377,9 +381,12 @@ func (z *denialZone) nsec3Proof(qname, salt string, nxdomain bool, ttl uint32) [
 			idx = append(idx, i)
 		}
 	}
-	if !nxdomain {
+	if !nxdomain && z.exists[qname] {
 		add(c.matchOrCover(nsec3Hash(qname, salt)))
 	} else {
+		// NXDOMAIN, or NODATA for a name that only a wildcard makes exist (RFC 5155
+		// section 7.2.5): the closest encloser proof, whose wildcard record is the
+		// match for an existing wildcard.
 		ce := z.closestEncloser(qname)
 		add(c.matchOrCover(nsec3Hash(ce, salt)))
 		add(c.matchOrCover(nsec3Hash(nextCloser(qname, ce), salt)))

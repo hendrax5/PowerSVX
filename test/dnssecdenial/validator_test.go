@@ -152,6 +152,7 @@ func TestValidatorAuthenticatesPositiveNXDOMAINAndNODATAFromANSECSignedZone(t *t
 		{"www.example.com.", "AAAA", []string{"; negative response, fully validated", "nxrrset"}},
 		{"example.com.", "TXT", []string{"; negative response, fully validated", "nxrrset"}},
 		{"z.example.com.", "A", []string{"; negative response, fully validated", "nxrrset"}},
+		{"foo.w.example.com.", "AAAA", []string{"; negative response, fully validated", "nxrrset"}}, // wildcard NODATA
 	}
 	for _, tcp := range []bool{false, true} {
 		proto := map[bool]string{false: "udp", true: "tcp"}[tcp]
@@ -192,6 +193,7 @@ func buildZone(t *testing.T, opts dnssec.SignOptions) (*dnssec.Signer, *server.S
 	add("www.example.com.", dns.TypeTXT, "hello")
 	add("b.example.com.", dns.TypeA, "192.0.2.11")
 	add("a.z.example.com.", dns.TypeAAAA, "2001:db8::1")
+	add("*.w.example.com.", dns.TypeA, "192.0.2.77") // wildcard with only an A record
 	if err := signer.EnsureWithOptions(zone, opts); err != nil {
 		t.Fatal(err)
 	}

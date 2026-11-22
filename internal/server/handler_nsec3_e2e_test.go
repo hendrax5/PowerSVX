@@ -251,3 +251,18 @@ func TestNSEC3SignedZoneNXDOMAINIsSignedWhenTheNameHashEndsInNine(t *testing.T) 
 	wantRcode(t, m, dns.RcodeNameError)
 	wantNSEC3Proof(t, h, m, name, dns.TypeA, nsec3ZoneNames)
 }
+
+func TestNSEC3SignedZoneNODATAForANameThatOnlyAWildcardCoversProvesTheWildcard(t *testing.T) {
+	h := nsec3Zone(t, "")
+	h.auth.AddRecord(zoneName, rec("*.w.example.com.", dns.TypeA, "192.0.2.77"))
+	m := h.q("foo.w.example.com.", dns.TypeAAAA, withDO())
+	wantRcode(t, m, dns.RcodeSuccess)
+	ns := nsec3sOf(m)
+	if matchingNSEC3(ns, "w.example.com.") == nil || matchingNSEC3(ns, "*.w.example.com.") == nil || coveringNSEC3(ns, "foo.w.example.com.") == nil {
+		t.Fatalf("want match for the closest encloser and the wildcard, and a cover for the next closer name: %v", m.Ns)
+	}
+	if n := matchingNSEC3(ns, "*.w.example.com."); fmt.Sprint(n.TypeBitMap) != fmt.Sprint([]uint16{dns.TypeA, dns.TypeRRSIG}) {
+		t.Errorf("wildcard bitmap = %v", n.TypeBitMap)
+	}
+	verifyEveryRRset(t, m, m.Ns, h.signer.DNSKEYs(zoneName))
+}
