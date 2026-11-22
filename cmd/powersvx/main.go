@@ -67,6 +67,7 @@ func main() {
 	}
 	rsPath := config.RuntimeSettingsPath(*dataDir)
 	if rs, err := config.LoadRuntimeSettings(rsPath); err == nil {
+		rs = api.NormalizeSavedResolver(rsPath, rs, log)
 		cfg.ApplyRuntimeSettings(rs)
 		log.Info("runtime settings loaded", "path", rsPath)
 	}

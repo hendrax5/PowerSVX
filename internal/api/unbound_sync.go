@@ -1,10 +1,14 @@
 package api
 
 import (
+	"fmt"
+	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/unboundrpz"
 )
 
@@ -103,4 +107,89 @@ func (a *API) retryReload(gen int) {
 		}
 		a.log.Error("unbound reload still failing", "err", err)
 	}
+}
+
+// loopForwarderError names the first forwarder that would make Unbound forward to itself.
+// The console and API refuse such a value instead of saving it.
+func loopForwarderError(fwd []string, fz []config.ForwardZoneConfig) error {
+	port := unboundrpz.BackendPort()
+	check := func(where string, list []string) error {
+		for _, f := range list {
+			if loop, why := unboundrpz.ForwarderLoop(f, port); loop {
+				return fmt.Errorf("%sforwarder %q points at %s, so Unbound would forward to itself and every lookup would fail; leave the forwarders empty and set the resolver mode to recursive: Unbound recurses by itself", where, f, why)
+			}
+		}
+		return nil
+	}
+	if err := check("", fwd); err != nil {
+		return err
+	}
+	for _, z := range fz {
+		if err := check("zone "+z.Zone+": ", z.Forwarders); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// dropLoopForwarders removes the forwarders that would make Unbound forward to itself and
+// says how many it removed. It is for values nobody just typed (the TOML defaults or earlier
+// saved settings): saving them again must not write the loop back to the settings file.
+func dropLoopForwarders(fwd []string, fz []config.ForwardZoneConfig) ([]string, []config.ForwardZoneConfig, int) {
+	port := unboundrpz.BackendPort()
+	dropped := 0
+	var keptFwd []string
+	for _, f := range fwd {
+		if loop, _ := unboundrpz.ForwarderLoop(f, port); loop {
+			dropped++
+			continue
+		}
+		keptFwd = append(keptFwd, f)
+	}
+	var keptZones []config.ForwardZoneConfig
+	for _, z := range fz {
+		var zf []string
+		for _, f := range z.Forwarders {
+			if loop, _ := unboundrpz.ForwarderLoop(f, port); loop {
+				dropped++
+				continue
+			}
+			zf = append(zf, f)
+		}
+		if len(zf) == 0 && len(z.Forwarders) > 0 {
+			continue // the zone only had looping forwarders
+		}
+		z.Forwarders = zf
+		keptZones = append(keptZones, z)
+	}
+	return keptFwd, keptZones, dropped
+}
+
+// NormalizeSavedResolver is run once at start on the saved runtime settings. Earlier
+// versions let the console save the shipped default `forward` mode with Unbound's own
+// address as the forwarder, and that value survives every change of the TOML. It removes
+// such forwarders, switches a forward mode that is left with none to recursive, rewrites the
+// file, and logs what it did. The writer still skips a looping forwarder at render time,
+// whatever the source; this makes the settings file honest as well.
+func NormalizeSavedResolver(path string, rs config.RuntimeSettings, log *slog.Logger) config.RuntimeSettings {
+	fwd, fz, dropped := dropLoopForwarders(rs.Forwarders, rs.ForwardZones)
+	if dropped == 0 {
+		return rs
+	}
+	hadGlobal := len(rs.Forwarders) > 0
+	rs.Forwarders, rs.ForwardZones = fwd, fz
+	if rs.Forwarders == nil {
+		rs.Forwarders = []string{}
+	}
+	if hadGlobal && len(fwd) == 0 && rs.ResolverMode != nil && strings.EqualFold(*rs.ResolverMode, "forward") {
+		mode := "recursive"
+		rs.ResolverMode = &mode
+	}
+	if err := config.SaveRuntimeSettings(path, rs); err != nil {
+		log.Error("saved resolver settings point at Unbound itself and could not be rewritten", "path", path, "err", err)
+		return rs
+	}
+	log.Warn("saved resolver settings pointed Unbound at itself; removed those forwarders and rewrote the file",
+		"path", path, "removed", dropped, "resolver_mode", rs.ResolverMode)
+	return rs
 }

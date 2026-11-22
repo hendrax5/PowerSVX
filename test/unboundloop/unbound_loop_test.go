@@ -113,15 +113,21 @@ func hostPort(t *testing.T, ctr, port string) string {
 }
 
 type stack struct {
-	dns, api         string // host:port the published ports are reachable on
-	dd, ub, cp       string // container names
-	rpzInUnbound     string // path of the Control Plane's runtime zones file inside Unbound
+	dns, api          string // host:port the published ports are reachable on
+	dd, ub, cp        string // container names
+	rpzInUnbound      string // path of the Control Plane's runtime zones file inside Unbound
 	startControlPlane func()
+}
+
+// options vary what the Control Plane starts with. The zero value is the shipped default.
+type options struct {
+	toml     func(string) string // rewrites the shipped host configuration
+	settings string              // content of data/runtime-settings.json saved by an earlier console session
 }
 
 // startStack brings up dnsdist and Unbound. The Control Plane is created but started by
 // the caller, so the test can first prove that recursion works before it exists.
-func startStack(t *testing.T) *stack {
+func startStack(t *testing.T, o options) *stack {
 	t.Helper()
 	root := repoRoot(t)
 	work := t.TempDir()
@@ -168,7 +174,24 @@ func startStack(t *testing.T) *stack {
 	if err := os.MkdirAll(filepath.Join(vol, "data"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	copyFile(t, filepath.Join(root, "configs", "powersvx.docker.host.toml"), filepath.Join(vol, "cfg", "powersvx.toml"), 0o644)
+	toml, err := os.ReadFile(filepath.Join(root, "configs", "powersvx.docker.host.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.toml != nil {
+		toml = []byte(o.toml(string(toml)))
+	}
+	if err := os.MkdirAll(filepath.Join(vol, "cfg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vol, "cfg", "powersvx.toml"), toml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if o.settings != "" {
+		if err := os.WriteFile(filepath.Join(vol, "data", "runtime-settings.json"), []byte(o.settings), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	host, bind := "127.0.0.1", "127.0.0.1"
 	if h := os.Getenv("POWERSVX_DOCKER_TEST_HOST"); h != "" {
@@ -263,21 +286,6 @@ func poll(wait time.Duration, f func() string) string {
 
 func rcodeName(r *dns.Msg) string { return dns.RcodeToString[r.Rcode] }
 
-// resolves returns "" when name answers NOERROR with at least one A record, outside any hosted zone.
-func resolves(addr, name string) string {
-	r, err := ask(addr, name, dns.TypeA)
-	if err != nil {
-		return fmt.Sprintf("%s: %v", name, err)
-	}
-	if r.Rcode != dns.RcodeSuccess || len(r.Answer) == 0 {
-		return fmt.Sprintf("%s: rcode %s with %d answers", name, rcodeName(r), len(r.Answer))
-	}
-	if r.Authoritative {
-		return fmt.Sprintf("%s: answered authoritatively, not by recursion", name)
-	}
-	return ""
-}
-
 // freshLabel returns "" when a fresh label under a real domain is answered NXDOMAIN or NOERROR
 // (example.com answers every label): only a resolver that can recurse gets there, and the
 // answer cannot come from a cache. SERVFAIL is what a forward loop gives.
@@ -329,19 +337,38 @@ func unboundForwards(s *stack) string {
 	return dockerQuiet("exec", s.ub, "/opt/unbound/sbin/unbound-control", "list_forwards")
 }
 
-func TestDefaultConfigurationKeepsRecursionWorking(t *testing.T) {
+// freshUntilItWorks retries for a bounded time: after a reload the cache is cold, and the first
+// lookups on a host without IPv6 can take several seconds (root priming, unreachable addresses).
+// A loop never recovers, so it still fails, after the wait.
+func freshUntilItWorks(addr string, wait time.Duration, domains ...string) string {
+	return poll(wait, func() string {
+		for _, d := range domains {
+			if why := freshLabel(addr, d); why != "" {
+				return why
+			}
+		}
+		return ""
+	})
+}
+
+// bringUp starts the stack, proves the Dataplane recurses before the Control Plane exists,
+// starts the Control Plane, creates a zone through the REST API, and returns once dnsdist
+// answers the hosted name and Unbound itself lists the zone (so the Control Plane
+// configuration was written and reloaded).
+func bringUp(t *testing.T, o options) *stack {
+	t.Helper()
 	if os.Getenv("POWERSVX_DOCKER_TESTS") != "1" {
 		t.Skip("set POWERSVX_DOCKER_TESTS=1 to run the Unbound loop regression test (needs Docker and the Internet)")
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Fatal("POWERSVX_DOCKER_TESTS=1 but docker is not on PATH")
 	}
-	s := startStack(t)
+	s := startStack(t, o)
 
-	// Before the Control Plane exists the Dataplane must already recurse; otherwise this
-	// environment cannot tell a loop from having no Internet.
-	if why := poll(120*time.Second, func() string { return resolves(s.dns, "example.net") }); why != "" {
-		t.Fatalf("the Dataplane does not resolve a real name before the Control Plane starts (no Internet from Docker?): %s", why)
+	// Names nobody asked before: a fixed name can be answered from the Unbound cache while the
+	// loop is loaded. Without Internet this cannot tell a loop from no recursion at all.
+	if why := freshUntilItWorks(s.dns, 120*time.Second, "example.net"); why != "" {
+		t.Fatalf("the Dataplane does not resolve a fresh name before the Control Plane starts (no Internet from Docker?): %s", why)
 	}
 
 	s.startControlPlane()
@@ -358,71 +385,103 @@ func TestDefaultConfigurationKeepsRecursionWorking(t *testing.T) {
 	mustAPI(t, s.api, "POST", "/api/v1/zones/"+hostedZone+"/records",
 		fmt.Sprintf(`{"name":%q,"type":"A","content":%q,"ttl":300}`, "www."+hostedZone, hostedAddr), http.StatusCreated)
 
-	t.Run("hosted name is answered authoritatively through dnsdist", func(t *testing.T) {
-		if why := poll(60*time.Second, func() string {
-			r, err := ask(s.dns, hostedName, dns.TypeA)
-			if err != nil {
-				return err.Error()
-			}
-			if r.Rcode != dns.RcodeSuccess || len(r.Answer) != 1 || !r.Authoritative {
-				return fmt.Sprintf("rcode=%s aa=%v answers=%v", rcodeName(r), r.Authoritative, r.Answer)
-			}
-			if a, ok := r.Answer[0].(*dns.A); !ok || a.A.String() != hostedAddr {
-				return fmt.Sprintf("answer=%v", r.Answer[0])
-			}
-			return ""
-		}); why != "" {
-			t.Fatalf("%s: %s", hostedName, why)
+	if why := poll(60*time.Second, func() string {
+		r, err := ask(s.dns, hostedName, dns.TypeA)
+		if err != nil {
+			return err.Error()
 		}
-	})
-
-	// Wait until Unbound itself reports the Control Plane's zone: its configuration was
-	// written and Unbound reloaded it. Only then does the next assertion mean anything.
+		if r.Rcode != dns.RcodeSuccess || len(r.Answer) != 1 || !r.Authoritative {
+			return fmt.Sprintf("rcode=%s aa=%v answers=%v", rcodeName(r), r.Authoritative, r.Answer)
+		}
+		if a, ok := r.Answer[0].(*dns.A); !ok || a.A.String() != hostedAddr {
+			return fmt.Sprintf("answer=%v", r.Answer[0])
+		}
+		return ""
+	}); why != "" {
+		t.Fatalf("%s is not answered authoritatively through dnsdist: %s", hostedName, why)
+	}
 	if why := poll(60*time.Second, func() string {
 		if out := unboundStubs(s); !strings.Contains(out, hostedZone) {
 			return "unbound-control list_stubs: " + out
 		}
 		return ""
 	}); why != "" {
-		t.Fatalf("Unbound did not reload the Control Plane's configuration: %s", why)
+		t.Fatalf("Unbound did not reload the Control Plane configuration: %s", why)
 	}
+	return s
+}
 
-	t.Run("names outside the hosted zones still resolve by recursion", func(t *testing.T) {
-		if fw := unboundForwards(s); strings.Contains(fw, "127.0.0.1") || strings.Contains(fw, "::1") {
-			t.Errorf("Unbound forwards to a loopback address:\n%s", fw)
-		}
-		if why := resolves(s.dns, "example.org"); why != "" {
-			t.Fatalf("recursion is broken after the Control Plane wrote its configuration: %s", why)
-		}
-		if why := freshLabel(s.dns, "example.com"); why != "" {
-			t.Fatalf("recursion is broken after the Control Plane wrote its configuration: %s", why)
-		}
-	})
+func assertRecursion(t *testing.T, s *stack) {
+	t.Helper()
+	if fw := unboundForwards(s); strings.Contains(fw, "127.0.0.1") || strings.Contains(fw, "::1") {
+		t.Errorf("Unbound forwards to a loopback address:\n%s", fw)
+	}
+	if why := freshUntilItWorks(s.dns, 60*time.Second, "example.com", "example.org"); why != "" {
+		t.Fatalf("recursion is broken after the Control Plane wrote its configuration and Unbound reloaded: %s", why)
+	}
+}
 
-	// The console (or an old settings file) can still name Unbound's own address. The writer
-	// must skip it, and say so, while recursion keeps working.
-	t.Run("a forwarder pointing at Unbound itself is skipped and reported", func(t *testing.T) {
-		mustAPI(t, s.api, "PUT", "/api/v1/settings", `{"resolver_mode":"forward","forwarders":["127.0.0.1:5353"]}`, http.StatusOK)
-		if why := poll(30*time.Second, func() string {
-			_, out := apiCall(t, s.api, "GET", "/api/v1/health", "")
-			var h struct {
-				Checks map[string]map[string]any `json:"checks"`
-			}
-			if err := json.Unmarshal([]byte(out), &h); err != nil {
-				return err.Error()
-			}
-			if h.Checks["unbound_runtime"]["skipped_forwarders"] == nil {
-				return "health has no skipped_forwarders: " + out
-			}
-			return ""
-		}); why != "" {
-			t.Fatal(why)
+func health(t *testing.T, s *stack) map[string]map[string]any {
+	t.Helper()
+	_, out := apiCall(t, s.api, "GET", "/api/v1/health", "")
+	var h struct {
+		Checks map[string]map[string]any `json:"checks"`
+	}
+	if err := json.Unmarshal([]byte(out), &h); err != nil {
+		t.Fatalf("health: %v: %s", err, out)
+	}
+	return h.Checks
+}
+
+// The shipped default configuration, a zone created through the API: the hosted name is
+// answered authoritatively and everything else still resolves by recursion.
+func TestDefaultConfigurationKeepsRecursionWorking(t *testing.T) {
+	s := bringUp(t, options{})
+	assertRecursion(t, s)
+
+	// The console used to offer a preset that saved the Unbound own address as the forwarder.
+	t.Run("the API refuses a forwarder pointing at Unbound itself", func(t *testing.T) {
+		code, out := apiCall(t, s.api, "PUT", "/api/v1/settings", `{"resolver_mode":"forward","forwarders":["127.0.0.1:5353"]}`)
+		if code != http.StatusBadRequest || !strings.Contains(out, "Unbound would forward to itself") {
+			t.Fatalf("want 400 with the reason, got %d %s", code, out)
 		}
-		if fw := unboundForwards(s); strings.Contains(fw, "127.0.0.1") {
-			t.Fatalf("Unbound was told to forward to itself:\n%s", fw)
-		}
-		if why := freshLabel(s.dns, "example.com"); why != "" {
-			t.Fatalf("recursion is broken after a forwarder to Unbound was saved: %s", why)
-		}
+		assertRecursion(t, s)
 	})
+}
+
+// The TOML is clean, but the console saved the old default earlier. The saved settings override
+// the TOML, so this is the loop that a TOML fix never touches.
+func TestSavedSettingsWithTheLoopDoNotBreakRecursion(t *testing.T) {
+	s := bringUp(t, options{settings: `{"resolver_mode":"forward","forwarders":["127.0.0.1:5353"]}`})
+	assertRecursion(t, s)
+
+	saved := dockerQuiet("exec", s.cp, "cat", "/vol/data/runtime-settings.json")
+	if strings.Contains(saved, "127.0.0.1") || !strings.Contains(saved, `"recursive"`) {
+		t.Errorf("the saved settings must be rewritten at start without the loop:\n%s", saved)
+	}
+	if !strings.Contains(dockerQuiet("logs", s.cp), "removed those forwarders and rewrote the file") {
+		t.Errorf("the rewrite must be logged")
+	}
+}
+
+// A node still running the old shipped TOML (forward to 127.0.0.1:5353) and no saved settings:
+// the writer must skip the loop, warn, and report it in the health output.
+func TestOldShippedConfigurationIsGuardedAtRenderTime(t *testing.T) {
+	s := bringUp(t, options{toml: func(toml string) string {
+		toml = strings.ReplaceAll(toml, `mode = "recursive"`, `mode = "forward"`)
+		return strings.ReplaceAll(toml, `forwarders = []`, `forwarders = ["127.0.0.1:5353"]`)
+	}})
+	assertRecursion(t, s)
+
+	if why := poll(30*time.Second, func() string {
+		if health(t, s)["unbound_runtime"]["skipped_forwarders"] == nil {
+			return "health has no skipped_forwarders"
+		}
+		return ""
+	}); why != "" {
+		t.Fatal(why)
+	}
+	if !strings.Contains(dockerQuiet("logs", s.cp), "resolver forwarder skipped") {
+		t.Errorf("the skip must be logged as a warning")
+	}
 }
