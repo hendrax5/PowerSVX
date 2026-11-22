@@ -27,6 +27,10 @@ var removedKeys = []string{
 	"logging.query_log_destination",
 	"rpz.hot_cache_max",
 	"rpz.hot_seed_top_n",
+	"plugins",
+	"api.grpc_enabled",
+	"api.grpc_bind",
+	"metrics.otel_enabled",
 }
 
 // removedKeysIn returns the removed keys the file still sets, sorted, one entry

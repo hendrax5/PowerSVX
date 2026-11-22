@@ -28,7 +28,6 @@ type Config struct {
 	GeoDNS       GeoDNSConfig       `toml:"geodns"`
 	SplitHorizon SplitHorizonConfig `toml:"split_horizon"`
 	ACME         ACMEConfig         `toml:"acme"`
-	Plugins      PluginsConfig      `toml:"plugins"`
 
 	// RemovedKeys are the version 1 keys the file still sets. They are ignored;
 	// the caller logs one warning per key.
@@ -94,8 +93,6 @@ type ForwardZoneConfig struct {
 type APIConfig struct {
 	RESTEnabled bool   `toml:"rest_enabled"`
 	RESTBind    string `toml:"rest_bind"`
-	GRPCEnabled bool   `toml:"grpc_enabled"`
-	GRPCBind    string `toml:"grpc_bind"`
 	AuthType    string `toml:"auth_type"` // none | token | local
 	APIToken    string `toml:"api_token"`
 	// SessionSecret signs/stores local-auth sessions (env SESSION_SECRET).
@@ -213,7 +210,6 @@ type RPZConfig struct {
 type MetricsConfig struct {
 	PrometheusEnabled bool   `toml:"prometheus_enabled"`
 	PrometheusBind    string `toml:"prometheus_bind"`
-	OTelEnabled       bool   `toml:"otel_enabled"`
 }
 
 type TSIGKeyTOML struct {
@@ -258,11 +254,6 @@ type ACMEConfig struct {
 	StorageDir string   `toml:"storage_dir"`
 }
 
-type PluginsConfig struct {
-	Enabled bool   `toml:"enabled"`
-	Dir     string `toml:"dir"`
-}
-
 func Default() *Config {
 	return &Config{
 		Server: ServerConfig{
@@ -284,7 +275,7 @@ func Default() *Config {
 			EDNSBufferSize: 1232,
 			ECSEnabled:     true,
 		},
-		API: APIConfig{RESTEnabled: true, RESTBind: "0.0.0.0:5380", GRPCEnabled: false, GRPCBind: "0.0.0.0:5381", AuthType: "none"},
+		API: APIConfig{RESTEnabled: true, RESTBind: "0.0.0.0:5380", AuthType: "none"},
 		Logging: LoggingConfig{
 			Level: "info", Format: "json", QueryLogEnabled: false,
 			QueryLogRetentionDays: 30,
@@ -312,7 +303,6 @@ func Default() *Config {
 		ACME: ACMEConfig{
 			Enabled: false, Staging: true, StorageDir: "./certs/acme",
 		},
-		Plugins: PluginsConfig{Enabled: false, Dir: "./plugins"},
 	}
 }
 

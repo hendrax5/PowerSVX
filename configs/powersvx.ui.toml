@@ -58,8 +58,6 @@ enabled = false
 [api]
 rest_enabled = true
 rest_bind = "127.0.0.1:5380"
-grpc_enabled = true
-grpc_bind = "127.0.0.1:5381"
 
 [logging]
 level = "info"
