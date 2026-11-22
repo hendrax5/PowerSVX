@@ -102,14 +102,19 @@ func updatePolicyAllows(policies []config.UpdatePolicyTOML, key, zone string) bo
 	if len(policies) == 0 {
 		return true
 	}
+	// Policies bind a TSIG key to zones: a request without a TSIG key is never
+	// admitted by a policy, and an entry without a key name never matches.
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
 	key = strings.ToLower(dns.Fqdn(key))
 	zone = config.NormalizeName(zone)
 	for _, p := range policies {
-		pk := strings.ToLower(dns.Fqdn(strings.TrimSpace(p.Key)))
-		if pk == "" || (key != "" && pk != key) {
+		if strings.TrimSpace(p.Key) == "" {
 			continue
 		}
-		if key == "" && p.Key != "" {
+		if strings.ToLower(dns.Fqdn(strings.TrimSpace(p.Key))) != key {
 			continue
 		}
 		if len(p.Zones) == 0 {
