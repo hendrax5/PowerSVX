@@ -46,9 +46,16 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 	}
 	if requireTSIG {
 		if s.kominfo == nil || !s.kominfo.IsTargetIP(clientIP) {
-			if status := w.TsigStatus(); status != nil {
+			// w.TsigStatus() is nil both for a verified TSIG and for a request with no TSIG
+			// record, so an unsigned request is refused explicitly (REFUSED); a failed
+			// signature stays NOTAUTH.
+			if req.IsTsig() == nil || w.TsigStatus() != nil {
+				rcode := dns.RcodeNotAuth
+				if req.IsTsig() == nil {
+					rcode = dns.RcodeRefused
+				}
 				m := new(dns.Msg)
-				m.SetRcode(req, dns.RcodeNotAuth)
+				m.SetRcode(req, rcode)
 				_ = w.WriteMsg(m)
 				metrics.QueriesTotal.WithLabelValues(protocolFromWriter(w), "xfer_tsig").Inc()
 				return true
