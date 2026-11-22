@@ -94,11 +94,14 @@ services:
       - ./configs/dnsdist/dnsdist.conf:/etc/dnsdist/dnsdist.conf:ro
       - ./data/blocklist:/etc/dnsdist/blocklist:ro
       - ./certs:/etc/dnsdist/certs:ro
+      - ./deploy/linux/dns-ready.sh:/usr/local/bin/dns-ready.sh:ro
     # Image ENTRYPOINT is already dnsdist — do NOT prefix "dnsdist" again
     # (that is parsed as a listen address → Fatal: Unable to convert ... 'dnsdist').
     command: ["--supervised", "--disable-syslog", "-C", "/etc/dnsdist/dnsdist.conf"]
     healthcheck:
-      test: ["CMD-SHELL", "dnsdist -e 'print(getStatisticsCounters())' >/dev/null 2>&1 || exit 0"]
+      # A fresh name under .invalid is answered by Unbound without leaving the host,
+      # so this fails when dnsdist or Unbound stops answering, not when upstream is down.
+      test: ["CMD", "bash", "/usr/local/bin/dns-ready.sh", "-u", "invalid"]
       interval: 30s
       timeout: 5s
       retries: 3

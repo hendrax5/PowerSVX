@@ -114,4 +114,10 @@ bash "$ROOT/deploy/linux/docker-prune-after-update.sh" || true
 echo "==> status"
 docker ps --format 'table {{.Names}}\t{{.Status}}' | head -20
 df -h / | tail -1
+
+echo "==> readiness (port 53 answers)"
+if ! bash "$ROOT/deploy/linux/dns-ready.sh" -w "${POWERSVX_READY_WAIT:-90}" -u invalid; then
+  echo "update applied but port 53 is not answering" >&2
+  exit 1
+fi
 echo "done."

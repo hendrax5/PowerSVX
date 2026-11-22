@@ -165,11 +165,25 @@ docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up 
 
 # 7. Verification & Health Summary
 echo "==> [7/7] Verifying services..."
-sleep 5
+READY_WAIT="${POWERSVX_READY_WAIT:-90}"
+READY_NAME="${POWERSVX_READY_NAME:-example.com}"
+ready_rc=0
+# First the local path (dnsdist -> Unbound), then a real name through recursion.
+bash "$ROOT/deploy/linux/dns-ready.sh" -w "$READY_WAIT" -u invalid || ready_rc=$?
+if [[ "$ready_rc" -eq 0 ]]; then
+  bash "$ROOT/deploy/linux/dns-ready.sh" -w "$READY_WAIT" "$READY_NAME" || ready_rc=$?
+fi
 
 echo "------------------------------------------------------------"
 docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 echo "------------------------------------------------------------"
+
+if [[ "$ready_rc" -ne 0 ]]; then
+  echo "" >&2
+  echo "[-] Node is NOT ready: port 53 did not answer within ${READY_WAIT}s." >&2
+  echo "    Check: docker logs powersvx-dnsdist-1 ; docker logs powersvx-unbound-1" >&2
+  exit 1
+fi
 
 echo ""
 echo "[✓] Deployment Complete! Services are now live:"
