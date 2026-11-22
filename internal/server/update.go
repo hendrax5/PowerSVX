@@ -30,14 +30,7 @@ func (s *Server) handleUpdate(w dns.ResponseWriter, req *dns.Msg, clientIP strin
 		return true
 	}
 	if s.cfg.Update.RequireTSIG {
-		// w.TsigStatus() is nil both for a verified TSIG and for a request with no TSIG
-		// record, so an unsigned request is refused explicitly (REFUSED); a failed
-		// signature stays NOTAUTH.
-		if req.IsTsig() == nil || w.TsigStatus() != nil {
-			rcode := dns.RcodeNotAuth
-			if req.IsTsig() == nil {
-				rcode = dns.RcodeRefused
-			}
+		if rcode, deny := tsigDenial(w, req); deny {
 			m := new(dns.Msg)
 			m.SetRcode(req, rcode)
 			_ = w.WriteMsg(m)

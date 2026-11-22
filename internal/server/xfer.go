@@ -46,14 +46,7 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 	}
 	if requireTSIG {
 		if s.kominfo == nil || !s.kominfo.IsTargetIP(clientIP) {
-			// w.TsigStatus() is nil both for a verified TSIG and for a request with no TSIG
-			// record, so an unsigned request is refused explicitly (REFUSED); a failed
-			// signature stays NOTAUTH.
-			if req.IsTsig() == nil || w.TsigStatus() != nil {
-				rcode := dns.RcodeNotAuth
-				if req.IsTsig() == nil {
-					rcode = dns.RcodeRefused
-				}
+			if rcode, deny := tsigDenial(w, req); deny {
 				m := new(dns.Msg)
 				m.SetRcode(req, rcode)
 				_ = w.WriteMsg(m)
@@ -139,6 +132,21 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 	}
 	metrics.QueriesTotal.WithLabelValues(protocolFromWriter(w), dns.TypeToString[q.Qtype]).Inc()
 	return true
+}
+
+// tsigDenial decides whether a request fails a configured TSIG requirement.
+// w.TsigStatus() is nil both for a verified signature and for a request that has
+// no TSIG record at all, so the record's presence is checked separately.
+// A signature that fails verification is NOTAUTH; a request without any TSIG
+// record is REFUSED (it never attempted to authenticate).
+func tsigDenial(w dns.ResponseWriter, req *dns.Msg) (rcode int, deny bool) {
+	if w.TsigStatus() != nil {
+		return dns.RcodeNotAuth, true
+	}
+	if req.IsTsig() == nil {
+		return dns.RcodeRefused, true
+	}
+	return dns.RcodeSuccess, false
 }
 
 func transferAllowedFrom(cidrs []string, ipStr string) bool {
