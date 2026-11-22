@@ -120,7 +120,7 @@ func (s *Signer) RolloverZSK(zone string) error {
 		return err
 	}
 	alg := zk.KSK.Algorithm
-	zsk, zpriv, err := makeKey(zone, 256, alg)
+	zsk, zpriv, err := makeKeyFn(zone, 256, alg)
 	if err != nil {
 		return err
 	}
@@ -383,11 +383,11 @@ func (s *Signer) generate(zone string, opts SignOptions) error {
 	if alg == 0 {
 		alg = dns.ECDSAP256SHA256
 	}
-	zsk, zpriv, err := makeKey(zone, 256, alg)
+	zsk, zpriv, err := makeKeyFn(zone, 256, alg)
 	if err != nil {
 		return err
 	}
-	ksk, kpriv, err := makeKey(zone, 257, alg)
+	ksk, kpriv, err := makeKeyFn(zone, 257, alg)
 	if err != nil {
 		return err
 	}
@@ -406,6 +406,9 @@ func (s *Signer) generate(zone string, opts SignOptions) error {
 	s.mu.Unlock()
 	return nil
 }
+
+// makeKeyFn generates zone keys; tests replace it to hand out chosen keys.
+var makeKeyFn = makeKey
 
 func makeKey(zone string, flags uint16, alg uint8) (*dns.DNSKEY, crypto.Signer, error) {
 	bits := 256
