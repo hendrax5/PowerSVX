@@ -152,7 +152,7 @@ func TestValidatorAuthenticatesPositiveNXDOMAINAndNODATAFromANSECSignedZone(t *t
 	add("www.example.com.", dns.TypeTXT, "hello")
 	add("b.example.com.", dns.TypeA, "192.0.2.11")
 	add("a.z.example.com.", dns.TypeAAAA, "2001:db8::1") // z.example.com. is an empty non-terminal
-	add("*.w.example.com.", dns.TypeA, "192.0.2.77") // wildcard with only an A record
+	add("*.w.example.com.", dns.TypeA, "192.0.2.77")     // wildcard with only an A record
 	if err := signer.EnsureWithOptions(zone, dnssec.SignOptions{Algorithm: dns.ECDSAP256SHA256}); err != nil {
 		t.Fatal(err)
 	}
