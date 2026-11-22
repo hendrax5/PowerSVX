@@ -296,8 +296,9 @@ func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (a *API) healthPayload(ctx context.Context) map[string]any {
 	checks := map[string]any{}
 	status := "healthy"
-	dataplane := config.DNSDataplane()
-	if dataplane == "dnsdist" {
+	// A Dataplane is expected on a host deployment only; in development the process
+	// is a Control Plane with nothing to probe, and that is not a fault.
+	if os.Getenv("POWERSVX_HOST_DEPLOYMENT") == "1" {
 		checks["dns_dataplane"] = map[string]any{"status": "pass", "engine": "dnsdist-cdb", "public_dns": ":53", "backend": "127.0.0.1:5353"}
 		udpOK := map[string]any{"status": "pass", "addr": "0.0.0.0:53", "engine": "dnsdist"}
 		if c, err := net.DialTimeout("udp", "127.0.0.1:53", 500*time.Millisecond); err != nil {
@@ -317,7 +318,7 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 			}
 		}
 	} else {
-		checks["dns_dataplane"] = map[string]any{"status": "pass", "engine": "powersvx"}
+		checks["dns_dataplane"] = map[string]any{"status": "disabled", "hint": "no Dataplane expected outside a host deployment"}
 		checks["dns_udp"] = map[string]any{"status": "pass", "addr": a.srv.UDPAddr()}
 		// Probe Unbound if configured as backend or in forwarders
 		isUnboundFwd := false
