@@ -444,12 +444,8 @@ func (s *Server) DNSSECMode() string {
 	return string(s.dnssec.Mode)
 }
 
-func (s *Server) RPZCount() int64 {
-	if s.rpz == nil {
-		return 0
-	}
-	return s.rpz.Count()
-}
+// RPZCount is 0: the Control Plane holds no Filter entries; the count comes from the CDB.
+func (s *Server) RPZCount() int64 { return 0 }
 
 // udpBufSize is the EDNS/UDP pack budget from config (clamped 1232–4096).
 func (s *Server) udpBufSize() uint16 {
@@ -458,30 +454,8 @@ func (s *Server) udpBufSize() uint16 {
 	}
 	return config.NormalizeEDNSBufferSize(s.cfg.Resolver.EDNSBufferSize)
 }
-
 func (s *Server) RPZ() *rpz.Engine { return s.rpz }
 
-// ReloadRPZ replaces the in-memory blocklist from policy sources (file or HTTP).
-func (s *Server) ReloadRPZ(policies []rpz.PolicyConfig, timeout time.Duration) (int, error) {
-	if s.rpz == nil {
-		return 0, nil
-	}
-	if timeout <= 0 {
-		timeout = 30 * time.Minute
-	}
-	return s.rpz.LoadPolicies(policies, timeout)
-}
-
-// RefreshRPZAXFR updates AXFR feeds via IXFR/SOA without re-downloading hosts feeds.
-func (s *Server) RefreshRPZAXFR(policies []rpz.PolicyConfig, timeout time.Duration) (int, error) {
-	if s.rpz == nil {
-		return 0, nil
-	}
-	if timeout <= 0 {
-		timeout = 30 * time.Minute
-	}
-	return s.rpz.RefreshAXFR(policies, timeout)
-}
 
 // RuntimeFlags are feature toggles editable via the API/UI.
 type RuntimeFlags struct {
