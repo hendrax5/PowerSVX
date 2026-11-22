@@ -17,6 +17,45 @@ cd /home/hendra/powersvx
 sudo bash deploy/linux/bootstrap-node.sh
 ```
 
+
+### Core Profile and Observability Profile
+
+| Profile | Services |
+|---|---|
+| Core | `dnsdist`, `unbound`, `powersvx` (Control Plane), `postgres`, `watchtower` |
+| Observability | `prometheus`, `grafana`, `node-exporter` |
+
+`postgres` stays in Core until the Control Plane can start without it. `watchtower` is Core because it keeps the `powersvx` image current; it is operations, not observability.
+
+One setting, `POWERSVX_PROFILE`, selects the profile. Put it in `.env` or pass it with `sudo -E`:
+
+| Value | Effect |
+|---|---|
+| unset | Bootstrap: `full`, or `core` when the host has under 4 GB of memory. Update: `full`. |
+| `full` | Everything, as before. Wins over the memory rule. |
+| `core` | Core only. Bootstrap and `apply-update.sh` stop and remove the Prometheus, Grafana and node-exporter containers. |
+
+```bash
+echo POWERSVX_PROFILE=core | sudo tee -a .env
+sudo bash deploy/linux/bootstrap-node.sh      # or: sudo bash deploy/linux/apply-update.sh
+```
+
+When bootstrap picks `core` itself it says so, and saves `POWERSVX_PROFILE=core` to `.env` so later updates keep it. It never removes existing Observability containers after an automatic choice; only an explicit `core` does. `deploy/linux/select-profile.sh` holds the rule; `POWERSVX_HOST_MEM_MB` overrides the memory it reads from `/proc/meminfo`.
+
+The plain command is unchanged and starts everything:
+
+```bash
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d
+```
+
+Core only means adding `deploy/linux/docker-compose.core.yml`, which moves the Observability services into the compose profile `observability`:
+
+```bash
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \
+  -f deploy/linux/docker-compose.core.yml up -d
+```
+
+A Core node passes `deploy/linux/dns-ready.sh`; the Control Plane does not need Prometheus or Grafana. The console's Analytics page shows its Grafana tab as offline.
 ---
 
 ## B. Standalone Systemd (Bare-metal Binary Only)

@@ -110,6 +110,11 @@ Set `POWERSVX_DNS_DATAPLANE=unbound` and stop dnsdist. Partial TrustPositif: `PO
 - Grafana container binds `127.0.0.1:3000` with `GF_AUTH_ANONYMOUS_ENABLED=false` (expose only via TLS reverse proxy / SSH tunnel).
 - Lua plugins run with a 50ms execution timeout context (`plugin.go`) so buggy scripts cannot stall workers.
 
+## Core Profile and Observability Profile
+- Core: `dnsdist`, `unbound`, `powersvx`, `postgres` (until Postgres is optional), `watchtower`. Observability: `prometheus`, `grafana`, `node-exporter`.
+- `POWERSVX_PROFILE=core` in `.env` runs the Core Profile only; unset or `full` runs everything. Bootstrap selects `core` by itself on hosts under 4 GB of memory and saves it to `.env`. Details and commands: `deploy/linux/README.md`.
+- Existing nodes are unaffected until `POWERSVX_PROFILE=core` is set: the plain `docker compose ... up -d` and `apply-update.sh` keep starting everything.
+
 ## Reload
 - `SIGHUP` / `systemctl reload powersvx` reloads `runtime-settings.json` flags, query ACL, and plugins.
 - Data directory: `--data-dir` (default `./data`; Linux package uses `/var/lib/powersvx`).
