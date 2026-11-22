@@ -6,7 +6,7 @@
 #   1. dnsdist (Port 53 public front-end + CDB blocklist mmap)
 #   2. unbound (Port 5353 loopback recursive resolver)
 #   3. powersvx (Port 5380 Web UI + REST API control-plane)
-#   4. postgres (Port 5433 persistent storage for query logs & auth)
+#   4. postgres (Port 5433 query-log history)   [Observability Profile]
 #   5. prometheus (Port 9091 metrics aggregator)   [Observability Profile]
 #   6. grafana (Port 3000 auto-provisioned dashboards embedded in UI)   [Observability Profile]
 #   7. node-exporter (Port 9101 host telemetry)   [Observability Profile]
@@ -164,7 +164,7 @@ PROFILE_EXPLICIT=0
 sh "$ROOT/deploy/linux/select-profile.sh" -x && PROFILE_EXPLICIT=1 || true
 COMPOSE=(docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml)
 if [[ "$PROFILE" == "core" ]]; then
-  echo "    Core Profile: starting dnsdist, unbound, powersvx, postgres, watchtower only."
+  echo "    Core Profile: starting dnsdist, unbound, powersvx, watchtower only (no Postgres: query history needs the Observability Profile)."
   COMPOSE+=(-f deploy/linux/docker-compose.core.yml)
   # Persist an automatic choice so apply-update.sh keeps the same profile.
   if [[ "$PROFILE_EXPLICIT" == "0" ]]; then

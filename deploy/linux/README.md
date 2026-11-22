@@ -22,10 +22,10 @@ sudo bash deploy/linux/bootstrap-node.sh
 
 | Profile | Services |
 |---|---|
-| Core | `dnsdist`, `unbound`, `powersvx` (Control Plane), `postgres`, `watchtower` |
-| Observability | `prometheus`, `grafana`, `node-exporter` |
+| Core | `dnsdist`, `unbound`, `powersvx` (Control Plane), `watchtower` |
+| Observability | `postgres` (query-log history), `prometheus`, `grafana`, `node-exporter` |
 
-`postgres` stays in Core until the Control Plane can start without it. `watchtower` is Core because it keeps the `powersvx` image current; it is operations, not observability.
+In Core the Control Plane runs with the database disabled (`POWERSVX_DATABASE_ENABLED=0`, set by the Core overlay) and does not wait for Postgres; zones, Filter feeds, tokens and users are files. Query history is unavailable until the Observability Profile is added, and the console says so. `watchtower` is Core because it keeps the `powersvx` image current; it is operations, not observability.
 
 One setting, `POWERSVX_PROFILE`, selects the profile. Put it in `.env` or pass it with `sudo -E`:
 

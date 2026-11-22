@@ -126,7 +126,7 @@ Things that are not equal, so say them when you quote a result:
 
 ### PowerSVX at small size
 
-Until Postgres is optional, the Core Profile needs four containers for this benchmark: dnsdist, Unbound, the Control Plane and Postgres (Watchtower is Core too, but is left out of the slice). Name them so that the Observability Profile (Prometheus, Grafana, node-exporter) stays stopped, and size the configuration for the small node:
+The Core Profile needs three containers for this benchmark: dnsdist, Unbound and the Control Plane (Watchtower is Core too, but is left out of the slice). Name them so that the Observability Profile (Postgres, Prometheus, Grafana, node-exporter) stays stopped. The Core overlay also starts the Control Plane without a database. Size the configuration for the small node:
 
 ```bash
 sudo scripts/bench/size-slice.sh up
@@ -134,7 +134,7 @@ eval "$(scripts/bench/size-slice.sh env)"       # POWERSVX_HOST_CPUS=2, POWERSVX
 bash deploy/linux/gen-unbound-conf.sh && bash deploy/linux/gen-dnsdist-conf.sh
 eval "$(deploy/linux/calc-mem-env.sh)"
 docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \
-  -f deploy/linux/docker-compose.bench-small.yml up -d dnsdist unbound powersvx postgres
+  -f deploy/linux/docker-compose.core.yml -f deploy/linux/docker-compose.bench-small.yml up -d dnsdist unbound powersvx
 ```
 
 The generators size caches and thread counts from the host's CPUs and memory. Without `POWERSVX_HOST_CPUS` and `POWERSVX_HOST_MEM_MB` a 2 GB slice on an 8 GB host would run a configuration meant for 8 GB.
@@ -145,7 +145,7 @@ Run `run.sh` twice from the load generator with the same query set and settings,
 
 ```bash
 run.sh -s SERVER -S admin@SERVER -d queries.txt -l powersvx-small -y powersvx   -Z small \
-       -R 'dnsdist|unbound|^powersvx$|postgres'
+       -R 'dnsdist|unbound|^powersvx$'
 run.sh -s SERVER -S admin@SERVER -d queries.txt -l technitium-small -y technitium -Z small \
        -R '^technitium-bench$'
 compare.sh results/powersvx-small-*.json results/technitium-small-*.json

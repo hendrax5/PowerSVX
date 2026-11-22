@@ -28,7 +28,7 @@
 #   -R REGEX  which containers on the server count as the system, matched against
 #             container names; their memory and images are recorded (default: all).
 #             Use it so that observability containers do not count as part of the
-#             system, for example 'dnsdist|unbound|^powersvx$|postgres' or '^technitium-bench$'
+#             system, for example 'dnsdist|unbound|^powersvx$' or '^technitium-bench$'
 #
 # What it does:
 #   1. waits until the server answers DNS;
