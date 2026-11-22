@@ -11,24 +11,31 @@ On production hosts (`POWERSVX_DNS_DATAPLANE=dnsdist`, default):
 | UI / API / AXFR→CDB sync / Kominfo outbound AXFR | **PowerSVX** | `:5380`, auth/AXFR `:5354` |
 
 - Komdigi AXFR / hosts feeds → per-policy feed caches (`data/blocklist/feeds/`) merged into `data/blocklist/domains.cdb` (full list, mmap; no Unbound 1.5M RPZ cap). Banks filtered from CDB + dnsdist `SuffixMatchNode`.
-- **CDB refresh:** RFC 1982 serial comparison on SOA check first (skip unchanged policies while preserving their entries in the merged CDB); if serial advanced, stream AXFR or apply incremental **IXFR** delta with automatic AXFR fallback. Serials in `data/rpz-axfr-state.json` (same file as Unbound RPZ path). `dnsdist` forwards `OpcodeNotify` directly to PowerSVX (`:5354`).
+- **CDB refresh:** RFC 1982 serial comparison on SOA check first (skip unchanged policies while preserving their entries in the merged CDB); if serial advanced, stream AXFR or apply incremental **IXFR** delta with automatic AXFR fallback. Serials in `data/rpz-axfr-state.json`. `dnsdist` forwards `OpcodeNotify` directly to PowerSVX (`:5354`).
 - Spoof blocked A → `139.255.196.196` (Komdigi sinkhole). Regen conf: `deploy/linux/gen-dnsdist-conf.sh`.
 - **Do not put Go PowerSVX back on public `:53`.** See `ops/HERMES.md`.
 
-### Legacy: Unbound RPZ on `:53`
+### Removed: Unbound on the public port
 
-Set `POWERSVX_DNS_DATAPLANE=unbound` and stop dnsdist. Partial TrustPositif: `POWERSVX_RPZ_MAX_ENTRIES` auto-cap on small RAM. Full Unbound RPZ needs **≥16 GiB**. Keep `POWERSVX_UNBOUND_QUERYLOG=0`. Run `deploy/linux/unbound-rpz-guard.sh` before Unbound recreate.
+The mode in which Unbound answered clients directly on `:53` with RPZ zonefiles (`POWERSVX_DNS_DATAPLANE=unbound`, also spelled `external`) has been **removed**, together with its zonefile Filter sync, `unbound-rpz-guard.sh`, `POWERSVX_UNBOUND_QUERYLOG`, `POWERSVX_RPZ_MAX_ENTRIES` and `POWERSVX_UNBOUND_MODE=dataplane`. Unbound stays, as the recursive backend behind dnsdist on `127.0.0.1:5353`; its control interface still serves statistics, the Cache Explorer and cache flushing.
 
+**Migrate a node to dnsdist:**
+
+1. Set `POWERSVX_DNS_DATAPLANE=dnsdist` (or remove the line: it is the default on a host deployment) in the environment or `.env`.
+2. Regenerate the configs: `bash deploy/linux/gen-unbound-conf.sh` and `bash deploy/linux/gen-dnsdist-conf.sh`.
+3. Recreate the stack with `bash deploy/linux/apply-update.sh`. The first Filter sync fills the CDB (`data/blocklist/`); the old `data/unbound-rpz/*.rpz` zonefiles are no longer read and can be deleted.
+
+`POWERSVX_ALLOW_LEGACY_DATAPLANE=1` does **not** bring the mode back: there is no code left to run it, and both the update and the Control Plane refuse it.
 
 ### Removed Dataplane modes: the guard
 
-Only the dnsdist Dataplane has a future. The `unbound`, `external` and `powersvx` modes are being removed in the next major version of PowerSVX. Until then a node configured for any of them is never updated silently:
+Only the dnsdist Dataplane has a future. The `unbound` and `external` modes are already removed; the `powersvx` (Go resolver) mode is being removed in the next major version of PowerSVX. A node configured for any of them is never updated silently:
 
 - The Control Plane exits at start with a message naming the configured mode and the fix.
 - `deploy/linux/apply-update.sh` and `bootstrap-node.sh` run `deploy/linux/dataplane-guard.sh` first and stop with the same message before touching containers.
 - An unset `POWERSVX_DNS_DATAPLANE` means dnsdist on a host deployment (`deploy/linux/docker-compose.host.yml` sets `POWERSVX_HOST_DEPLOYMENT=1`). Off host, local development keeps its Go default.
 - To fix a node: set `POWERSVX_DNS_DATAPLANE=dnsdist`, regenerate configs with `deploy/linux/gen-dnsdist-conf.sh`, and recreate the stack.
-- Labs and local development can keep a legacy mode for now with `POWERSVX_ALLOW_LEGACY_DATAPLANE=1`. Never set it on a production node.
+- Labs and local development can keep the Go resolver for now with `POWERSVX_ALLOW_LEGACY_DATAPLANE=1`. It never applies to `unbound` or `external`. Never set it on a production node.
 - `python ops/probe.py` prints each node's configured mode.
 
 ## Query ACL

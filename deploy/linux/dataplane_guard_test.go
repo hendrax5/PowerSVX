@@ -42,8 +42,22 @@ func guard(t *testing.T, dotenv string, env ...string) (string, int) {
 	return string(out), code
 }
 
-func TestGuardRefusesRemovedModes(t *testing.T) {
-	for _, mode := range []string{"unbound", "external", "powersvx", "UNBOUND", "bogus"} {
+func TestGuardRefusesRemovedUnboundMode(t *testing.T) {
+	for _, mode := range []string{"unbound", "external", "UNBOUND"} {
+		out, code := guard(t, "", "POWERSVX_DNS_DATAPLANE="+mode)
+		if code == 0 {
+			t.Errorf("%s: expected non-zero exit, output: %s", mode, out)
+		}
+		for _, want := range []string{"has been removed", "dnsdist", "docs/PRODUCTION.md"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s: output lacks %q: %s", mode, want, out)
+			}
+		}
+	}
+}
+
+func TestGuardRefusesGoResolver(t *testing.T) {
+	for _, mode := range []string{"powersvx", "bogus"} {
 		out, code := guard(t, "", "POWERSVX_DNS_DATAPLANE="+mode)
 		if code == 0 {
 			t.Errorf("%s: expected non-zero exit, output: %s", mode, out)
@@ -69,12 +83,27 @@ func TestGuardAcceptsDnsdist(t *testing.T) {
 }
 
 func TestGuardEscapeHatch(t *testing.T) {
-	out, code := guard(t, "", "POWERSVX_DNS_DATAPLANE=unbound", "POWERSVX_ALLOW_LEGACY_DATAPLANE=1")
+	// The Go resolver can still be run in a lab.
+	out, code := guard(t, "", "POWERSVX_DNS_DATAPLANE=powersvx", "POWERSVX_ALLOW_LEGACY_DATAPLANE=1")
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, out)
 	}
-	if _, code := guard(t, "", "POWERSVX_DNS_DATAPLANE=unbound", "POWERSVX_ALLOW_LEGACY_DATAPLANE=0"); code == 0 {
+	if _, code := guard(t, "", "POWERSVX_DNS_DATAPLANE=powersvx", "POWERSVX_ALLOW_LEGACY_DATAPLANE=0"); code == 0 {
 		t.Fatal("escape hatch must be exactly 1")
+	}
+}
+
+// The Unbound-on-the-public-port mode has no code left, so the escape hatch
+// must not wave it through, and must say so.
+func TestGuardEscapeHatchDoesNotApplyToRemovedUnboundMode(t *testing.T) {
+	for _, mode := range []string{"unbound", "external"} {
+		out, code := guard(t, "", "POWERSVX_DNS_DATAPLANE="+mode, "POWERSVX_ALLOW_LEGACY_DATAPLANE=1")
+		if code == 0 {
+			t.Fatalf("%s: escape hatch let the removed mode through: %s", mode, out)
+		}
+		if !strings.Contains(out, "POWERSVX_ALLOW_LEGACY_DATAPLANE does not bring it back") {
+			t.Errorf("%s: output does not say the escape hatch is void: %s", mode, out)
+		}
 	}
 }
 

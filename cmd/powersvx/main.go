@@ -44,8 +44,6 @@ import (
 	"github.com/powersvx/powersvx/internal/server"
 	"github.com/powersvx/powersvx/internal/tlsutil"
 	"github.com/powersvx/powersvx/internal/tsig"
-	"github.com/powersvx/powersvx/internal/unboundlog"
-	"github.com/powersvx/powersvx/internal/unboundrpz"
 	"github.com/powersvx/powersvx/internal/view"
 	"github.com/powersvx/powersvx/internal/watchdog"
 )
@@ -79,20 +77,10 @@ func main() {
 	}
 	config.ApplyQueryLogGuard(cfg)
 	watchdog.Start(log)
-	if config.UnboundDataplane() {
-		cfg.Server.TProxy = false
-		dir := unboundrpz.Dir(*dataDir)
-		_ = unboundrpz.EnsureEmptyZones(dir)
-		_ = unboundrpz.WriteBankPassthru(filepath.Join(dir, unboundrpz.BankFile))
-		_ = unboundrpz.WriteAccessControl(filepath.Join(dir, "access-control.conf"), cfg.ACL.AllowQuery)
-		log.Info("dns dataplane unbound — PowerSVX is control-plane",
-			"auth_udp", cfg.Server.UDPPort, "api", cfg.API.RESTBind)
-	}
 	if config.DNSDistDataplane() {
 		cfg.Server.TProxy = false
 		_ = blockcdb.EnsureEmpty(*dataDir)
 		_, _ = blockcdb.WriteBanksWhitelist(*dataDir)
-		_ = unboundrpz.EnsureEmptyZones(unboundrpz.Dir(*dataDir))
 		log.Info("dns dataplane dnsdist+CDB — PowerSVX is control-plane",
 			"auth_udp", cfg.Server.UDPPort, "api", cfg.API.RESTBind, "blocklist", blockcdb.Dir(*dataDir))
 	}
@@ -269,21 +257,7 @@ func main() {
 		policies = append(policies, pc)
 	}
 	if len(policies) > 0 {
-		if config.UnboundDataplane() {
-			// Control-plane: do not load 9.5M into Go Badger — sync Unbound RPZ zonefiles.
-			go func() {
-				n, err := unboundrpz.SyncFromConfigPolicies(*dataDir, cfg.RPZ.Policies, 15*time.Minute)
-				if err != nil {
-					log.Warn("unbound rpz initial sync failed", "err", err)
-					return
-				}
-				if err := unboundrpz.TryReload(); err != nil {
-					log.Warn("unbound reload after initial rpz sync", "err", err, "entries", n)
-				} else {
-					log.Info("unbound rpz initial sync ok", "entries", n)
-				}
-			}()
-		} else if config.DNSDistDataplane() {
+		if config.DNSDistDataplane() {
 			// CDB sync kicked after API starts (StartRPZAutoUpdate / explicit refresh).
 			log.Info("dnsdist dataplane: block CDB sync deferred to API start")
 		} else if rpzEng.TryBeginLoad() {
@@ -447,10 +421,8 @@ func main() {
 	}
 	rest.StartRPZAutoUpdate()
 	rest.StartLiveQuerySampler()
-	if config.FilterDataplane() {
-		rest.SyncAllDataplanes()
-	}
 	if config.DNSDistDataplane() {
+		rest.SyncAllDataplanes()
 		rest.RefreshUnboundEntryCount()
 		rest.StartDNSDistStatsBridge()
 		rest.StartUnboundStatsBridge() // backend Unbound :5353 (Prometheus only; UI QPS from dnsdist)
@@ -463,16 +435,7 @@ func main() {
 			log.Warn("dnsdist cdb initial sync not started", "err", err)
 		}
 	}
-	if config.UnboundDataplane() {
-		rest.RefreshUnboundEntryCount()
-		rest.StartUnboundStatsBridge()
-		if config.UnboundQueryLogAllowed() && qlog != nil {
-			samp := unboundlog.NewSampler(unboundlog.DefaultPath(), qlog, cfg, log)
-			samp.Start()
-			defer samp.Stop()
-		}
-	}
-	if n := cfg.RPZ.HotSeedTopN; n > 0 && !config.UnboundDataplane() && !config.DNSDistDataplane() {
+	if n := cfg.RPZ.HotSeedTopN; n > 0 && !config.DNSDistDataplane() {
 		seedPath := filepath.Join(*dataDir, rpz.HotSeedPath)
 		go func() {
 			// Warm shortly after start, then refresh from live top-blocked.

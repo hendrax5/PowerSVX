@@ -123,3 +123,32 @@ func TestRejectsNonNumericSize(t *testing.T) {
 		})
 	}
 }
+
+// Unbound only ever runs as the recursive backend behind dnsdist (ADR-0001): the
+// generated configuration has no RPZ zones and never listens on the public port.
+func TestUnboundConfigIsTheLoopbackBackendOnly(t *testing.T) {
+	ub, _ := generate(t, "4", "4096")
+	mustContain(t, "unbound backend", ub, "interface: 127.0.0.1\n", "port: 5353\n", "control-port: 8953\n")
+	for _, banned := range []string{"rpz:", "zonefile:", "interface: 0.0.0.0", "port: 53\n", "mode=dataplane"} {
+		if strings.Contains(ub, banned) {
+			t.Errorf("generated Unbound configuration still contains %q:\n%s", banned, ub)
+		}
+	}
+}
+
+func TestUnboundGeneratorRefusesTheRemovedMode(t *testing.T) {
+	root := node(t)
+	for _, env := range []string{
+		"POWERSVX_DNS_DATAPLANE=unbound",
+		"POWERSVX_DNS_DATAPLANE=external",
+		"POWERSVX_UNBOUND_MODE=dataplane",
+	} {
+		out, err := sh(t, root, []string{env}, "gen-unbound-conf.sh", filepath.Join(root, "unbound.conf"))
+		if err == nil {
+			t.Errorf("%s: expected the generator to refuse, it succeeded:\n%s", env, out)
+		}
+		if !strings.Contains(out, "was removed") {
+			t.Errorf("%s: refusal does not say the mode was removed: %s", env, out)
+		}
+	}
+}

@@ -394,8 +394,6 @@ func (a *API) pullAndWriteBlockCDB(policies []rpz.PolicyConfig) (int, error) {
 	}
 	_ = os.MkdirAll(filepath.Dir(manifestPath), 0o755)
 	_ = os.WriteFile(manifestPath, []byte(activeManifest), 0o644)
-	_ = unboundrpz.WriteMinimalTrustZone(a.dataDir)
-	_ = unboundrpz.EnsureEmptyZones(unboundrpz.Dir(a.dataDir))
 	return cdbN, nil
 }
 
@@ -539,13 +537,11 @@ func (a *API) syncAuthZonesCDB() []string {
 
 // SyncSecondaryDataplane updates authzones.cdb, dnsdist, and Unbound routing after a secondary zone changes.
 func (a *API) SyncSecondaryDataplane(zone string) {
-	if a == nil || a.srv == nil || !config.FilterDataplane() {
+	if a == nil || a.srv == nil || !config.DNSDistDataplane() {
 		return
 	}
 	zoneNames := a.syncAuthZonesCDB()
-	if config.DNSDistDataplane() {
-		a.tryReloadDNSDist()
-	}
+	a.tryReloadDNSDist()
 	a.syncUnboundRuntime(zoneNames)
 	if a.log != nil && zone != "" {
 		a.log.Info("secondary dataplane synced", "zone", zone, "auth_zones", len(zoneNames))
@@ -553,11 +549,9 @@ func (a *API) SyncSecondaryDataplane(zone string) {
 }
 
 func (a *API) syncUnboundRuntime(zoneNames []string) {
-	if !config.FilterDataplane() {
+	if !config.DNSDistDataplane() {
 		return
 	}
-	allow, _ := a.srv.QueryACL()
-	_ = unboundrpz.WriteAccessControl(filepath.Join(unboundrpz.Dir(a.dataDir), "access-control.conf"), allow)
 
 	flags := a.srv.RuntimeFlags()
 	authPort := 5354

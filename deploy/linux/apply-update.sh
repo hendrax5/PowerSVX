@@ -52,18 +52,10 @@ fi
 
 echo "==> generate Unbound + dnsdist conf"
 export POWERSVX_DNS_DATAPLANE="${POWERSVX_DNS_DATAPLANE:-dnsdist}"
-export POWERSVX_UNBOUND_MODE="${POWERSVX_UNBOUND_MODE:-}"
-export POWERSVX_UNBOUND_QUERYLOG="${POWERSVX_UNBOUND_QUERYLOG:-0}"
 bash "$ROOT/deploy/linux/gen-unbound-conf.sh" "$ROOT/configs/unbound/unbound.conf"
 if [ "$POWERSVX_DNS_DATAPLANE" = "dnsdist" ] || [ "$POWERSVX_DNS_DATAPLANE" = "cdb" ]; then
   chmod +x "$ROOT/deploy/linux/gen-dnsdist-conf.sh" || true
   bash "$ROOT/deploy/linux/gen-dnsdist-conf.sh" "$ROOT/configs/dnsdist/dnsdist.conf"
-fi
-
-echo "==> unbound RPZ memory guard (park huge zone if host too small)"
-if [ -f "$ROOT/deploy/linux/unbound-rpz-guard.sh" ]; then
-  chmod +x "$ROOT/deploy/linux/unbound-rpz-guard.sh" || true
-  bash "$ROOT/deploy/linux/unbound-rpz-guard.sh" --park || true
 fi
 
 echo "==> recreate stack (logging limits + retention)"

@@ -19,7 +19,7 @@ PowerSVX → AXFR/IXFR/hosts → data/blocklist/domains.cdb (+ banks.whitelist +
 
 Env: `POWERSVX_DNS_DATAPLANE=dnsdist` (compose host default).
 
-Legacy: `POWERSVX_DNS_DATAPLANE=unbound` puts Unbound on `:53` + RPZ (partial cap on ≤12 GiB). Stop dnsdist before that mode.
+`POWERSVX_DNS_DATAPLANE=unbound` (Unbound on `:53` + RPZ) was removed; a node still set to it is refused at update and at start. See `docs/PRODUCTION.md`.
 
 ## When the user says “install”, “bootstrap”, or “fresh deploy”
 
@@ -69,8 +69,6 @@ Default target if unspecified: **isehat2 / 103.172.70.254**.
 - Do **not** `chown -R` on `data/postgres` (uid **70**).
 - **Do not put Go PowerSVX back on public `:53`** in production.
 - CDB holds the **full** AXFR list (no 1.5M Unbound RPZ cap). Banks filtered from CDB + dnsdist SMN.
-- Keep Unbound RPZ zonefiles minimal when on dnsdist (API writes SOA stubs).
-- Keep `POWERSVX_UNBOUND_QUERYLOG=0`.
 - Dataplane: PowerSVX `POWERSVX_MEM_PERCENT` defaults to **30%**.
 - Query log (Go edge) stays off (`POWERSVX_DISABLE_QUERY_LOG=1`).
 
@@ -116,7 +114,7 @@ Phrase: **“hygiene semua” / “prune fleet”** → loop inventory hosts wit
 | Recreate Unbound “never finishes” | Loading 370 MB / 9.5M RPZ into ~11 GiB host → swap thrash |
 | Disk 100% | Unbound `log-queries` + Docker image buildup |
 
-**Recovery (legacy Unbound RPZ):** park huge zone → start empty → dig OK. **Preferred fix:** cut over to **dnsdist+CDB** (this architecture).
+**Recovery (a node still on the removed Unbound RPZ mode):** cut over to **dnsdist+CDB** (this architecture); see `docs/PRODUCTION.md`.
 
 ## Phrases → action
 

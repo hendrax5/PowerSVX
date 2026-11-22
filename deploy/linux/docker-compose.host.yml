@@ -2,7 +2,6 @@
 #
 # Dataplane options:
 #   POWERSVX_DNS_DATAPLANE=dnsdist  — dnsdist :53 + CDB blocklist; Unbound 127.0.0.1:5353 (recommended)
-#   POWERSVX_DNS_DATAPLANE=unbound  — Unbound :53 + RPZ zonefiles (legacy heavy)
 #   POWERSVX_DNS_DATAPLANE=powersvx — Go edge :53 (lab)
 #
 # Usage:
@@ -35,9 +34,6 @@ services:
       - POWERSVX_DNSDIST_WEB_PASSWORD=${POWERSVX_DNSDIST_WEB_PASSWORD:-powersvx}
       - POWERSVX_DNSDIST_API_KEY=${POWERSVX_DNSDIST_API_KEY:-powersvx-api}
       - POWERSVX_UNBOUND_CONTROL=127.0.0.1:8953
-      - POWERSVX_UNBOUND_QUERYLOG=${POWERSVX_UNBOUND_QUERYLOG:-0}
-      - POWERSVX_UNBOUND_QUERYLOG_PATH=/data/unbound-logs/unbound.log
-      - POWERSVX_RPZ_MAX_ENTRIES=${POWERSVX_RPZ_MAX_ENTRIES:-}
       - POWERSVX_CONNTRACK_SYS_DIR=/powersvx-sys
     depends_on:
       postgres:
