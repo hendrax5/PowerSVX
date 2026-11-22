@@ -15,6 +15,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+sh "$ROOT/deploy/linux/dataplane-guard.sh" "$ROOT" || exit 1
 cd "$ROOT"
 
 if [[ "$(id -u)" -ne 0 ]]; then

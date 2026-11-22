@@ -19,6 +19,18 @@ On production hosts (`POWERSVX_DNS_DATAPLANE=dnsdist`, default):
 
 Set `POWERSVX_DNS_DATAPLANE=unbound` and stop dnsdist. Partial TrustPositif: `POWERSVX_RPZ_MAX_ENTRIES` auto-cap on small RAM. Full Unbound RPZ needs **≥16 GiB**. Keep `POWERSVX_UNBOUND_QUERYLOG=0`. Run `deploy/linux/unbound-rpz-guard.sh` before Unbound recreate.
 
+
+### Removed Dataplane modes: the guard
+
+Only the dnsdist Dataplane has a future. The `unbound`, `external` and `powersvx` modes are being removed in the next major version of PowerSVX. Until then a node configured for any of them is never updated silently:
+
+- The Control Plane exits at start with a message naming the configured mode and the fix.
+- `deploy/linux/apply-update.sh` and `bootstrap-node.sh` run `deploy/linux/dataplane-guard.sh` first and stop with the same message before touching containers.
+- An unset `POWERSVX_DNS_DATAPLANE` means dnsdist on a host deployment (`deploy/linux/docker-compose.host.yml` sets `POWERSVX_HOST_DEPLOYMENT=1`). Off host, local development keeps its Go default.
+- To fix a node: set `POWERSVX_DNS_DATAPLANE=dnsdist`, regenerate configs with `deploy/linux/gen-dnsdist-conf.sh`, and recreate the stack.
+- Labs and local development can keep a legacy mode for now with `POWERSVX_ALLOW_LEGACY_DATAPLANE=1`. Never set it on a production node.
+- `python ops/probe.py` prints each node's configured mode.
+
 ## Query ACL
 - `[acl] allow_query` — CIDRs/IPs allowed to query DNS. **Empty = allow all.**
 - `[acl] deny_query` — always refused (wins over allow).
