@@ -120,7 +120,7 @@ func (s *Signer) RolloverZSK(zone string) error {
 		return err
 	}
 	alg := zk.KSK.Algorithm
-	zsk, zpriv, err := makeKey(zone, 256, alg)
+	zsk, zpriv, err := newKey(zone, 256, alg, zk.KSK.KeyTag(), zk.ZSK.KeyTag())
 	if err != nil {
 		return err
 	}
@@ -326,11 +326,11 @@ func (s *Signer) generate(zone string, opts SignOptions) error {
 	if alg == 0 {
 		alg = dns.ECDSAP256SHA256
 	}
-	zsk, zpriv, err := makeKey(zone, 256, alg)
+	ksk, kpriv, err := newKey(zone, 257, alg)
 	if err != nil {
 		return err
 	}
-	ksk, kpriv, err := makeKey(zone, 257, alg)
+	zsk, zpriv, err := newKey(zone, 256, alg, ksk.KeyTag())
 	if err != nil {
 		return err
 	}
@@ -349,6 +349,9 @@ func (s *Signer) generate(zone string, opts SignOptions) error {
 	s.mu.Unlock()
 	return nil
 }
+
+// makeKeyFn generates zone keys; tests replace it to hand out chosen keys.
+var makeKeyFn = makeKey
 
 func makeKey(zone string, flags uint16, alg uint8) (*dns.DNSKEY, crypto.Signer, error) {
 	bits := 256
@@ -459,4 +462,28 @@ func readKey(path, zone string) (*dns.DNSKEY, crypto.Signer, error) {
 		return nil, nil, fmt.Errorf("private key is not crypto.Signer")
 	}
 	return key, signer, nil
+}
+
+// newKey generates a key whose key tag is usable. The tag is a 16-bit checksum,
+// so about one key in 65,536 has tag 0, which the signing library refuses to sign
+// with, and about as many ZSKs would share the KSK's tag (a legal but needless
+// ambiguity for validators). Such a key is discarded and another is drawn.
+func newKey(zone string, flags uint16, alg uint8, avoidTags ...uint16) (*dns.DNSKEY, crypto.Signer, error) {
+	for attempt := 0; attempt < 32; attempt++ {
+		key, priv, err := makeKeyFn(zone, flags, alg)
+		if err != nil {
+			return nil, nil, err
+		}
+		tag := key.KeyTag()
+		bad := tag == 0
+		for _, a := range avoidTags {
+			if tag == a {
+				bad = true
+			}
+		}
+		if !bad {
+			return key, priv, nil
+		}
+	}
+	return nil, nil, fmt.Errorf("no usable key tag for %s after 32 keys", zone)
 }
