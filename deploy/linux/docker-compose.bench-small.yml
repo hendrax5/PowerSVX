@@ -5,18 +5,16 @@
 #   bash deploy/linux/gen-unbound-conf.sh && bash deploy/linux/gen-dnsdist-conf.sh
 #   eval "$(deploy/linux/calc-mem-env.sh)"
 #   docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \
-#     -f deploy/linux/docker-compose.bench-small.yml up -d dnsdist unbound powersvx postgres
+#     -f deploy/linux/docker-compose.core.yml -f deploy/linux/docker-compose.bench-small.yml \
+#     up -d dnsdist unbound powersvx
 #
-# Naming the services keeps the Observability Profile (Prometheus, Grafana, node-exporter)
-# stopped. Watchtower is part of the Core Profile and is left out because it does not serve DNS
-# small. Postgres is still listed because the Control Plane does not start
-# without it yet; that goes away when Postgres becomes optional.
+# The Core overlay keeps the Observability Profile (Postgres, Prometheus, Grafana,
+# node-exporter) stopped and runs the Control Plane without a database. Watchtower is part
+# of the Core Profile and is left out because it does not serve DNS.
 services:
   powersvx:
     cgroup_parent: powersvx-bench.slice
   unbound:
     cgroup_parent: powersvx-bench.slice
   dnsdist:
-    cgroup_parent: powersvx-bench.slice
-  postgres:
     cgroup_parent: powersvx-bench.slice

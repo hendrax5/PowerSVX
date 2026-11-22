@@ -11,8 +11,8 @@ import (
 )
 
 var (
-	coreServices = []string{"dnsdist", "postgres", "powersvx", "unbound", "watchtower"}
-	obsServices  = []string{"grafana", "node-exporter", "prometheus"}
+	coreServices = []string{"dnsdist", "powersvx", "unbound", "watchtower"}
+	obsServices  = []string{"grafana", "node-exporter", "postgres", "prometheus"}
 )
 
 // composeServices lists the services `docker compose config --services` selects for

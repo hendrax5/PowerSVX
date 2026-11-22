@@ -127,7 +127,7 @@ Only the dnsdist Dataplane exists. The `unbound`, `external` and `powersvx` (Go 
 - Grafana container binds `127.0.0.1:3000` with `GF_AUTH_ANONYMOUS_ENABLED=false` (expose only via TLS reverse proxy / SSH tunnel).
 
 ## Core Profile and Observability Profile
-- Core: `dnsdist`, `unbound`, `powersvx`, `postgres` (until Postgres is optional), `watchtower`. Observability: `prometheus`, `grafana`, `node-exporter`.
+- Core: `dnsdist`, `unbound`, `powersvx`, `watchtower`. Observability: `postgres` (query-log history only), `prometheus`, `grafana`, `node-exporter`. Core runs the Control Plane with the database disabled; without Postgres the console says query history is unavailable.
 - `POWERSVX_PROFILE=core` in `.env` runs the Core Profile only; unset or `full` runs everything. Bootstrap selects `core` by itself on hosts under 4 GB of memory and saves it to `.env`. Details and commands: `deploy/linux/README.md`.
 - Existing nodes are unaffected until `POWERSVX_PROFILE=core` is set: the plain `docker compose ... up -d` and `apply-update.sh` keep starting everything.
 

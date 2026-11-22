@@ -377,9 +377,22 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("load config %s: %w", path, err)
 	}
 	expandEnv(cfg)
+	applyDatabaseEnv(cfg)
 	normalizeDNSSEC(cfg)
 	normalizeResolverBuffers(cfg)
 	return cfg, nil
+}
+
+// applyDatabaseEnv lets POWERSVX_DATABASE_ENABLED override [database] enabled, so a
+// Core Profile node runs without Postgres while the shared TOML stays unchanged.
+// Unset (or any other value) leaves the file's setting alone.
+func applyDatabaseEnv(cfg *Config) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("POWERSVX_DATABASE_ENABLED"))) {
+	case "0", "false", "no", "off":
+		cfg.Database.Enabled = false
+	case "1", "true", "yes", "on":
+		cfg.Database.Enabled = true
+	}
 }
 
 // EDNSBufferMin/Max follow RFC 6891 practice: 1232 is the IPv6-safe path MTU

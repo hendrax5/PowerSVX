@@ -366,7 +366,7 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 			status = "degraded"
 		}
 	} else {
-		checks["database"] = map[string]any{"status": "disabled"}
+		checks["database"] = map[string]any{"status": "disabled", "hint": "not configured; query history needs the Observability Profile"}
 	}
 
 	// The Go process keeps no resolver cache; the Dataplane and Unbound report theirs.
@@ -1266,6 +1266,8 @@ func (a *API) settingsPayload() map[string]any {
 		"rate_limit_block_duration": rl.BlockDuration,
 		"rate_limit_whitelist":      rl.Whitelist,
 		"query_log_enabled":         f.QueryLog,
+		"query_history_available":   a.db != nil && a.cfg.Database.Enabled,
+		"query_history_note":        queryHistoryUnavailable,
 		"query_log_mask_ip":         a.cfg.Logging.QueryLogMaskIP,
 		"query_log_retention_days":  a.cfg.Logging.QueryLogRetentionDays,
 		"query_log_max_size_mb":     a.cfg.Logging.QueryLogMaxSizeMB,
@@ -1895,16 +1897,22 @@ func (a *API) handleAnomaly(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, det.Snapshot())
 }
 
+// queryHistoryUnavailable is shown when no database is configured. The live query
+// stream does not need a database and keeps working.
+const queryHistoryUnavailable = "Query history is unavailable: it needs the Observability Profile (Postgres). The live query stream still works."
+
 func (a *API) handleQueryLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if a.db == nil || !a.cfg.Database.Enabled {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"logs": []any{}, "total": 0, "limit": 50, "offset": 0,
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error":     "query_history_unavailable",
+			"available": false,
+			"message":   queryHistoryUnavailable,
+			"logs":      []any{}, "total": 0, "limit": 50, "offset": 0,
 			"enabled": a.cfg.Logging.QueryLogEnabled,
-			"note":    "PostgreSQL required for query logs",
 		})
 		return
 	}
@@ -1993,9 +2001,9 @@ func (a *API) handleBackup(w http.ResponseWriter, r *http.Request) {
 		for _, z := range zones {
 			recs, _ := a.auth.GetRecords(z.Name)
 			entry := map[string]any{"name": z.Name, "records": recordsDTO(recs)}
-		if meta, ok := a.auth.GetZoneMeta(z.Name); ok {
-			entry["meta"] = zoneMetaPayload(z.Name, meta)
-		}
+			if meta, ok := a.auth.GetZoneMeta(z.Name); ok {
+				entry["meta"] = zoneMetaPayload(z.Name, meta)
+			}
 			if sig := a.srv.Signer(); sig != nil && sig.Enabled(z.Name) {
 				entry["dnssec_signing"] = true
 				if ds, err := sig.DS(z.Name); err == nil && ds != nil {
