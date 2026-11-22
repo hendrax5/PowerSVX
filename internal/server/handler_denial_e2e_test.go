@@ -37,18 +37,21 @@ func verifyEveryRRset(t *testing.T, m *dns.Msg, rrs []dns.RR, keys []dns.RR) {
 	}
 	for _, k := range order {
 		verified := false
+		var lastErr error
 		for _, rr := range rrs {
 			sig, ok := rr.(*dns.RRSIG)
 			if !ok || sig.TypeCovered != k.typ || dns.CanonicalName(sig.Hdr.Name) != k.name {
 				continue
 			}
+			// Two keys may share a key tag; a resolver tries each of them.
 			for _, kk := range keys {
 				key, ok := kk.(*dns.DNSKEY)
 				if !ok || key.KeyTag() != sig.KeyTag {
 					continue
 				}
 				if err := sig.Verify(key, sets[k]); err != nil {
-					t.Fatalf("RRSIG over %s %s does not verify: %v", k.name, dns.TypeToString[k.typ], err)
+					lastErr = err
+					continue
 				}
 				if !sig.ValidityPeriod(time.Now()) {
 					t.Fatalf("RRSIG over %s %s outside its validity period", k.name, dns.TypeToString[k.typ])
@@ -57,7 +60,7 @@ func verifyEveryRRset(t *testing.T, m *dns.Msg, rrs []dns.RR, keys []dns.RR) {
 			}
 		}
 		if !verified {
-			t.Fatalf("no verifiable RRSIG over %s %s in %v", k.name, dns.TypeToString[k.typ], rrs)
+			t.Fatalf("no verifiable RRSIG over %s %s (last error %v) in %v", k.name, dns.TypeToString[k.typ], lastErr, rrs)
 		}
 	}
 }
