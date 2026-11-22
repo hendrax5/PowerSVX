@@ -2,8 +2,8 @@ package server
 
 // End-to-end tests for the query handler (ServeDNS). Every test sends DNS
 // messages in and asserts on the DNS messages that come out; none looks at
-// handler internals. They describe the handler as it is today, so the removal
-// of recursion and the cache can be done against them.
+// handler internals. They describe the Auth Backend: authoritative answers,
+// refusal of everything else, and refusal of non-local sources.
 
 import (
 	"context"
@@ -17,11 +17,9 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/powersvx/powersvx/internal/authoritative"
-	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/dnssec"
 	"github.com/powersvx/powersvx/internal/geo"
-	"github.com/powersvx/powersvx/internal/resolver"
 	"github.com/powersvx/powersvx/internal/secondary"
 	"github.com/powersvx/powersvx/internal/tsig"
 	"github.com/powersvx/powersvx/internal/view"
@@ -30,7 +28,6 @@ import (
 const (
 	zoneName    = "example.com."
 	soaContent  = "ns1.example.com. hostmaster.example.com. 10 3600 600 86400 300"
-	stubAnswer  = "192.0.2.250"
 	anyClientIP = "203.0.113.9"
 )
 
@@ -66,31 +63,6 @@ func (w *fakeWriter) Close() error        { return nil }
 func (w *fakeWriter) TsigStatus() error   { return w.tsigErr }
 func (w *fakeWriter) TsigTimersOnly(bool) {}
 func (w *fakeWriter) Hijack()             {}
-
-// stubUpstream answers every A query with stubAnswer on loopback UDP. It stands
-// in for the resolver's upstream so names outside every zone get a defined answer.
-func stubUpstream(t *testing.T) string {
-	t.Helper()
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
-		m := new(dns.Msg)
-		m.SetReply(r)
-		if len(r.Question) > 0 && r.Question[0].Qtype == dns.TypeA {
-			rr, _ := dns.NewRR(r.Question[0].Name + " 60 IN A " + stubAnswer)
-			m.Answer = []dns.RR{rr}
-		}
-		_ = w.WriteMsg(m)
-	})}
-	started := make(chan struct{})
-	srv.NotifyStartedFunc = func() { close(started) }
-	go func() { _ = srv.ActivateAndServe() }()
-	<-started
-	t.Cleanup(func() { _ = srv.Shutdown() })
-	return pc.LocalAddr().String()
-}
 
 type harness struct {
 	t      *testing.T
@@ -137,7 +109,7 @@ func withTSIG(name, secret string) option {
 }
 
 func withECS() option {
-	return func(h *harness, d *Deps) { d.Res.ECSEnabled = true }
+	return func(h *harness, d *Deps) { h.cfg.Resolver.ECSEnabled = true }
 }
 
 func withConfig(fn func(*config.Config)) option {
@@ -147,15 +119,9 @@ func withConfig(fn func(*config.Config)) option {
 func newHarness(t *testing.T, opts ...option) *harness {
 	t.Helper()
 	cfg := config.Default()
-	cfg.Resolver.Mode = "forward"
-	cfg.Resolver.Forwarders = []string{stubUpstream(t)}
-	cfg.Resolver.TimeoutMS = 2000
-	res := resolver.New(cfg.Resolver)
 	auth := authoritative.NewStore()
 	h := &harness{t: t, auth: auth, cfg: cfg}
 	d := Deps{
-		Cache: cache.NewTier(cache.NewL1(1000), nil, time.Minute, time.Minute),
-		Res:   res,
 		Auth:  auth,
 	}
 	for _, o := range opts {
@@ -400,17 +366,110 @@ func TestAnswersFromTheMostSpecificZoneWhenZonesAreNested(t *testing.T) {
 	wantSOAInAuthority(t, m, "sub.example.com.")
 }
 
-func TestHandsNamesOutsideEveryZoneToTheResolver(t *testing.T) {
-	// Current behaviour: a name no hosted zone covers is not refused; it goes to
-	// the resolver (here a loopback stub upstream). Ticket #11 changes this.
+func TestRefusesNamesOutsideEveryZone(t *testing.T) {
+	// The Auth Backend does not resolve: a name no hosted zone covers is refused.
 	h := newHarness(t)
 	h.addZone(zoneName, rec("www.example.com.", dns.TypeA, "192.0.2.10"))
 	m := h.q("elsewhere.test.", dns.TypeA)
-	wantRcode(t, m, dns.RcodeSuccess)
+	wantRcode(t, m, dns.RcodeRefused)
 	if m.Authoritative {
 		t.Fatal("AA bit set on a name outside every hosted zone")
 	}
-	wantA(t, m, stubAnswer)
+	if len(m.Answer) != 0 {
+		t.Fatalf("answers on a refused query: %v", m.Answer)
+	}
+}
+
+func TestRefusesNamesThatOnlyShareATextSuffixWithAZone(t *testing.T) {
+	// badexample.com. ends with the characters of example.com. but is not below it.
+	h := newHarness(t)
+	h.addZone(zoneName, rec("www.example.com.", dns.TypeA, "192.0.2.10"))
+	for _, name := range []string{"badexample.com.", "www.badexample.com.", "example.com.evil.net."} {
+		m := h.q(name, dns.TypeA)
+		wantRcode(t, m, dns.RcodeRefused)
+		if m.Authoritative {
+			t.Fatalf("%s: AA bit set on a name outside every hosted zone", name)
+		}
+	}
+	// A real child of the zone is still answered from it.
+	wantRcode(t, h.q("missing.example.com.", dns.TypeA), dns.RcodeNameError)
+}
+
+func TestRefusesRecursionDesiredQueriesOutsideEveryZone(t *testing.T) {
+	h := newHarness(t)
+	h.addZone(zoneName, rec("www.example.com.", dns.TypeA, "192.0.2.10"))
+	m := h.q("www.google.com.", dns.TypeAAAA)
+	wantRcode(t, m, dns.RcodeRefused)
+	if m.RecursionAvailable {
+		t.Fatal("RA set: this process does not recurse")
+	}
+}
+
+func TestQueriesFromANonLocalSourceAreRefusedBeforeAnyProcessing(t *testing.T) {
+	h := newHarness(t)
+	h.addZone(zoneName, rec("www.example.com.", dns.TypeA, "192.0.2.10"))
+	for _, src := range []string{"203.0.113.9", "10.1.2.3", "2001:db8::1", "192.168.1.1"} {
+		req := new(dns.Msg)
+		req.SetQuestion("www.example.com.", dns.TypeA) // a hosted name, answerable if it were processed
+		w := newWriter(src)
+		h.srv.serveFromDataplane(w, req)
+		if len(w.msgs) != 1 {
+			t.Fatalf("%s: want 1 reply, got %d", src, len(w.msgs))
+		}
+		wantRcode(t, w.msgs[0], dns.RcodeRefused)
+		if len(w.msgs[0].Answer) != 0 || w.msgs[0].Authoritative {
+			t.Fatalf("%s: a non-local source got an authoritative answer: %v", src, w.msgs[0])
+		}
+	}
+	if q, _ := h.srv.Stats(); q != 0 {
+		t.Fatalf("a refused non-local query was counted as processed (%d)", q)
+	}
+}
+
+func TestQueriesFromLoopbackAreAnswered(t *testing.T) {
+	h := newHarness(t)
+	h.addZone(zoneName, rec("www.example.com.", dns.TypeA, "192.0.2.10"))
+	for _, src := range []string{"127.0.0.1", "127.0.0.53", "::1"} {
+		req := new(dns.Msg)
+		req.SetQuestion("www.example.com.", dns.TypeA)
+		w := newWriter(src)
+		h.srv.serveFromDataplane(w, req)
+		if len(w.msgs) != 1 {
+			t.Fatalf("%s: want 1 reply, got %d", src, len(w.msgs))
+		}
+		wantRcode(t, w.msgs[0], dns.RcodeSuccess)
+		wantA(t, w.msgs[0], "192.0.2.10")
+	}
+}
+
+func TestAListenerOnLoopbackRefusesNothingFromTheDataplaneAndAnswersOverTheWire(t *testing.T) {
+	h := newHarness(t)
+	h.addZone(zoneName, rec("www.example.com.", dns.TypeA, "192.0.2.10"))
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(h.srv.serveFromDataplane)}
+	started := make(chan struct{})
+	srv.NotifyStartedFunc = func() { close(started) }
+	go func() { _ = srv.ActivateAndServe() }()
+	<-started
+	defer func() { _ = srv.Shutdown() }()
+
+	req := new(dns.Msg)
+	req.SetQuestion("www.example.com.", dns.TypeA)
+	in, _, err := (&dns.Client{Timeout: 2 * time.Second}).Exchange(req, pc.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantA(t, in, "192.0.2.10")
+	req = new(dns.Msg)
+	req.SetQuestion("elsewhere.test.", dns.TypeA)
+	in, _, err = (&dns.Client{Timeout: 2 * time.Second}).Exchange(req, pc.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRcode(t, in, dns.RcodeRefused)
 }
 
 func TestAnswersFORMERRForAQueryWithoutQuestion(t *testing.T) {
@@ -1135,7 +1194,7 @@ func TestSplitHorizonAnswersEachViewItsOwnRecords(t *testing.T) {
 	// A record without a view is served to every view.
 	wantA(t, h.ask("10.1.2.3", "shared.example.com.", dns.TypeA), "192.0.2.6")
 	wantA(t, h.ask("203.0.113.9", "shared.example.com.", dns.TypeA), "192.0.2.6")
-	// Repeating a query must not leak one view's answer to the other (cache).
+	// Repeating a query must not leak one view's answer to the other.
 	wantA(t, h.ask("10.1.2.3", "app.example.com.", dns.TypeA), "10.0.0.5")
 	wantA(t, h.ask("203.0.113.9", "app.example.com.", dns.TypeA), "192.0.2.5")
 }
@@ -1164,21 +1223,21 @@ func TestGeoAnswersTheRecordForTheClientsCountryAndFallsBackToDefault(t *testing
 	wantA(t, h.ask("198.51.100.30", "cdn.example.com.", dns.TypeA), "192.0.2.200")
 	// A client without a location gets the default record.
 	wantA(t, h.ask("203.0.113.9", "cdn.example.com.", dns.TypeA), "192.0.2.254")
-	// Cached answers must not cross locations.
+	// Each location keeps getting its own records on repeated queries.
 	wantA(t, h.ask("198.51.100.20", "cdn.example.com.", dns.TypeA), "192.0.2.100")
 }
 
 func TestGeoAnswersStayWithTheClientAddressWhenTheQueryCarriesAClientSubnet(t *testing.T) {
 	// Current behaviour: the location of an authoritative answer is chosen from
 	// the address of the client that sent the query. The EDNS client subnet in the
-	// query is not used for steering; it only keeps the cache entries apart.
+	// query is not used for steering; it is ignored by the handler.
 	h := newHarness(t, withECS(), withGeo(map[string]string{"198.51.100.20": "ID", "198.51.100.30": "US"}))
 	h.addZone(zoneName,
 		authoritative.Record{Name: "cdn.example.com.", Type: dns.TypeA, TTL: 300, Content: "192.0.2.100", GeoTag: "ID"},
 		authoritative.Record{Name: "cdn.example.com.", Type: dns.TypeA, TTL: 300, Content: "192.0.2.200", GeoTag: "US"},
 		authoritative.Record{Name: "cdn.example.com.", Type: dns.TypeA, TTL: 300, Content: "192.0.2.254", GeoTag: "default"},
 	)
-	// Resolver at the "US" address, end user's subnet elsewhere.
+	// Client at the "US" address, end user's subnet elsewhere.
 	m := h.ask("198.51.100.30", "cdn.example.com.", dns.TypeA, withECSOption("198.51.100.0/24"))
 	wantRcode(t, m, dns.RcodeSuccess)
 	wantA(t, m, "192.0.2.200")

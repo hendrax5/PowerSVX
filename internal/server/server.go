@@ -3,13 +3,10 @@ package server
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,36 +19,33 @@ import (
 	"github.com/powersvx/powersvx/internal/analytics"
 	"github.com/powersvx/powersvx/internal/anomaly"
 	"github.com/powersvx/powersvx/internal/authoritative"
-	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
-	"github.com/powersvx/powersvx/internal/database"
 	"github.com/powersvx/powersvx/internal/denylist"
 	"github.com/powersvx/powersvx/internal/dnssec"
-	"github.com/powersvx/powersvx/internal/ecs"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
 	"github.com/powersvx/powersvx/internal/kominfo"
 	"github.com/powersvx/powersvx/internal/metrics"
 	"github.com/powersvx/powersvx/internal/monitor"
-	"github.com/powersvx/powersvx/internal/otelx"
-	"github.com/powersvx/powersvx/internal/plugin"
 	"github.com/powersvx/powersvx/internal/queryring"
 	"github.com/powersvx/powersvx/internal/ratelimit"
-	"github.com/powersvx/powersvx/internal/resolver"
 	"github.com/powersvx/powersvx/internal/rpz"
 	"github.com/powersvx/powersvx/internal/secondary"
-	"github.com/powersvx/powersvx/internal/tproxy"
 	"github.com/powersvx/powersvx/internal/tsig"
 	"github.com/powersvx/powersvx/internal/view"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 )
 
-// Server is the DNS request pipeline.
+// Server is the Auth Backend: the query handler of the Control Plane. It answers
+// Authoritative Zones and Secondary Zones and refuses everything else. It does
+// not recurse, cache, filter, rate limit or ban; those belong to the Dataplane
+// (dnsdist in front of Unbound).
+//
+// The Server also holds the Control Plane's copy of the rules the console edits
+// (rate limit, query ACL, bans, Filter lists, runtime flags) and the live
+// statistics the Dataplane bridges feed. The API reads and writes them here and
+// pushes them to the Dataplane; the query handler never consults them.
 type Server struct {
 	cfg          *config.Config
-	cache        *cache.Tier
-	res          *resolver.Resolver
 	auth         *authoritative.Store
 	dnssec       *dnssec.Validator
 	signer       *dnssec.Signer
@@ -69,8 +63,6 @@ type Server struct {
 	anomaly      *anomaly.Detector
 	mon          *monitor.Collector
 	ring         *queryring.Ring
-	plugins      *plugin.Registry
-	qlog         *database.QueryLogger
 	secondaryMgr *secondary.Manager
 	kominfo      *kominfo.Manager
 	onRPZNotify  func(zone, clientIP string, tsigValid bool) bool
@@ -78,34 +70,19 @@ type Server struct {
 	queryACLMu   sync.RWMutex
 	queryACL     *acl.List
 	aclBan       *aclban.Guard
-	autobanOn    bool
-	aclDenyN     atomic.Uint64
-	nsec         *dnssec.NSECCache
-	// refreshInflight dedupes background cache refresh/prefetch by cache key.
-	refreshInflight sync.Map // uint64 -> struct{}
-	udp             *dns.Server
-	udps            []*dns.Server // all UDP listeners (SO_REUSEPORT shard)
-	tcp             *dns.Server
-	dot             *dns.Server
-	dohHTTP         *http.Server
-	dohHTTP3        *http3.Server
-	doqLn           *quic.Listener
-	doqCtx          context.Context
-	doqCancel       context.CancelFunc
-	queries         atomic.Uint64
-	blocked         atomic.Uint64
-	// resolveFailLogN samples WARN "resolve failed" under miss storms (1/128).
-	resolveFailLogN atomic.Uint64
-	started         time.Time
-	dotOn           bool
-	dohOn           bool
-	doh3On          bool
-	doqOn           bool
+	udp          *dns.Server
+	udps         []*dns.Server // all UDP listeners (SO_REUSEPORT shard)
+	tcp          *dns.Server
+	dot          *dns.Server
+	queries      atomic.Uint64
+	blocked      atomic.Uint64
+	// invalidLogN samples the WARN for rejected wire messages (1/128).
+	invalidLogN atomic.Uint64
+	started     time.Time
+	dotOn       bool
 }
 
 type Deps struct {
-	Cache   *cache.Tier
-	Res     *resolver.Resolver
 	Auth    *authoritative.Store
 	DNSSEC  *dnssec.Validator
 	Signer  *dnssec.Signer
@@ -123,8 +100,6 @@ type Deps struct {
 	Anomaly *anomaly.Detector
 	Monitor *monitor.Collector
 	Ring    *queryring.Ring
-	Plugins *plugin.Registry
-	QLog    *database.QueryLogger
 }
 
 func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
@@ -142,7 +117,6 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 	} else {
 		qacl = acl.Open()
 	}
-	autobanOn := cfg != nil && cfg.ACL.DenyAutobanThreshold > 0
 	var banCfg aclban.Config
 	if cfg != nil {
 		banCfg = aclban.Config{
@@ -152,47 +126,69 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 			NFT:       cfg.ACL.DenyAutobanNFT,
 		}
 	}
-	ban := aclban.New(banCfg, log)
 	ring := d.Ring
 	if ring == nil {
 		ring = queryring.New(0)
 	}
 	return &Server{
-		cfg:       cfg,
-		cache:     d.Cache,
-		res:       d.Res,
-		auth:      d.Auth,
-		dnssec:    d.DNSSEC,
-		signer:    d.Signer,
-		limiter:   d.Limiter,
-		rpz:       d.RPZ,
-		allow:     d.Allow,
-		deny:      d.Deny,
-		tsig:      d.TSIG,
-		views:     d.Views,
-		geo:       d.Geo,
-		tlsCfg:    d.TLS,
-		events:    d.Events,
-		acme:      d.ACME,
-		stats:     d.Stats,
-		anomaly:   d.Anomaly,
-		mon:       d.Monitor,
-		ring:      ring,
-		plugins:   d.Plugins,
-		qlog:      d.QLog,
-		nsec:      dnssec.NewNSECCache(),
-		log:       log,
-		queryACL:  qacl,
-		aclBan:    ban,
-		autobanOn: autobanOn,
-		started:   time.Now(),
+		cfg:      cfg,
+		auth:     d.Auth,
+		dnssec:   d.DNSSEC,
+		signer:   d.Signer,
+		limiter:  d.Limiter,
+		rpz:      d.RPZ,
+		allow:    d.Allow,
+		deny:     d.Deny,
+		tsig:     d.TSIG,
+		views:    d.Views,
+		geo:      d.Geo,
+		tlsCfg:   d.TLS,
+		events:   d.Events,
+		acme:     d.ACME,
+		stats:    d.Stats,
+		anomaly:  d.Anomaly,
+		mon:      d.Monitor,
+		ring:     ring,
+		log:      log,
+		queryACL: qacl,
+		aclBan:   aclban.New(banCfg, log),
+		started:  time.Now(),
 	}
 }
 
-func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
-	_, span := otelx.Tracer().Start(context.Background(), "dns.query")
-	defer span.End()
+// isLocalSource reports whether a query came from this host. The Dataplane
+// forwards from loopback; nothing else may reach the Auth Backend.
+func isLocalSource(addr net.Addr) bool {
+	if addr == nil {
+		return false
+	}
+	host := addr.String()
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
+// serveFromDataplane is the handler the listeners run. A query whose source is
+// not loopback is refused before any processing: it was not sent by the local
+// Dataplane.
+func (s *Server) serveFromDataplane(w dns.ResponseWriter, req *dns.Msg) {
+	if !isLocalSource(w.RemoteAddr()) {
+		metrics.QueriesTotal.WithLabelValues(protocolFromWriter(w), "non_local").Inc()
+		if req != nil {
+			m := new(dns.Msg)
+			m.SetRcode(req, dns.RcodeRefused)
+			_ = w.WriteMsg(m)
+		}
+		return
+	}
+	s.ServeDNS(w, req)
+}
+
+// ServeDNS answers a query from an Authoritative Zone or Secondary Zone, serves
+// NOTIFY, dynamic update and zone transfer, and refuses any other name.
+func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	start := time.Now()
 	s.queries.Add(1)
 	proto := protocolFromWriter(w)
@@ -240,132 +236,6 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 
-	logQuery := func(qname, qtype string, rcode int, cached bool) {
-		if s.qlog == nil || s.cfg == nil || !s.cfg.Logging.QueryLogEnabled || qname == "" || clientIP == "" {
-			return
-		}
-		rate := s.cfg.Logging.QueryLogSampleRate
-		// 0 = keep all (when logging enabled). Under admit pressure, tighten further.
-		if rate > 0 && rate < 1 {
-			if s.res != nil {
-				if capN := s.res.InflightCap(); capN > 0 && s.res.Inflight()*2 >= capN {
-					rate *= 0.2
-					if rate < 0.005 {
-						rate = 0.005
-					}
-				}
-			}
-			// Sample: keep roughly rate fraction using cheap counter.
-			if (s.queries.Load() % 1000) >= uint64(rate*1000) {
-				return
-			}
-		}
-		ip := clientIP
-		if s.cfg.Logging.QueryLogMaskIP {
-			ip = database.MaskClientIP(ip)
-		}
-		s.qlog.Log(database.QueryLogEntry{
-			Timestamp:    time.Now(),
-			ClientIP:     ip,
-			QueryName:    qname,
-			QueryType:    qtype,
-			ResponseCode: rcode,
-			ResponseMS:   int(time.Since(start).Milliseconds()),
-			Cached:       cached,
-			Protocol:     proto,
-		})
-	}
-	note := func(path, rcode string, aclDenied, rateLimited, timeout bool) {
-		qn, qt := "", ""
-		if req != nil && len(req.Question) > 0 {
-			qn = config.NormalizeName(req.Question[0].Name)
-			qt = dns.TypeToString[req.Question[0].Qtype]
-		}
-		dur := time.Since(start)
-		if s.ring != nil {
-			blocked := aclDenied || rateLimited || path == "blacklist" || path == "rpz" || path == "plugin" || path == "manual_ban"
-			s.ring.Push(queryring.QueryEvent{
-				Time:      start.UTC(),
-				ClientIP:  clientIP,
-				QName:     qn,
-				QType:     qt,
-				Protocol:  proto,
-				RCode:     rcode,
-				Path:      path,
-				LatencyMS: float64(dur.Microseconds()) / 1000.0,
-				Blocked:   blocked,
-				Source:    "go",
-			})
-		}
-		if s.mon == nil {
-			return
-		}
-		s.mon.Observe(monitor.Sample{
-			ClientIP:    clientIP,
-			QName:       qn,
-			Latency:     dur,
-			Path:        path,
-			RCode:       rcode,
-			ACLDenied:   aclDenied,
-			RateLimited: rateLimited,
-			Timeout:     timeout,
-		})
-	}
-
-	if s.aclBan != nil && s.aclBan.IsBanned(clientIP) {
-		metrics.ACLSilentDrop.Inc()
-		return
-	}
-
-	s.queryACLMu.RLock()
-	qacl := s.queryACL
-	s.queryACLMu.RUnlock()
-	if qacl != nil && clientIP != "" && !qacl.Allows(clientIP) {
-		metrics.QueriesTotal.WithLabelValues(proto, "acl_denied").Inc()
-		// Autoban: after threshold, silent-drop (no REFUSED / no query-log) to cut CPU.
-		if s.autobanOn && s.aclBan != nil {
-			if silent, newBan := s.aclBan.Observe(clientIP); silent {
-				metrics.ACLSilentDrop.Inc()
-				if newBan {
-					metrics.ACLAutoban.Inc()
-				}
-				return
-			}
-		}
-		if s.events != nil {
-			s.events.EmitSampled("acl:"+clientIP, 30*time.Second, "warn", "acl",
-				"client denied by query ACL", map[string]string{"client": clientIP, "proto": proto})
-		}
-		m := new(dns.Msg)
-		m.SetRcode(req, dns.RcodeRefused)
-		_ = w.WriteMsg(m)
-		// Do not query-log ACL denies — spam fills Postgres and burns CPU.
-		// Sample monitor sparsely (≈1%).
-		if s.aclDenyN.Add(1)%100 == 1 {
-			note("acl_denied", "REFUSED", true, false, false)
-		}
-		return
-	}
-
-	if s.limiter != nil && clientIP != "" && !s.limiter.Allow(clientIP) {
-		s.blocked.Add(1)
-		metrics.RateLimited.Inc()
-		metrics.QueriesTotal.WithLabelValues(proto, "ratelimited").Inc()
-		if s.events != nil {
-			s.events.EmitSampled("rl:"+clientIP, 30*time.Second, "warn", "rate_limit",
-				"client rate limited", map[string]string{"client": clientIP, "proto": proto})
-		}
-		m := new(dns.Msg)
-		m.SetRcode(req, dns.RcodeRefused)
-		_ = w.WriteMsg(m)
-		if len(req.Question) > 0 {
-			q := req.Question[0]
-			logQuery(config.NormalizeName(q.Name), dns.TypeToString[q.Qtype], dns.RcodeRefused, false)
-		}
-		note("ratelimited", "REFUSED", false, true, false)
-		return
-	}
-
 	if len(req.Question) == 0 {
 		m := new(dns.Msg)
 		m.SetRcode(req, dns.RcodeFormatError)
@@ -374,7 +244,6 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		if s.log != nil {
 			s.log.Debug("dns FORMERR empty question", "client", clientIP, "proto", proto)
 		}
-		note("formerr", "FORMERR", false, false, false)
 		return
 	}
 
@@ -385,15 +254,6 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	q := req.Question[0]
 	qname := config.NormalizeName(q.Name)
 	qtype := q.Qtype
-	qtypeStr := dns.TypeToString[qtype]
-	observe := func(code string) {
-		if s.stats != nil {
-			s.stats.Observe(qname, code)
-		}
-		if s.anomaly != nil {
-			s.anomaly.Observe(code)
-		}
-	}
 
 	if s.acme != nil && qtype == dns.TypeTXT {
 		if rr := s.acme.TXTAnswer(qname); rr != nil {
@@ -403,14 +263,11 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			m.Answer = []dns.RR{rr}
 			_ = w.WriteMsg(m)
 			metrics.QueriesTotal.WithLabelValues(proto, "acme").Inc()
-			observe("NOERROR")
-			logQuery(qname, qtypeStr, dns.RcodeSuccess, false)
-			note("acme", "NOERROR", false, false, false)
 			return
 		}
 	}
 
-	// Split horizon + GeoDNS + ECS scope
+	// Split horizon and GeoDNS pick which records of a zone answer.
 	viewName := "default"
 	if s.views != nil {
 		viewName = s.views.Match(clientIP)
@@ -419,151 +276,12 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if s.geo != nil && s.geo.Enabled() {
 		geoTag = s.geo.Lookup(clientIP).Tag
 	}
-	var sub *ecs.Subnet
-	if s.res != nil && s.res.ECSEnabled {
-		sub = ecs.Extract(req)
-		if sub == nil && clientIP != "" {
-			sub = ecs.FromIP(net.ParseIP(clientIP), s.res.ECSPrefixV4, s.res.ECSPrefixV6)
-		}
-	}
-	ecsKey := ""
-	if sub != nil {
-		ecsKey = sub.String()
-	}
-
-	// RPZ before cache so blocks always apply
-	if s.plugins != nil {
-		if d, name := s.plugins.Decide(plugin.QueryCtx{Name: qname, Qtype: qtype, ClientIP: clientIP}); d != plugin.DecisionContinue {
-			metrics.QueriesTotal.WithLabelValues(proto, "plugin").Inc()
-			code := "NXDOMAIN"
-			rcode := dns.RcodeNameError
-			if d == plugin.DecisionNODATA {
-				code = "NOERROR"
-				rcode = dns.RcodeSuccess
-			} else if d == plugin.DecisionRefused {
-				code = "REFUSED"
-				rcode = dns.RcodeRefused
-			}
-			observe(code)
-			if s.events != nil {
-				s.events.Emit("info", "plugin", "query blocked by plugin", map[string]string{"plugin": name, "qname": qname})
-			}
-			_ = plugin.ApplyDecision(w, req, d)
-			logQuery(qname, qtypeStr, rcode, false)
-			note("plugin", code, false, false, false)
-			return
-		}
-	}
-
-	if s.rpz != nil || s.deny != nil {
-		whitelisted := s.allow.Allows(qname)
-		if !whitelisted {
-			if s.deny != nil && s.deny.Blocks(qname) {
-				metrics.RPZBlocked.Inc()
-				metrics.QueriesTotal.WithLabelValues(proto, "blocked").Inc()
-				m := new(dns.Msg)
-				m.SetReply(req)
-				m.RecursionAvailable = true
-				m.Rcode = dns.RcodeNameError
-				_ = w.WriteMsg(m)
-				metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
-				observe("NXDOMAIN")
-				logQuery(qname, qtypeStr, dns.RcodeNameError, false)
-				note("blacklist", "NXDOMAIN", false, false, false)
-				return
-			}
-			if s.rpz != nil {
-				if hit, ok := s.rpz.Lookup(qname); ok {
-					hit = bankSafeRPZHit(qname, hit)
-					if hit.Action == rpz.ActionPass {
-						// Explicit allow — continue to cache / auth / recursive.
-					} else {
-						metrics.RPZBlocked.Inc()
-						metrics.QueriesTotal.WithLabelValues(proto, "blocked").Inc()
-						m := new(dns.Msg)
-						m.SetReply(req)
-						m.RecursionAvailable = true
-						rcode := dns.RcodeNameError
-						code := "NXDOMAIN"
-						switch hit.Action {
-						case rpz.ActionNODATA:
-							m.Rcode = dns.RcodeSuccess
-							rcode = dns.RcodeSuccess
-							code = "NOERROR"
-						case rpz.ActionRedirect:
-							m.Rcode = dns.RcodeSuccess
-							rcode = dns.RcodeSuccess
-							code = "NOERROR"
-							if rr := rpzRedirectRR(qname, qtype, hit.Target); rr != nil {
-								m.Answer = []dns.RR{rr}
-							}
-						case rpz.ActionCNAME:
-							m.Rcode = dns.RcodeSuccess
-							rcode = dns.RcodeSuccess
-							code = "NOERROR"
-							if rr := rpzCNAMERR(qname, hit.Target); rr != nil {
-								m.Answer = []dns.RR{rr}
-							}
-						default:
-							m.Rcode = dns.RcodeNameError
-						}
-						_ = w.WriteMsg(m)
-						metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
-						observe(code)
-						logQuery(qname, qtypeStr, rcode, false)
-						note("rpz", code, false, false, false)
-						return
-					}
-				}
-			}
-		}
-	}
-
-	if entry, st := s.cache.GetScopedEx(qname, qtype, ecsKey, viewName, geoTag); st != cache.Miss {
-		pathLabel := "cache"
-		if st == cache.HitStale {
-			metrics.CacheStaleHits.Inc()
-			pathLabel = "cache_stale"
-			s.scheduleRefresh(qname, qtype, ecsKey, viewName, geoTag, sub, req)
-		} else {
-			metrics.CacheHits.Inc()
-			if entry.NeedsPrefetch(s.cache.PrefetchPct) {
-				s.scheduleRefresh(qname, qtype, ecsKey, viewName, geoTag, sub, req)
-			}
-		}
-		cached := new(dns.Msg)
-		// Fast path: rewrite message ID in wire bytes (skip Unpack at multi‑10k QPS).
-		// Fall back to Unpack only when client sent EDNS COOKIE (must echo).
-		if opt := req.IsEdns0(); opt != nil && ednsHasCookie(opt) {
-			if err := cached.Unpack(entry.Wire); err != nil {
-				wire := resolver.RewriteID(entry.Wire, req.Id)
-				_, _ = w.Write(wire)
-			} else {
-				cached.Id = req.Id
-				resolver.PrepareClientResponse(req, cached, s.udpBufSize())
-				_ = w.WriteMsg(cached)
-			}
-		} else {
-			wire := resolver.RewriteID(entry.Wire, req.Id)
-			_, _ = w.Write(wire)
-		}
-		metrics.QueriesTotal.WithLabelValues(proto, pathLabel).Inc()
-		sec := time.Since(start).Seconds()
-		metrics.QueryDuration.WithLabelValues(proto).Observe(sec)
-		metrics.QueryDurationByPath.WithLabelValues(pathLabel).Observe(sec)
-		observe(dns.RcodeToString[entry.Rcode])
-		logQuery(qname, qtypeStr, entry.Rcode, true)
-		note(pathLabel, dns.RcodeToString[entry.Rcode], false, false, false)
-		return
-	}
-	metrics.CacheMisses.Inc()
 
 	if s.auth != nil {
 		if rrs, inZone := s.auth.LookupScoped(qname, qtype, viewName, geoTag); inZone {
 			m := new(dns.Msg)
 			m.SetReply(req)
 			m.Authoritative = true
-			m.RecursionAvailable = true
 			zone := s.auth.FindZone(qname)
 			if qtype == dns.TypeDNSKEY && s.signer != nil && s.signer.Enabled(zone) {
 				m.Answer = s.signer.DNSKEYs(zone)
@@ -587,150 +305,18 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 					s.signer.SignResponse(zone, req, m)
 				}
 			}
-			s.storeAndWriteScoped(w, req, m, ecsKey, viewName, geoTag)
+			s.write(w, req, m)
 			metrics.QueriesTotal.WithLabelValues(proto, "auth").Inc()
 			metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
-			observe(dns.RcodeToString[m.Rcode])
-			logQuery(qname, qtypeStr, m.Rcode, false)
-			note("auth", dns.RcodeToString[m.Rcode], false, false, false)
 			return
 		}
 	}
 
-	if qnameTooDeep(qname) {
-		m := new(dns.Msg)
-		m.SetReply(req)
-		m.RecursionAvailable = true
-		m.Rcode = dns.RcodeNameError
-		s.storeAndWriteScoped(w, req, m, ecsKey, viewName, geoTag)
-		metrics.QueriesTotal.WithLabelValues(proto, "qname_budget").Inc()
-		sec := time.Since(start).Seconds()
-		metrics.QueryDuration.WithLabelValues(proto).Observe(sec)
-		metrics.QueryDurationByPath.WithLabelValues("qname_budget").Observe(sec)
-		observe("NXDOMAIN")
-		logQuery(qname, qtypeStr, dns.RcodeNameError, false)
-		note("qname_budget", "NXDOMAIN", false, false, false)
-		return
-	}
-
-	if viewName == "default" && geoTag == "default" {
-		if m := s.aggressiveNSEC(req, qname); m != nil {
-			metrics.AggressiveNSEC.Inc()
-			s.storeAndWriteScoped(w, req, m, ecsKey, viewName, geoTag)
-			metrics.QueriesTotal.WithLabelValues(proto, "aggressive_nsec").Inc()
-			sec := time.Since(start).Seconds()
-			metrics.QueryDuration.WithLabelValues(proto).Observe(sec)
-			metrics.QueryDurationByPath.WithLabelValues("aggressive_nsec").Observe(sec)
-			observe("NXDOMAIN")
-			logQuery(qname, qtypeStr, dns.RcodeNameError, false)
-			note("aggressive_nsec", "NXDOMAIN", false, false, false)
-			return
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), s.res.Timeout)
-	defer cancel()
-
-	metrics.ResolveInflight.Set(float64(s.res.Inflight()))
-	resp, via, err := s.res.ResolveWithECS(ctx, req, sub)
-	metrics.ResolveInflight.Set(float64(s.res.Inflight()))
-	if err != nil {
-		if errors.Is(err, resolver.ErrAdmitRejected) {
-			metrics.AdmitRejected.Inc()
-			m := new(dns.Msg)
-			m.SetReply(req)
-			m.RecursionAvailable = true
-			m.Rcode = dns.RcodeServerFailure
-			s.cacheResolveFailure(qname, qtype, ecsKey, viewName, geoTag, m)
-			_ = w.WriteMsg(m)
-			metrics.QueriesTotal.WithLabelValues(proto, "admit_rejected").Inc()
-			observe("SERVFAIL")
-			logQuery(qname, qtypeStr, dns.RcodeServerFailure, false)
-			note("admit_rejected", "SERVFAIL", false, false, false)
-			return
-		}
-		// Sample logs — under multi-k QPS miss storms, WARN-per-fail burns CPU/disk.
-		if n := s.resolveFailLogN.Add(1); n&0x7f == 1 {
-			s.log.Warn("resolve failed", "kind", "resolve", "name", qname, "err", err, "sampled", n)
-		}
-		m := new(dns.Msg)
-		m.SetReply(req)
-		m.RecursionAvailable = true
-		m.Rcode = dns.RcodeServerFailure
-		// Negative-cache SERVFAIL so the same dead/slow name is not re-walked every query.
-		s.cacheResolveFailure(qname, qtype, ecsKey, viewName, geoTag, m)
-		_ = w.WriteMsg(m)
-		metrics.QueriesTotal.WithLabelValues(proto, "servfail").Inc()
-		observe("SERVFAIL")
-		logQuery(qname, qtypeStr, dns.RcodeServerFailure, false)
-		isTimeout := errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "deadline exceeded")
-		if via == "" {
-			via = "servfail"
-		}
-		metrics.QueryDurationByPath.WithLabelValues(via).Observe(time.Since(start).Seconds())
-		note(via, "SERVFAIL", false, false, isTimeout)
-		return
-	}
-
-	resp.Id = req.Id
-	resp.RecursionAvailable = true
-	resp.Compress = true
-
-	if s.dnssec != nil && s.dnssec.Enabled() {
-		if servfail, res := s.dnssec.Apply(resp); servfail {
-			s.log.Warn("dnssec bogus", "kind", "dnssec", "name", qname, "reason", res.Reason)
-			m := new(dns.Msg)
-			m.SetReply(req)
-			m.RecursionAvailable = true
-			m.Rcode = dns.RcodeServerFailure
-			_ = w.WriteMsg(m)
-			metrics.QueriesTotal.WithLabelValues(proto, "dnssec_fail").Inc()
-			observe("SERVFAIL")
-			logQuery(qname, qtypeStr, dns.RcodeServerFailure, false)
-			note("dnssec_fail", "SERVFAIL", false, false, false)
-			return
-		}
-	}
-
-	s.rememberNSEC(resp)
-	s.storeAndWriteScoped(w, req, resp, ecsKey, viewName, geoTag)
-	metrics.QueriesTotal.WithLabelValues(proto, "ok").Inc()
-	sec := time.Since(start).Seconds()
-	metrics.QueryDuration.WithLabelValues(proto).Observe(sec)
-	if via == "" {
-		via = "forward"
-	}
-	metrics.QueryDurationByPath.WithLabelValues(via).Observe(sec)
-	observe(dns.RcodeToString[resp.Rcode])
-	logQuery(qname, qtypeStr, resp.Rcode, false)
-	note(via, dns.RcodeToString[resp.Rcode], false, false, false)
-}
-
-func (s *Server) aggressiveNSEC(req *dns.Msg, qname string) *dns.Msg {
-	if s == nil || s.nsec == nil || req == nil || qname == "" {
-		return nil
-	}
-	n := s.nsec.Cover(qname)
-	if n == nil {
-		return nil
-	}
+	// Not a name of any hosted zone: this process does not resolve it.
 	m := new(dns.Msg)
-	m.SetReply(req)
-	m.RecursionAvailable = true
-	m.AuthenticatedData = true
-	m.Rcode = dns.RcodeNameError
-	m.Ns = []dns.RR{n}
-	return m
-}
-
-func (s *Server) rememberNSEC(resp *dns.Msg) {
-	if s == nil || s.nsec == nil || resp == nil || !resp.AuthenticatedData {
-		return
-	}
-	if resp.Rcode != dns.RcodeNameError && !(resp.Rcode == dns.RcodeSuccess && len(resp.Answer) == 0) {
-		return
-	}
-	s.nsec.AddFrom(resp.Ns)
+	m.SetRcode(req, dns.RcodeRefused)
+	_ = w.WriteMsg(m)
+	metrics.QueriesTotal.WithLabelValues(proto, "refused").Inc()
 }
 
 func protocolFromWriter(w dns.ResponseWriter) string {
@@ -745,65 +331,11 @@ func protocolFromWriter(w dns.ResponseWriter) string {
 	}
 }
 
-func (s *Server) storeAndWrite(w dns.ResponseWriter, req, resp *dns.Msg) {
-	s.storeAndWriteScoped(w, req, resp, "", "", "")
-}
-
-// cacheResolveFailure stores SERVFAIL under NegativeTTL so repeated queries for
-// the same dead/slow name do not re-enter expensive recursive iteration.
-func (s *Server) cacheResolveFailure(qname string, qtype uint16, ecsKey, viewName, geoTag string, m *dns.Msg) {
-	if s == nil || s.cache == nil || m == nil {
-		return
-	}
-	wire, err := resolver.PackResponse(m)
-	if err != nil || len(wire) == 0 {
-		return
-	}
-	s.cache.SetScoped(config.NormalizeName(qname), qtype, ecsKey, viewName, geoTag, wire, dns.RcodeServerFailure, 0)
-}
-
-// scheduleRefresh runs at most one background resolve per cache key to refresh stale/prefetch entries.
-func (s *Server) scheduleRefresh(qname string, qtype uint16, ecsKey, viewName, geoTag string, sub *ecs.Subnet, orig *dns.Msg) {
-	if s == nil || s.res == nil || s.cache == nil || orig == nil || len(orig.Question) == 0 {
-		return
-	}
-	key := cache.KeyScoped(qname, qtype, ecsKey, viewName, geoTag)
-	if _, loaded := s.refreshInflight.LoadOrStore(key, struct{}{}); loaded {
-		return
-	}
-	metrics.CachePrefetch.Inc()
-	req := orig.Copy()
-	go func() {
-		defer s.refreshInflight.Delete(key)
-		ctx, cancel := context.WithTimeout(context.Background(), s.res.Timeout)
-		defer cancel()
-		resp, _, err := s.res.ResolveWithECS(ctx, req, sub)
-		if err != nil || resp == nil {
-			return
-		}
-		wire, err := resolver.PackResponse(resp)
-		if err != nil {
-			return
-		}
-		ttl := resolver.MinTTL(resp)
-		s.cache.SetScoped(qname, qtype, ecsKey, viewName, geoTag, wire, resp.Rcode, ttl)
-	}()
-}
-
-func (s *Server) storeAndWriteScoped(w dns.ResponseWriter, req, resp *dns.Msg, ecsSubnet, viewName, geoTag string) {
-	resolver.PrepareClientResponse(req, resp, s.udpBufSize())
-	wire, err := resolver.PackResponse(resp)
-	if err != nil {
-		_ = w.WriteMsg(resp)
-		return
-	}
-	ttl := resolver.MinTTL(resp)
-	s.cache.SetScoped(config.NormalizeName(req.Question[0].Name), req.Question[0].Qtype, ecsSubnet, viewName, geoTag, wire, resp.Rcode, ttl)
-	_, _ = w.Write(wire)
-}
-
+// ListenAndServe starts the Auth Backend listeners: UDP and TCP on the
+// configured address (loopback unless the operator widens it) and DoT when TLS
+// is configured. Every listener refuses non-loopback sources.
 func (s *Server) ListenAndServe() error {
-	handler := dns.HandlerFunc(s.ServeDNS)
+	handler := dns.HandlerFunc(s.serveFromDataplane)
 	var tsigMap map[string]string
 	if s.tsig != nil && s.tsig.Len() > 0 {
 		tsigMap = s.tsig.Map()
@@ -813,12 +345,11 @@ func (s *Server) ListenAndServe() error {
 	tcpAddr := s.cfg.ListenAddr(s.cfg.Server.TCPPort)
 
 	errCh := make(chan error, 48)
-	s.doqCtx, s.doqCancel = context.WithCancel(context.Background())
 
 	accept := msgAcceptFunc
 	invalid := func(m []byte, err error) {
 		if s.log != nil {
-			if n := s.resolveFailLogN.Add(1); n&0x7f == 1 {
+			if n := s.invalidLogN.Add(1); n&0x7f == 1 {
 				headn := len(m)
 				if headn > 64 {
 					headn = 64
@@ -830,82 +361,44 @@ func (s *Server) ListenAndServe() error {
 	}
 	decorate := decorateEDNSRepair
 
-	if s.cfg.Server.TProxy {
-		nUDP := s.cfg.Server.Workers
-		if nUDP <= 0 {
-			nUDP = runtime.NumCPU()
+	nUDP := s.cfg.Server.Workers
+	if nUDP <= 0 {
+		nUDP = runtime.NumCPU()
+	}
+	if nUDP < 1 {
+		nUDP = 1
+	}
+	if nUDP > 32 {
+		nUDP = 32
+	}
+	reuse := nUDP > 1
+	for i := 0; i < nUDP; i++ {
+		srv := &dns.Server{
+			Addr:           udpAddr,
+			Net:            "udp",
+			Handler:        handler,
+			UDPSize:        int(s.udpBufSize()),
+			ReusePort:      reuse,
+			MsgAcceptFunc:  accept,
+			MsgInvalidFunc: invalid,
+			TsigSecret:     tsigMap,
+			DecorateReader: decorate,
 		}
-		if nUDP < 1 {
-			nUDP = 1
+		if i == 0 {
+			s.udp = srv
 		}
-		if nUDP > 32 {
-			nUDP = 32
-		}
-		for i := 0; i < nUDP; i++ {
-			pc, err := tproxy.ListenUDP("udp", udpAddr)
-			if err != nil {
-				return fmt.Errorf("tproxy udp %s shard %d: %w", udpAddr, i, err)
-			}
-			srv := &dns.Server{PacketConn: pc, Net: "udp", Handler: handler, UDPSize: int(s.udpBufSize()), MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap, DecorateReader: decorate}
-			if i == 0 {
-				s.udp = srv
-			}
-			s.udps = append(s.udps, srv)
-			idx := i
-			go func() {
-				s.log.Info("UDP listener starting", "addr", udpAddr, "tproxy", true, "shard", idx, "shards", nUDP)
-				errCh <- srv.ActivateAndServe()
-			}()
-		}
-		ln, err := tproxy.ListenTCP("tcp", tcpAddr)
-		if err != nil {
-			return fmt.Errorf("tproxy tcp %s: %w", tcpAddr, err)
-		}
-		s.tcp = &dns.Server{Listener: ln, Net: "tcp", Handler: handler, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap, DecorateReader: decorate}
+		s.udps = append(s.udps, srv)
+		idx := i
 		go func() {
-			s.log.Info("TCP listener starting", "addr", tcpAddr, "tproxy", true)
-			errCh <- s.tcp.ActivateAndServe()
-		}()
-	} else {
-		nUDP := s.cfg.Server.Workers
-		if nUDP <= 0 {
-			nUDP = runtime.NumCPU()
-		}
-		if nUDP < 1 {
-			nUDP = 1
-		}
-		if nUDP > 32 {
-			nUDP = 32
-		}
-		reuse := nUDP > 1
-		for i := 0; i < nUDP; i++ {
-			srv := &dns.Server{
-				Addr:           udpAddr,
-				Net:            "udp",
-				Handler:        handler,
-				UDPSize:        int(s.udpBufSize()),
-				ReusePort:      reuse,
-				MsgAcceptFunc:  accept,
-				MsgInvalidFunc: invalid,
-				TsigSecret:     tsigMap,
-				DecorateReader: decorate,
-			}
-			if i == 0 {
-				s.udp = srv
-			}
-			s.udps = append(s.udps, srv)
-			idx := i
-			go func() {
-				s.log.Info("UDP listener starting", "addr", udpAddr, "shard", idx, "shards", nUDP, "reuseport", reuse)
-				errCh <- srv.ListenAndServe()
-			}()
-		}
-		s.tcp = &dns.Server{Addr: tcpAddr, Net: "tcp", Handler: handler, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap, DecorateReader: decorate}
-		go func() {
-			s.log.Info("TCP listener starting", "addr", tcpAddr)
-			errCh <- s.tcp.ListenAndServe()
+			s.log.Info("UDP listener starting", "addr", udpAddr, "shard", idx, "shards", nUDP, "reuseport", reuse)
+			errCh <- srv.ListenAndServe()
 		}()
 	}
+	s.tcp = &dns.Server{Addr: tcpAddr, Net: "tcp", Handler: handler, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap, DecorateReader: decorate}
+	go func() {
+		s.log.Info("TCP listener starting", "addr", tcpAddr)
+		errCh <- s.tcp.ListenAndServe()
+	}()
 
 	if s.tlsCfg != nil && s.cfg.Server.DoTPort > 0 {
 		dotAddr := s.cfg.ListenAddr(s.cfg.Server.DoTPort)
@@ -919,47 +412,10 @@ func (s *Server) ListenAndServe() error {
 		}()
 	}
 
-	if s.tlsCfg != nil && s.cfg.Server.DoHPort > 0 {
-		dohAddr := s.cfg.ListenAddr(s.cfg.Server.DoHPort)
-		if err := s.startDoH(dohAddr); err != nil {
-			return err
-		}
-		s.dohOn = true
-		go func() {
-			s.log.Info("DoH listener starting", "addr", dohAddr)
-			errCh <- s.dohHTTP.ListenAndServeTLS("", "")
-		}()
-		if s.dohHTTP3 != nil {
-			s.doh3On = true
-			go func() {
-				s.log.Info("DoH3 (HTTP/3) listener starting", "addr", dohAddr)
-				if err := s.dohHTTP3.ListenAndServe(); err != nil {
-					s.log.Error("DoH3 stopped", "err", err)
-					errCh <- err
-				}
-			}()
-		}
-	}
-
-	if s.tlsCfg != nil && s.cfg.Server.DoQPort > 0 {
-		doqAddr := s.cfg.ListenAddr(s.cfg.Server.DoQPort)
-		if err := s.startDoQ(s.doqCtx, doqAddr); err != nil {
-			s.log.Error("DoQ start failed", "err", err)
-		} else {
-			s.log.Info("DoQ listener starting", "addr", doqAddr)
-		}
-	}
-
 	return <-errCh
 }
 
 func (s *Server) Shutdown() error {
-	if s.doqCancel != nil {
-		s.doqCancel()
-	}
-	if s.doqLn != nil {
-		_ = s.doqLn.Close()
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var err error
@@ -976,33 +432,11 @@ func (s *Server) Shutdown() error {
 			err = e
 		}
 	}
-	if s.dohHTTP != nil {
-		if e := s.dohHTTP.Shutdown(ctx); e != nil && err == nil {
-			err = e
-		}
-	}
-	if s.dohHTTP3 != nil {
-		if e := s.dohHTTP3.Close(); e != nil && err == nil {
-			err = e
-		}
-	}
 	return err
 }
 
 func (s *Server) Stats() (queries uint64, uptime time.Duration) {
 	return s.queries.Load(), time.Since(s.started)
-}
-
-func ednsHasCookie(opt *dns.OPT) bool {
-	if opt == nil {
-		return false
-	}
-	for _, o := range opt.Option {
-		if _, ok := o.(*dns.EDNS0_COOKIE); ok {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Server) Blocked() uint64 { return s.blocked.Load() }
@@ -1016,24 +450,15 @@ func (s *Server) DoTAddr() string {
 	return s.cfg.ListenAddr(s.cfg.Server.DoTPort)
 }
 
-func (s *Server) DoHAddr() string {
-	if !s.dohOn {
-		return ""
-	}
-	return s.cfg.ListenAddr(s.cfg.Server.DoHPort)
-}
-
-func (s *Server) DoQAddr() string {
-	if !s.doqOn {
-		return ""
-	}
-	return s.cfg.ListenAddr(s.cfg.Server.DoQPort)
-}
+// DoH and DoQ are terminated by the Dataplane; the Go process no longer
+// serves them.
+func (s *Server) DoHAddr() string { return "" }
+func (s *Server) DoQAddr() string { return "" }
 
 func (s *Server) DoTEnabled() bool  { return s.dotOn }
-func (s *Server) DoHEnabled() bool  { return s.dohOn }
-func (s *Server) DoH3Enabled() bool { return s.doh3On }
-func (s *Server) DoQEnabled() bool  { return s.doqOn }
+func (s *Server) DoHEnabled() bool  { return false }
+func (s *Server) DoH3Enabled() bool { return false }
+func (s *Server) DoQEnabled() bool  { return false }
 
 func (s *Server) DNSSECMode() string {
 	if s.dnssec == nil {
@@ -1058,47 +483,6 @@ func (s *Server) udpBufSize() uint16 {
 }
 
 func (s *Server) RPZ() *rpz.Engine { return s.rpz }
-
-func rpzRedirectRR(qname string, qtype uint16, target string) dns.RR {
-	ip := net.ParseIP(strings.TrimSpace(target))
-	if ip == nil {
-		return nil
-	}
-	name := config.NormalizeName(qname)
-	const ttl = uint32(60)
-	if ip4 := ip.To4(); ip4 != nil {
-		if qtype != dns.TypeA && qtype != dns.TypeANY {
-			return nil
-		}
-		return &dns.A{
-			Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl},
-			A:   ip4,
-		}
-	}
-	if qtype != dns.TypeAAAA && qtype != dns.TypeANY {
-		return nil
-	}
-	return &dns.AAAA{
-		Hdr:  dns.RR_Header{Name: name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl},
-		AAAA: ip.To16(),
-	}
-}
-
-func rpzCNAMERR(qname, target string) dns.RR {
-	target = strings.TrimSpace(target)
-	if target == "" {
-		return nil
-	}
-	return &dns.CNAME{
-		Hdr: dns.RR_Header{
-			Name:   config.NormalizeName(qname),
-			Rrtype: dns.TypeCNAME,
-			Class:  dns.ClassINET,
-			Ttl:    60,
-		},
-		Target: config.NormalizeName(target),
-	}
-}
 
 // ReloadRPZ replaces the in-memory blocklist from policy sources (file or HTTP).
 func (s *Server) ReloadRPZ(policies []rpz.PolicyConfig, timeout time.Duration) (int, error) {
@@ -1146,9 +530,9 @@ func (s *Server) RuntimeFlags() RuntimeFlags {
 		f.ResolverMode = config.NormalizeResolverMode(s.cfg.Resolver.Mode)
 		f.ForwardOnFail = s.cfg.Resolver.ForwardOnFail
 		f.QueryLog = s.cfg.Logging.QueryLogEnabled
-		if f.Forwarders == nil {
-			f.Forwarders = append([]string(nil), s.cfg.Resolver.Forwarders...)
-		}
+		f.ECS = s.cfg.Resolver.ECSEnabled
+		f.Forwarders = append([]string(nil), s.cfg.Resolver.Forwarders...)
+		f.ForwardZones = append([]config.ForwardZoneConfig(nil), s.cfg.Resolver.ForwardZones...)
 	}
 	if s.geo != nil {
 		f.GeoDNS = s.geo.Enabled()
@@ -1158,13 +542,6 @@ func (s *Server) RuntimeFlags() RuntimeFlags {
 	}
 	if s.limiter != nil {
 		f.RateLimit = s.limiter.Enabled()
-	}
-	if s.res != nil {
-		f.ECS = s.res.ECSEnabled
-		f.ResolverMode = config.NormalizeResolverMode(s.res.Mode)
-		f.ForwardOnFail = s.res.ForwardOnFail
-		f.Forwarders = append([]string(nil), s.res.Forwarders...)
-		f.ForwardZones = append([]config.ForwardZoneConfig(nil), s.res.ForwardZones...)
 	}
 	if s.views != nil {
 		f.SplitHorizon = s.views.Enabled()
@@ -1184,20 +561,6 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 	}
 	if s.limiter != nil {
 		s.limiter.SetEnabled(f.RateLimit)
-	}
-	if s.cfg != nil {
-		s.cfg.RateLimit.Enabled = f.RateLimit
-	}
-	if s.res != nil {
-		s.res.SetECSEnabled(f.ECS)
-		s.res.SetMode(f.ResolverMode)
-		s.res.SetForwardOnFail(f.ForwardOnFail)
-		if f.Forwarders != nil {
-			s.res.SetForwarders(f.Forwarders)
-		}
-		if f.ForwardZones != nil {
-			s.res.SetForwardZones(f.ForwardZones)
-		}
 	}
 	if s.views != nil {
 		s.views.SetEnabled(f.SplitHorizon)
@@ -1225,8 +588,6 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 	}
 }
 
-func (s *Server) SetQueryLogger(q *database.QueryLogger) { s.qlog = q }
-
 func (s *Server) SetSecondary(m *secondary.Manager) { s.secondaryMgr = m }
 
 func (s *Server) Secondary() *secondary.Manager { return s.secondaryMgr }
@@ -1242,7 +603,8 @@ func (s *Server) SetRPZNotifyHandler(fn func(zone, clientIP string, tsigValid bo
 	s.onRPZNotify = fn
 }
 
-// SetQueryACL replaces the live DNS query ACL (allow/deny CIDRs).
+// SetQueryACL replaces the stored query ACL (allow/deny CIDRs). The API pushes
+// it to the Dataplane; the handler does not enforce it.
 func (s *Server) SetQueryACL(allow, deny []string) error {
 	if s.aclBan != nil {
 		s.aclBan.Reset() // clear bans so newly allowed clients are not nft-dropped
@@ -1269,13 +631,12 @@ func (s *Server) QueryACL() (allow, deny []string) {
 	}
 	return s.queryACL.AllowCIDRs(), s.queryACL.DenyCIDRs()
 }
-func (s *Server) QueryLogger() *database.QueryLogger { return s.qlog }
 
 func (s *Server) Analytics() *analytics.Collector { return s.stats }
 func (s *Server) Monitor() *monitor.Collector     { return s.mon }
 func (s *Server) QueryRing() *queryring.Ring      { return s.ring }
 func (s *Server) Allowlist() *allowlist.List      { return s.allow }
-func (s *Server) Denylist() *denylist.List        { return s.deny }
+func (s *Server) Denylist() *denylist.List             { return s.deny }
 
 func (s *Server) BanIP(ip string, ttl time.Duration) error {
 	if s == nil || s.aclBan == nil {
@@ -1314,7 +675,8 @@ func (s *Server) RateLimitConfig() ratelimit.Config {
 	return s.limiter.SnapshotConfig()
 }
 
-// ApplyRateLimitConfig updates live limiter parameters and cfg snapshot.
+// ApplyRateLimitConfig stores the rate-limit parameters and the cfg snapshot.
+// The API pushes them to the Dataplane.
 func (s *Server) ApplyRateLimitConfig(qps, burst, blockSec int, whitelist []string) {
 	if s == nil {
 		return
@@ -1355,7 +717,7 @@ func (s *Server) ServeDNSMsg(req *dns.Msg) (*dns.Msg, []byte, error) {
 	return s.ServeDNSMsgFrom(req, "127.0.0.1")
 }
 
-// ServeDNSMsgFrom runs the DNS pipeline as if the query came from clientIP (DoH/DoQ).
+// ServeDNSMsgFrom runs the handler in process as if the query came from clientIP.
 func (s *Server) ServeDNSMsgFrom(req *dns.Msg, clientIP string) (*dns.Msg, []byte, error) {
 	ip := net.ParseIP(clientIP)
 	if ip == nil {
@@ -1400,15 +762,3 @@ func (m *memResponseWriter) TsigStatus() error   { return nil }
 func (m *memResponseWriter) TsigTimersOnly(bool) {}
 func (m *memResponseWriter) Hijack()             {}
 
-// bankSafeRPZHit turns TrustPositif sinkhole A-records on bank-branded names into
-// NXDOMAIN. Mobile banking apps treat 139.255.196.196 as DNS hijack; websites do not.
-func bankSafeRPZHit(qname string, hit rpz.Hit) rpz.Hit {
-	switch allowlist.BankSafeRPZAction(qname, string(hit.Action)) {
-	case "pass":
-		return rpz.Hit{Action: rpz.ActionPass}
-	case "nxdomain":
-		return rpz.Hit{Action: rpz.ActionNXDOMAIN}
-	default:
-		return hit
-	}
-}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"time"
 	"net"
 	"strings"
 
@@ -177,6 +178,9 @@ func findOrSynthSOA(zone string, recs []authoritative.Record) dns.RR {
 }
 
 // NotifySecondaries sends DNS NOTIFY for zone to configured remotes (best-effort).
+// notifyTimeout bounds each outgoing NOTIFY exchange.
+const notifyTimeout = 2 * time.Second
+
 func (s *Server) NotifySecondaries(zone string) {
 	if s == nil {
 		return
@@ -190,7 +194,7 @@ func (s *Server) NotifySecondaries(zone string) {
 	}
 	m := new(dns.Msg)
 	m.SetNotify(zone)
-	c := &dns.Client{Net: "udp", Timeout: s.res.Timeout}
+	c := &dns.Client{Net: "udp", Timeout: notifyTimeout}
 	for _, addr := range s.cfg.Transfer.Notify {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {

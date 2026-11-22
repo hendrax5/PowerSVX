@@ -8,17 +8,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/powersvx/powersvx/internal/allowlist"
 	"github.com/powersvx/powersvx/internal/api"
 	"github.com/powersvx/powersvx/internal/authoritative"
-	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/denylist"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
-	"github.com/powersvx/powersvx/internal/resolver"
 	"github.com/powersvx/powersvx/internal/rpz"
 	"github.com/powersvx/powersvx/internal/server"
 )
@@ -31,10 +28,9 @@ func TestZonesCRUDAndAuth(t *testing.T) {
 	cfg.Resolver.Mode = "forward"
 	cfg.Resolver.DNSSECMode = "off"
 	auth := authoritative.NewStore()
-	tier := cache.NewTier(cache.NewL1(1000), nil, time.Minute, time.Minute)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth}, log)
-	a := api.New(cfg, srv, nil, tier, auth, log)
+	srv := server.New(cfg, server.Deps{Auth: auth}, log)
+	a := api.New(cfg, srv, nil, auth, log)
 	h := a.Handler()
 
 	rr := httptest.NewRecorder()
@@ -93,12 +89,11 @@ func TestEventsRecent(t *testing.T) {
 	cfg.API.RESTEnabled = true
 	cfg.Resolver.Mode = "forward"
 	auth := authoritative.NewStore()
-	tier := cache.NewTier(cache.NewL1(100), nil, time.Minute, time.Minute)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth}, log)
+	srv := server.New(cfg, server.Deps{Auth: auth}, log)
 	bus := eventlog.New(10)
 	bus.Emit("warn", "test", "hello", map[string]string{"k": "v"})
-	a := api.New(cfg, srv, nil, tier, auth, log)
+	a := api.New(cfg, srv, nil, auth, log)
 	a.SetEvents(bus)
 	h := a.Handler()
 
@@ -125,12 +120,10 @@ func TestSettingsToggle(t *testing.T) {
 	cfg.Resolver.Mode = "forward"
 	cfg.Resolver.ForwardOnFail = true
 	auth := authoritative.NewStore()
-	tier := cache.NewTier(cache.NewL1(100), nil, time.Minute, time.Minute)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	geoRes, _ := geo.New(true, "", "default")
-	res := resolver.New(cfg.Resolver)
-	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth, Geo: geoRes, Res: res}, log)
-	a := api.New(cfg, srv, nil, tier, auth, log)
+	srv := server.New(cfg, server.Deps{Auth: auth, Geo: geoRes}, log)
+	a := api.New(cfg, srv, nil, auth, log)
 	h := a.Handler()
 
 	body := bytes.NewBufferString(`{"geodns":false}`)
@@ -164,8 +157,8 @@ func TestSettingsToggle(t *testing.T) {
 	if len(fw) != 2 || fw[0] != "1.0.0.1:53" || fw[1] != "8.8.4.4:53" {
 		t.Fatalf("forwarders=%v", out["forwarders"])
 	}
-	if len(res.Forwarders) != 2 || res.Forwarders[0] != "1.0.0.1:53" {
-		t.Fatalf("live forwarders=%v", res.Forwarders)
+	if len(cfg.Resolver.Forwarders) != 2 || cfg.Resolver.Forwarders[0] != "1.0.0.1:53" {
+		t.Fatalf("stored forwarders=%v", cfg.Resolver.Forwarders)
 	}
 }
 
@@ -175,14 +168,13 @@ func TestWhitelistAndDomainLookup(t *testing.T) {
 	cfg.API.AuthType = "token"
 	cfg.API.APIToken = "secret"
 	auth := authoritative.NewStore()
-	tier := cache.NewTier(cache.NewL1(1000), nil, time.Minute, time.Minute)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	wl := allowlist.New("")
 	bl := denylist.New("")
 	eng := rpz.New(true)
 	eng.Replace(map[string]rpz.Action{"bad.example.com.": rpz.ActionNXDOMAIN})
-	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth, Allow: wl, Deny: bl, RPZ: eng}, log)
-	a := api.New(cfg, srv, nil, tier, auth, log)
+	srv := server.New(cfg, server.Deps{Auth: auth, Allow: wl, Deny: bl, RPZ: eng}, log)
+	a := api.New(cfg, srv, nil, auth, log)
 	h := a.Handler()
 	authH := func(method, url string, body io.Reader) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, url, body)

@@ -22,7 +22,6 @@ import (
 	"github.com/powersvx/powersvx/internal/apiauth"
 	"github.com/powersvx/powersvx/internal/audit"
 	"github.com/powersvx/powersvx/internal/authoritative"
-	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/database"
 	"github.com/powersvx/powersvx/internal/dnsdistctl"
@@ -38,7 +37,6 @@ type API struct {
 	cfg      *config.Config
 	srv      *server.Server
 	db       *database.DB
-	cache    *cache.Tier
 	auth     *authoritative.Store
 	events   *eventlog.Bus
 	acmeMgr  *acme.Manager
@@ -59,8 +57,8 @@ type API struct {
 	rpzAutoStop chan struct{}
 }
 
-func New(cfg *config.Config, srv *server.Server, db *database.DB, tier *cache.Tier, auth *authoritative.Store, log *slog.Logger) *API {
-	return &API{cfg: cfg, srv: srv, db: db, cache: tier, auth: auth, log: log, start: time.Now(), dataDir: "./data", loginLim: newLoginLimiter()}
+func New(cfg *config.Config, srv *server.Server, db *database.DB, auth *authoritative.Store, log *slog.Logger) *API {
+	return &API{cfg: cfg, srv: srv, db: db, auth: auth, log: log, start: time.Now(), dataDir: "./data", loginLim: newLoginLimiter()}
 }
 
 func (a *API) SetWebFS(fsys fs.FS)                     { a.webFS = fsys }
@@ -371,12 +369,8 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 		checks["database"] = map[string]any{"status": "disabled"}
 	}
 
-	hits, misses, size := a.cache.L1.Stats()
-	var ratio float64
-	if hits+misses > 0 {
-		ratio = float64(hits) / float64(hits+misses)
-	}
-	checks["cache"] = map[string]any{"status": "pass", "hit_ratio": ratio, "l1_size": size}
+	// The Go process keeps no resolver cache; the Dataplane and Unbound report theirs.
+	checks["cache"] = map[string]any{"status": "disabled", "hint": "resolver cache lives in dnsdist and Unbound"}
 	rpzDetail := map[string]any{"status": "pass", "entries": a.srv.RPZCount(), "policies": len(a.cfg.RPZ.Policies)}
 	if config.DNSDistDataplane() {
 		a.refreshUnboundEntryCount()
@@ -565,7 +559,7 @@ func statusOrDisabled(on bool, addr string) map[string]any {
 
 func (a *API) statusPayload() map[string]any {
 	queries, uptime := a.srv.Stats()
-	hits, misses, size := a.cache.L1.Stats()
+	var hits, misses, size uint64 // the Go process keeps no resolver cache
 	zones := 0
 	if a.auth != nil {
 		zones = a.auth.ZoneCount()

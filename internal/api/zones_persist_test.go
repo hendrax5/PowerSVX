@@ -9,11 +9,9 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/powersvx/powersvx/internal/api"
 	"github.com/powersvx/powersvx/internal/authoritative"
-	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/server"
 )
@@ -31,10 +29,9 @@ func startNode(t *testing.T, dir string) http.Handler {
 	if _, err := auth.EnablePersistence(dir); err != nil {
 		t.Fatal(err)
 	}
-	tier := cache.NewTier(cache.NewL1(1000), nil, time.Minute, time.Minute)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth}, log)
-	return api.New(cfg, srv, nil, tier, auth, log).Handler()
+	srv := server.New(cfg, server.Deps{Auth: auth}, log)
+	return api.New(cfg, srv, nil, auth, log).Handler()
 }
 
 func call(t *testing.T, h http.Handler, method, path, body string) (int, map[string]any) {
