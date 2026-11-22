@@ -71,3 +71,31 @@ www IN  A   203.0.113.10
 		t.Fatal("ExportBINDZone failed")
 	}
 }
+
+func TestFindZoneMatchesOnLabelBoundaries(t *testing.T) {
+	s := NewStore()
+	s.Replace(map[string][]Record{
+		"example.com.":     {{Name: "www.example.com.", Type: dns.TypeA, Content: "192.0.2.1"}},
+		"sub.example.com.": {{Name: "www.sub.example.com.", Type: dns.TypeA, Content: "192.0.2.2"}},
+	})
+	cases := map[string]string{
+		"example.com.":          "example.com.",
+		"www.example.com.":      "example.com.",
+		"a.b.example.com.":      "example.com.",
+		"www.sub.example.com.":  "sub.example.com.",
+		"badexample.com.":       "",
+		"www.badexample.com.":   "",
+		"notsub.example.com.":   "example.com.",
+		"xsub.example.com.":     "example.com.",
+		"example.com.evil.net.": "",
+		"com.":                  "",
+	}
+	for q, want := range cases {
+		if got := s.FindZone(q); got != want {
+			t.Errorf("FindZone(%q)=%q want %q", q, got, want)
+		}
+	}
+	if _, in := s.LookupScoped("badexample.com.", dns.TypeA, "", ""); in {
+		t.Error("badexample.com. reported as inside example.com.")
+	}
+}
