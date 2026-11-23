@@ -281,6 +281,11 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 				m.Answer = s.signer.DNSKEYs(zone)
 				m.Rcode = dns.RcodeSuccess
 				s.signer.SignResponse(zone, req, m)
+			} else if np := s.nsec3param(zone, qname, qtype, viewName, geoTag); np != nil {
+				// The apex of an NSEC3-signed zone publishes the parameters of its chain.
+				m.Answer = []dns.RR{np}
+				m.Rcode = dns.RcodeSuccess
+				s.signer.SignResponse(zone, req, m)
 			} else {
 				// Each zone's part of the answer is signed with that zone's key.
 				for _, seg := range res.Segments {

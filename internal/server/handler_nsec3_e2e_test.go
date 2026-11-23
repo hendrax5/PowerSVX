@@ -20,9 +20,9 @@ const base32hex = "0123456789ABCDEFGHIJKLMNOPQRSTUV"
 
 // nsec3Zone builds an NSEC3-signed zone. An empty salt makes the signer draw a
 // random one, which is what a zone gets in the field.
-func nsec3Zone(t *testing.T, salt string) *harness {
+func nsec3Zone(t *testing.T, salt string, opts ...option) *harness {
 	t.Helper()
-	h := newHarness(t)
+	h := newHarness(t, opts...)
 	h.signer = dnssec.NewSigner(t.TempDir())
 	h.srv.signer = h.signer // the harness has no option for NSEC3 zones
 	h.auth.UpsertZone(zoneName)
@@ -190,7 +190,7 @@ func TestNSEC3SignedZoneNODATAAtTheApexListsTheKeyTypes(t *testing.T) {
 	wantRcode(t, m, dns.RcodeSuccess)
 	wantNSEC3Proof(t, h, m, "example.com.", dns.TypeTXT, nsec3ZoneNames)
 	n := matchingNSEC3(nsec3sOf(m), "example.com.")
-	if got, want := fmt.Sprint(n.TypeBitMap), fmt.Sprint([]uint16{dns.TypeNS, dns.TypeSOA, dns.TypeRRSIG, dns.TypeDNSKEY}); got != want {
+	if got, want := fmt.Sprint(n.TypeBitMap), fmt.Sprint([]uint16{dns.TypeNS, dns.TypeSOA, dns.TypeRRSIG, dns.TypeDNSKEY, dns.TypeNSEC3PARAM}); got != want {
 		t.Errorf("bitmap of the apex = %s want %s", got, want)
 	}
 }

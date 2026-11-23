@@ -814,6 +814,7 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 				Action    string `json:"action"` // enable | rollover
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			beforePol, _ := sig.Policy(normZone)
 			if strings.EqualFold(body.Action, "rollover") {
 				if err := sig.RolloverZSK(normZone); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -828,6 +829,11 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
+			}
+			// NSEC3PARAM follows the policy; a secondary learns of a change through the serial.
+			if afterPol, _ := sig.Policy(normZone); afterPol.NSEC3 != beforePol.NSEC3 || afterPol.NSEC3 && afterPol.Salt != beforePol.Salt {
+				_, _ = a.auth.BumpSOASerial(normZone)
+				a.srv.NotifySecondaries(normZone)
 			}
 			on := true
 			a.auth.UpdateZoneMeta(zone, authoritative.ZoneMetaPatch{DNSSECEnabled: &on})
