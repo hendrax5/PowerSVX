@@ -185,7 +185,9 @@ case "$cmd" in
       }' "$filter" | LC_ALL=C sort -u -T "$state" >"$state/blocklist.txt"
     expected="$(wc -l <"$state/blocklist.txt" | tr -d ' ')"
     [ "$expected" -gt 0 ] || die "no usable names in $filter"
-    probe_name="$(head -1 "$state/blocklist.txt")"
+    # first Filter name that is a valid host name: feeds hold a few junk entries (for example a leading hyphen) that a resolver rejects
+    probe_name="$(grep -m1 -E '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' "$state/blocklist.txt")"
+    [ -n "$probe_name" ] || die "no valid host name in the Filter file to check with"
 
     if [ ! -s "$pwfile" ]; then
       umask 077
