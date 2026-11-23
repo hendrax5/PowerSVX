@@ -24,6 +24,11 @@ const denialTTLFallback = 300
 // signValidity is how long the signatures made on the fly are valid.
 const signValidity = 30 * 24 * time.Hour
 
+// signInceptionSkew backdates the inception of signatures so a validator whose
+// clock runs a little behind does not see them as not yet valid (RFC 6781
+// section 4.4.2.1).
+const signInceptionSkew = time.Hour
+
 // canonicalLabels returns the labels of name as unescaped, lower-cased octets,
 // leftmost first, without the root label.
 func canonicalLabels(name string) [][]byte {
@@ -233,7 +238,7 @@ func signRRset(zone string, rrs []dns.RR, key *dns.DNSKEY, priv crypto.Signer, n
 		Labels:      rrsigLabels(h.Name),
 		OrigTtl:     h.Ttl,
 		Expiration:  uint32(now.Add(signValidity).Unix()),
-		Inception:   uint32(now.Unix()),
+		Inception:   uint32(now.Add(-signInceptionSkew).Unix()),
 		KeyTag:      key.KeyTag(),
 		SignerName:  zone,
 	}
@@ -418,4 +423,57 @@ func (s *Signer) signNSEC3Denial(zone, qname string, zk *zoneKeys, names map[str
 		proof = append(proof, n)
 	}
 	return signNegative(zone, zk, now, resp, proof)
+}
+
+// SignWildcardExpansion adds the proof that qname does not exist to an answer
+// that was synthesized from a wildcard, when the request has DO set: the NSEC
+// covering qname (RFC 4035 section 3.1.3.3), or for NSEC3 the closest encloser
+// proof, the record matching the closest encloser and the one covering the next
+// closer name (RFC 5155 section 7.2.6). Records already in the authority section
+// are not added twice.
+func (s *Signer) SignWildcardExpansion(zone, qname string, names map[string][]uint16, req, resp *dns.Msg) error {
+	if s == nil || resp == nil {
+		return nil
+	}
+	zone = dns.CanonicalName(zone)
+	zk, err := s.load(zone)
+	if err != nil {
+		return nil
+	}
+	if req == nil {
+		return nil
+	}
+	if opt := req.IsEdns0(); opt == nil || !opt.Do() {
+		return nil
+	}
+	qname = dns.CanonicalName(qname)
+	z := newDenialZone(zone, names)
+	ttl := negativeTTL(resp)
+	var proof []dns.RR
+	if zk.Policy.NSEC3 {
+		salt := zk.Policy.Salt
+		if salt == "" {
+			salt = nsec3DefaultSalt
+		}
+		c := z.nsec3Chain(salt)
+		ce := z.closestEncloser(qname)
+		for _, h := range []string{ce, nextCloser(qname, ce)} {
+			proof = append(proof, c.record(c.matchOrCover(nsec3Hash(h, salt)), ttl))
+		}
+	} else {
+		proof = append(proof, z.nsecAt(z.coverIndex(qname), ttl))
+	}
+	have := map[string]bool{}
+	for _, rr := range resp.Ns {
+		have[dns.CanonicalName(rr.Header().Name)+"/"+dns.TypeToString[rr.Header().Rrtype]] = true
+	}
+	var fresh []dns.RR
+	for _, rr := range proof {
+		k := dns.CanonicalName(rr.Header().Name) + "/" + dns.TypeToString[rr.Header().Rrtype]
+		if !have[k] {
+			have[k] = true
+			fresh = append(fresh, rr)
+		}
+	}
+	return signNegative(zone, zk, time.Now().UTC(), resp, fresh)
 }

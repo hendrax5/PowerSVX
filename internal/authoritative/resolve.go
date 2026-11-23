@@ -16,6 +16,11 @@ const MaxCNAMEChain = 8
 // key of the zone it came from.
 type Segment struct {
 	Zone string
+	// Name is the name that was looked up in Zone for this part of the answer.
+	Name string
+	// Wildcard is the owner of the wildcard record the part was synthesized
+	// from ("*.example.com."), or empty when the name has records of its own.
+	Wildcard string
 	RRs  []dns.RR
 }
 
@@ -47,7 +52,7 @@ func (r Resolution) Answer() []dns.RR {
 // the name's own records, or, when the name does not exist, the records of the
 // wildcard at its closest encloser, owned by name (RFC 4592 section 2.1.1). The
 // bool reports whether the name exists or is covered by a wildcard.
-func nodeRecords(zone, name, viewName string, recs []Record) ([]Record, bool) {
+func nodeRecords(zone, name, viewName string, recs []Record) ([]Record, bool, string) {
 	// ancestors[0] is name, the last element is the zone apex.
 	ancestors := []string{name}
 	for n := name; n != zone; {
@@ -92,7 +97,7 @@ func nodeRecords(zone, name, viewName string, recs []Record) ([]Record, bool) {
 		}
 	}
 	if best == 0 {
-		return own, true
+		return own, true, ""
 	}
 	var out []Record
 	for _, w := range wilds {
@@ -102,7 +107,10 @@ func nodeRecords(zone, name, viewName string, recs []Record) ([]Record, bool) {
 			out = append(out, r)
 		}
 	}
-	return out, len(out) > 0
+	if len(out) == 0 {
+		return nil, false, ""
+	}
+	return out, true, "*." + ancestors[best]
 }
 
 func filterType(recs []Record, qtype uint16) []Record {
@@ -159,11 +167,11 @@ func (s *Store) Resolve(qname string, qtype uint16, viewName, geoTag string) (re
 	visited := map[string]bool{}
 	for links := 0; ; links++ {
 		visited[name] = true
-		node, exists := nodeRecords(zone, name, viewName, s.zones[zone])
+		node, exists, wildcard := nodeRecords(zone, name, viewName, s.zones[zone])
 		res.Zone, res.Name, res.Exists = zone, name, exists
 
 		if rrs := buildRRs(filterType(node, qtype), geoTag); len(rrs) > 0 {
-			res.Segments = append(res.Segments, Segment{Zone: zone, RRs: rrs})
+			res.Segments = append(res.Segments, Segment{Zone: zone, Name: name, Wildcard: wildcard, RRs: rrs})
 			return res, true
 		}
 		var cnames []dns.RR
@@ -175,7 +183,7 @@ func (s *Store) Resolve(qname string, qtype uint16, viewName, geoTag string) (re
 			return res, true
 		}
 		cname := cnames[0].(*dns.CNAME)
-		res.Segments = append(res.Segments, Segment{Zone: zone, RRs: []dns.RR{cname}})
+		res.Segments = append(res.Segments, Segment{Zone: zone, Name: name, Wildcard: wildcard, RRs: []dns.RR{cname}})
 
 		target := config.NormalizeName(cname.Target)
 		tz := s.findZone(target)
