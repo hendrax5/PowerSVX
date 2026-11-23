@@ -29,7 +29,6 @@ import (
 
 const (
 	qlSinkImage = "alpine:3.20"
-	qlAuthConf  = "server:\n    interface: 127.0.0.1\n    port: 5354\n    access-control: 127.0.0.0/8 allow\n    do-daemonize: no\n    use-syslog: no\n    verbosity: 1\n    local-zone: \"hosted.powersvx.test.\" static\n    local-data: \"www.hosted.powersvx.test. 60 IN A 192.0.2.9\"\n"
 
 	qlAllowedName = "bank.allowed.powersvx.test."
 	qlFilterName  = "blocked.filter.powersvx.test."
@@ -50,8 +49,8 @@ type sinkLine struct {
 }
 
 type qlRig struct {
-	dd, sink string
-	udp53    string
+	dd, auth, sink string
+	udp53          string
 }
 
 // sinkLines returns the decoded queries the sink has printed so far.
@@ -91,7 +90,9 @@ func (r *qlRig) waitLog(t *testing.T, want string, timeout time.Duration) {
 	t.Fatalf("dnsdist never logged %q; log:\n%s", want, dockerQuiet("logs", "--tail", "40", r.dd))
 }
 
-func startQueryLogDataplane(t *testing.T) *qlRig {
+// startQueryLogDataplane generates the configuration with POWERSVX_AUTH_PROXY_PROTOCOL=authProxy
+// ("1" is the default mode, "0" the legacy one) and starts the stack around it.
+func startQueryLogDataplane(t *testing.T, authProxy string) *qlRig {
 	t.Helper()
 	root := repoRoot(t)
 	work := t.TempDir()
@@ -106,6 +107,7 @@ func startQueryLogDataplane(t *testing.T) *qlRig {
 		"POWERSVX_HOST_CPUS=2",
 		"POWERSVX_HOST_MEM_MB=2048",
 		"POWERSVX_QUERY_LOG_DNSTAP=1",
+		"POWERSVX_AUTH_PROXY_PROTOCOL=" + authProxy,
 	}
 	run(t, work, genEnv, "sh", "deploy/linux/gen-dnsdist-conf.sh")
 	if err := os.MkdirAll(filepath.Join(work, "configs", "unbound"), 0o755); err != nil {
@@ -131,18 +133,20 @@ func startQueryLogDataplane(t *testing.T) *qlRig {
 	if err := os.WriteFile(filepath.Join(work, "srv-records.conf"), []byte("# none\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(work, "auth.conf"), []byte(qlAuthConf), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
-	// The Control Plane's dnstap sink binary: static, copied into a small image.
-	sinkBin := filepath.Join(work, "dnstapsink")
-	cmd := exec.Command("go", "build", "-o", sinkBin, "./test/dataplane/dnstapsink")
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build dnstapsink: %v\n%s", err, out)
+	// Static helper binaries, copied into a small image: the Control Plane's dnstap sink
+	// and the Auth Backend stand-in.
+	build := func(pkg string) string {
+		bin := filepath.Join(work, filepath.Base(pkg))
+		cmd := exec.Command("go", "build", "-o", bin, pkg)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v\n%s", pkg, err, out)
+		}
+		return bin
 	}
+	sinkBin, authBin := build("./test/dataplane/dnstapsink"), build("./test/dataplane/authstandin")
 
 	host, bind := "127.0.0.1", "127.0.0.1"
 	if h := os.Getenv("POWERSVX_DOCKER_TEST_HOST"); h != "" {
@@ -188,11 +192,12 @@ func startQueryLogDataplane(t *testing.T) *qlRig {
 	docker(t, "start", ub)
 
 	// Stand-in for the Auth Backend on :5354.
-	docker(t, "create", "--name", au, "--network", "container:"+dd, unboundImage)
-	docker(t, "cp", filepath.Join(work, "auth.conf"), au+":/opt/unbound/etc/unbound/unbound.conf")
+	// It reads the PROXY protocol v2 header with the production parser when dnsdist sends one.
+	docker(t, "create", "--name", au, "--network", "container:"+dd, "--entrypoint", "/authstandin", qlSinkImage, "127.0.0.1:5354")
+	docker(t, "cp", authBin, au+":/authstandin")
 	docker(t, "start", au)
 
-	return &qlRig{dd: dd, sink: sink, udp53: net.JoinHostPort(host, hostPort(t, dd, "53/udp"))}
+	return &qlRig{dd: dd, auth: au, sink: sink, udp53: net.JoinHostPort(host, hostPort(t, dd, "53/udp"))}
 }
 
 func ask(addr, name string, qtype uint16) (*dns.Msg, error) {
@@ -232,7 +237,13 @@ func TestQueryLogSampling(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Fatal("POWERSVX_DOCKER_TESTS=1 but docker is not on PATH")
 	}
-	rig := startQueryLogDataplane(t)
+	for _, mode := range []struct{ name, proxy string }{{"proxy-protocol", "1"}, {"legacy", "0"}} {
+		t.Run(mode.name, func(t *testing.T) { testQueryLogSampling(t, mode.proxy) })
+	}
+}
+
+func testQueryLogSampling(t *testing.T, authProxy string) {
+	rig := startQueryLogDataplane(t, authProxy)
 
 	// Wait until the Dataplane answers at all (sampling is still off: no rate file).
 	if _, err := answer(classic("udp"), rig.udp53, existingName, 90*time.Second); err != nil {
@@ -305,6 +316,39 @@ func TestQueryLogSampling(t *testing.T) {
 			}
 		}
 		rig.waitEntries(t, qlRecursed, 3)
+
+		// Same for the hosted zone. With the PROXY header there is no packet cache for the
+		// Auth Backend, so every query reaches it; in legacy mode the repeats are cache hits.
+		// Either way each answer is logged, and as "auth".
+		for i := 0; i < 2; i++ {
+			if _, err := ask(rig.udp53, qlAuthName, dns.TypeA); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, e := range rig.waitEntries(t, qlAuthName, 3) {
+			if e.Action != "auth" {
+				t.Errorf("hosted zone answer logged as %q", e.Action)
+			}
+		}
+		reached, withHeader := 0, 0
+		for _, l := range strings.Split(dockerQuiet("logs", rig.auth), "\n") {
+			if strings.HasPrefix(l, "query "+qlAuthName) {
+				reached++
+				if !strings.HasSuffix(l, "proxy=none") {
+					withHeader++
+				}
+			}
+		}
+		switch authProxy {
+		case "1":
+			if reached < 3 || withHeader != reached {
+				t.Errorf("PROXY mode: %d queries reached the Auth Backend, %d with a header", reached, withHeader)
+			}
+		default:
+			if reached < 1 || reached > 2 || withHeader != 0 {
+				t.Errorf("legacy mode: %d queries reached the Auth Backend, %d with a header", reached, withHeader)
+			}
+		}
 
 		// The PTR cap answers REFUSED from dnsdist itself.
 		refused := false
