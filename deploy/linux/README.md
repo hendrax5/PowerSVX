@@ -295,6 +295,10 @@ Fallback without Docker image builds: use the **systemd** path in section A (com
 - [ ] `systemctl status powersvx` or `docker ps` healthy; `dig @127.0.0.1 example.com` works
 - [ ] Query logs show real client IPs (not `172.18.0.1`)
 
+### Client address for the Auth Backend (PROXY protocol)
+
+dnsdist sends the real client address to the Auth Backend in a PROXY protocol v2 header (`docs/adr/0003-proxy-protocol-for-the-client-address.md`), so views, GeoDNS, the NOTIFY master check and the transfer and update allow lists judge the client, not `127.0.0.1`. `gen-dnsdist-conf.sh` does this by default; `POWERSVX_AUTH_PROXY_PROTOCOL=0` regenerates the earlier entry (ECS from dnsdist, a packet cache for the `auth` pool). The Control Plane side is `[server] proxy_protocol` in its TOML: `optional` (default: accepts a header or a plain query, both only from loopback), `required` or `off`. Update a node by regenerating the dnsdist configuration; `optional` keeps it working in either order. Do not set `required` until the dnsdist configuration has been regenerated, and set `POWERSVX_AUTH_PROXY_PROTOCOL=0` before rolling the Control Plane back to an older image.
+
 ### Pinned dnsdist version
 
 The host override pins `powerdns/dnsdist-19:1.9.16` (the version running nodes report; its build includes DNS over QUIC). Never use `:latest`: a silent upgrade changes the Dataplane without a measurement. To bump it, change the tag in `deploy/linux/docker-compose.host.yml` and the `dnsdistImage` constant in `test/dataplane/blackbox_test.go`, run the Dataplane black-box test (`POWERSVX_DOCKER_TESTS=1 go test -count=1 ./test/dataplane/`) and a fresh Reference Load benchmark, and ship it as its own change.

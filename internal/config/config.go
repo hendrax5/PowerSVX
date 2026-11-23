@@ -53,6 +53,11 @@ type ServerConfig struct {
 	UDPPort     int    `toml:"udp_port"`
 	TCPPort     int    `toml:"tcp_port"`
 	Workers     int    `toml:"workers"`
+	// ProxyProtocol says how the Auth Backend treats a PROXY protocol v2 header from the local
+	// Dataplane: "optional" (default) takes it when there is one and a plain query when there is
+	// none, "required" takes only queries that carry one, "off" never reads one. A header is
+	// believed only from a loopback peer. See docs/adr/0003.
+	ProxyProtocol string `toml:"proxy_protocol"`
 	// TProxy enables IP_TRANSPARENT on UDP/TCP DNS sockets (Linux only).
 	// Needed for nftables/iptables TPROXY where the packet destination stays
 	// non-local (e.g. 8.8.8.8). Not required for MikroTik/iptables DNAT.
@@ -233,6 +238,9 @@ type GeoDNSConfig struct {
 	Enabled      bool              `toml:"enabled"`
 	DatabasePath string            `toml:"database_path"`
 	DefaultTag   string            `toml:"default_tag"`
+	// IgnoreClientSubnet makes GeoDNS use only the client address, never the EDNS client subnet a
+	// query from the Dataplane carries (docs/adr/0003).
+	IgnoreClientSubnet bool `toml:"ignore_client_subnet"`
 	Overrides    []GeoOverrideTOML `toml:"overrides"`
 }
 
@@ -261,6 +269,7 @@ func Default() *Config {
 			UDPPort:     5353,
 			TCPPort:     5353,
 			Workers:     0,
+			ProxyProtocol: "optional",
 		},
 		Database: DatabaseConfig{
 			Type: "postgres", Host: "localhost", Port: 5432,
