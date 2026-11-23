@@ -101,6 +101,10 @@ if [ -n "${GHCR_TOKEN:-}" ]; then
   echo "==> logging in to ghcr.io"
   printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-hendrax5}" --password-stdin >/dev/null
 fi
+# Only warn; a node that cannot authenticate to a private package never fails the update.
+# The health check reads the log of the Watchtower container that is about to be recreated.
+sh "$ROOT/deploy/linux/registry-preflight.sh" "$ROOT" || true
+sh "$ROOT/deploy/linux/watchtower-health.sh" || true
 if [ "${POWERSVX_PULL_IMAGE:-0}" = "1" ]; then
   "${COMPOSE[@]}" pull powersvx || "${COMPOSE[@]}" build powersvx
 else
