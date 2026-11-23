@@ -1,6 +1,9 @@
 package watchdog
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 func TestParseGoMemLimit(t *testing.T) {
 	if parseGoMemLimit("4294967296B") != 4294967296 {
@@ -93,6 +96,7 @@ func TestMarginAboveLimitIsTolerated(t *testing.T) {
 // readSample must count what the process really holds: a live 64 MB allocation shows up in
 // InUse, and Sys stays at least as large as InUse.
 func TestReadSampleSeesLiveMemory(t *testing.T) {
+	runtime.GC()
 	before := readSample()
 	keep := make([]byte, 64*mb)
 	for i := 0; i < len(keep); i += 4096 {
@@ -100,8 +104,8 @@ func TestReadSampleSeesLiveMemory(t *testing.T) {
 	}
 	after := readSample()
 	runtimeKeepAlive(keep)
-	if after.InUse < before.InUse+48*mb {
-		t.Fatalf("InUse grew %d MB for a 64 MB live allocation", (after.InUse-before.InUse)/mb)
+	if int64(after.InUse)-int64(before.InUse) < 48*mb {
+		t.Fatalf("InUse grew %d MB for a 64 MB live allocation", (int64(after.InUse)-int64(before.InUse))/mb)
 	}
 	if after.Sys < after.InUse {
 		t.Fatalf("Sys %d < InUse %d", after.Sys, after.InUse)

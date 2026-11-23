@@ -315,6 +315,8 @@ func syntheticFeed(t testing.TB, path string, n, dupEvery int) {
 
 // The rebuild must not hold the names in memory: a regression to a slice of names plus a seen
 // map costs well over 100 bytes per name (see TestRebuildMemoryReport) and fails this bound.
+const fixedOverhead = 8 << 20 // the rebuild's 1 MB I/O buffers and the scanner's line buffer
+
 func TestStreamingRebuildMemoryIsBoundedPerName(t *testing.T) {
 	n := 1_000_000
 	if testing.Short() {
@@ -331,11 +333,14 @@ func TestStreamingRebuildMemoryIsBoundedPerName(t *testing.T) {
 			t.Error(err)
 		}
 	})
+	if peak < fixedOverhead {
+		peak = fixedOverhead
+	}
 	if got < n*7/10 {
 		t.Fatalf("only %d names written", got)
 	}
-	perName := float64(peak) / float64(n)
-	t.Logf("peak heap %.1f MB for %d names (%.1f bytes/name)", float64(peak)/(1<<20), n, perName)
+	perName := float64(peak-fixedOverhead) / float64(n)
+	t.Logf("peak heap %.1f MB for %d names (%.1f bytes/name above %d MB fixed buffers)", float64(peak)/(1<<20), n, perName, fixedOverhead>>20)
 	if perName > 40 {
 		t.Fatalf("peak heap %.1f bytes per name; the streaming rebuild should stay well under 40", perName)
 	}
