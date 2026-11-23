@@ -7,7 +7,7 @@ import (
 
 // Set at link time (Dockerfile / go build -ldflags -X). Defaults for `go run`.
 var (
-	Version   = "1.7.1"
+	Version   = "1.7.2"
 	GitCommit = "unknown"
 	BuildTime = "unknown"
 )

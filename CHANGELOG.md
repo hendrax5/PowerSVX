@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.7.2] - 2026-11-23
+
+### Security
+- A configured TSIG requirement (`require_tsig`) is now enforced for every zone transfer and dynamic update request, and an update policy can no longer admit a request that carries no TSIG key. Advisory GHSA-56hq-r6vw-qv9w (affects <= 1.7.1). Operators who configured a TSIG requirement should upgrade; clients that relied on unsigned requests being accepted are now refused and must sign their requests.
+
+---
+
 ## [1.7.1] - 2026-11-17
 
 ### Added
