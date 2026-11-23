@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 )
@@ -18,6 +19,7 @@ type responder struct {
 
 	mu    sync.Mutex
 	names []string
+	drop  int // the first drop queries get no answer
 }
 
 func (r *responder) asked() []string {
@@ -45,7 +47,13 @@ func startResponder(t *testing.T, rcode int, silent bool) *responder {
 				r.names = append(r.names, q.Question[0].Name)
 				r.mu.Unlock()
 			}
-			if silent {
+			r.mu.Lock()
+			dropped := r.drop > 0
+			if dropped {
+				r.drop--
+			}
+			r.mu.Unlock()
+			if silent || dropped {
 				return
 			}
 			m := new(dns.Msg)
@@ -53,15 +61,28 @@ func startResponder(t *testing.T, rcode int, silent bool) *responder {
 			_ = w.WriteMsg(m)
 		}),
 	}
-	go func() { _ = srv.ActivateAndServe() }()
-	t.Cleanup(func() { _ = srv.Shutdown() })
+	serve(t, srv)
 	return r
+}
+
+// serve starts srv and returns once it is reading, so no test starts the script early.
+func serve(t *testing.T, srv *dns.Server) {
+	t.Helper()
+	started := make(chan struct{})
+	srv.NotifyStartedFunc = func() { close(started) }
+	go func() { _ = srv.ActivateAndServe() }()
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the fake DNS server did not start")
+	}
+	t.Cleanup(func() { _ = srv.Shutdown() })
 }
 
 // ready runs the readiness check against the responder and reports whether it passed.
 func ready(t *testing.T, r *responder, args ...string) bool {
 	t.Helper()
-	full := append([]string{"./dns-ready.sh", "-s", "127.0.0.1", "-p", r.port, "-t", "1"}, args...)
+	full := append([]string{"./dns-ready.sh", "-s", "127.0.0.1", "-p", r.port, "-t", "5"}, args...)
 	out, err := exec.Command("bash", full...).CombinedOutput()
 	if err == nil {
 		return true
@@ -69,6 +90,7 @@ func ready(t *testing.T, r *responder, args ...string) bool {
 	if _, ok := err.(*exec.ExitError); !ok {
 		t.Fatalf("run dns-ready.sh: %v\n%s", err, out)
 	}
+	t.Logf("dns-ready.sh %v: %v\nstderr: %s", args, err, out)
 	return false
 }
 
@@ -119,7 +141,7 @@ func TestNotReadyWhenServerCannotResolve(t *testing.T) {
 func TestNotReadyWhenServerIsSilent(t *testing.T) {
 	requireBash(t)
 	r := startResponder(t, dns.RcodeSuccess, true)
-	if ready(t, r, "example.com") {
+	if ready(t, r, "-t", "1", "example.com") {
 		t.Fatal("expected not ready when no answer arrives")
 	}
 }
@@ -144,14 +166,39 @@ func TestUniqueNamesAvoidCachedAnswers(t *testing.T) {
 	}
 }
 
+// What -w promises: keep trying for at least the requested wait, and stop soon after it.
+// The bounds are wide on purpose: a loaded machine can only make a probe slower, never shorter.
 func TestRetriesUntilTheWaitRunsOut(t *testing.T) {
 	requireBash(t)
 	r := startResponder(t, dns.RcodeSuccess, true)
-	if ready(t, r, "-w", "2", "example.com") {
+	const wait = 3 * time.Second
+	start := time.Now()
+	ok := ready(t, r, "-t", "1", "-w", "3", "example.com")
+	elapsed := time.Since(start)
+	if ok {
 		t.Fatal("expected not ready after the wait runs out")
 	}
-	if got := r.asked(); len(got) < 2 {
-		t.Fatalf("expected the check to retry while waiting, got %d queries", len(got))
+	if elapsed < wait {
+		t.Fatalf("gave up after %v, before the %v it was asked to wait", elapsed, wait)
+	}
+	if elapsed > wait+30*time.Second {
+		t.Fatalf("kept trying for %v, far past the %v wait", elapsed, wait)
+	}
+	if len(r.asked()) < 1 {
+		t.Fatal("the check never sent a query")
+	}
+}
+
+// A server that misses the first queries and answers later: the check must retry and pass.
+func TestRetryPassesOnceTheServerAnswers(t *testing.T) {
+	requireBash(t)
+	r := startResponder(t, dns.RcodeSuccess, false)
+	r.drop = 2
+	if !ready(t, r, "-t", "1", "-w", "60", "example.com") {
+		t.Fatal("expected ready once the server started answering")
+	}
+	if got := r.asked(); len(got) < 3 {
+		t.Fatalf("expected at least 3 queries (2 unanswered, then one answered), got %d", len(got))
 	}
 }
 
@@ -185,8 +232,7 @@ func startResolver(t *testing.T, recursionWorks bool) *responder {
 			_ = w.WriteMsg(m)
 		}),
 	}
-	go func() { _ = srv.ActivateAndServe() }()
-	t.Cleanup(func() { _ = srv.Shutdown() })
+	serve(t, srv)
 	return r
 }
 
@@ -234,7 +280,7 @@ func TestRecursionCheckRefusesNamesAnsweredLocally(t *testing.T) {
 	requireBash(t)
 	for _, name := range []string{"invalid", "ready.invalid", "test", "x.localhost", "corp.local", "1.0.0.127.in-addr.arpa"} {
 		r := startResolver(t, true)
-		cmd := exec.Command("bash", "./dns-ready.sh", "-s", "127.0.0.1", "-p", r.port, "-t", "1", "-r", name)
+		cmd := exec.Command("bash", "./dns-ready.sh", "-s", "127.0.0.1", "-p", r.port, "-t", "5", "-r", name)
 		out, err := cmd.CombinedOutput()
 		ee, ok := err.(*exec.ExitError)
 		if !ok || ee.ExitCode() != 2 {

@@ -100,6 +100,9 @@ services:
       # One fresh name under a real domain per interval: only recursion can answer it, so this
       # fails when dnsdist or Unbound stops answering and when recursion is broken (a forward
       # loop answers SERVFAIL). It also fails while the node cannot reach the Internet.
+      # Exactly one probe (one real recursive lookup) per interval: no -w, so a failure is not
+      # retried inside the check. Docker's retries do the smoothing: the container only turns
+      # unhealthy after 3 failed intervals in a row (90 s), so one transient hiccup does not flip it.
       test: ["CMD", "bash", "/usr/local/bin/dns-ready.sh", "-r", "-t", "4"]
       interval: 30s
       timeout: 8s

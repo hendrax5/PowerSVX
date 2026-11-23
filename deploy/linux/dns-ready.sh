@@ -82,7 +82,11 @@ probe() {
     reason="cannot open a socket to ${server}:${port}"
     return 1
   fi
-  printf '%b' "$query" >&3
+  # The query must leave in ONE datagram. bash's printf flushes at every 0x0a byte (an id or
+  # label-length byte of 10), which would send two datagrams and the server would answer the
+  # second one with a shifted header; so write it to a file and send that with a single write.
+  printf '%b' "$query" >"$qfile"
+  cat "$qfile" >&3
   reply=$(timeout "$reply_timeout" dd bs=512 count=1 <&3 2>/dev/null | od -An -tx1 -N4)
   exec 3>&-
 
@@ -92,7 +96,7 @@ probe() {
     return 1
   fi
   if [ "$((16#$b0))" -ne "$id_hi" ] || [ "$((16#$b1))" -ne "$id_lo" ] || [ $((16#$b2 & 0x80)) -eq 0 ]; then
-    reason="unexpected reply from ${server}:${port} for ${name}"
+    reason="unexpected reply from ${server}:${port} for ${name} (got ${b0} ${b1} ${b2} ${b3}, sent id ${id_hi} ${id_lo})"
     return 1
   fi
   rcode=$((16#$b3 & 0x0f))
@@ -106,13 +110,27 @@ probe() {
   return 0
 }
 
+# Milliseconds since the epoch. $SECONDS is an integer that ticks at arbitrary moments, so a
+# deadline computed from it can be up to a second short; this does not truncate.
+now_ms() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    local t="${EPOCHREALTIME/[.,]/}"
+    echo $((t / 1000))
+  else
+    echo $(($(date +%s) * 1000))
+  fi
+}
+
+qfile="$(mktemp)" || { echo "dns-ready: cannot create a temporary file" >&2; exit 2; }
+trap 'rm -f "$qfile"' EXIT
+
 reason=""
-deadline=$((SECONDS + wait_total))
+deadline=$(($(now_ms) + wait_total * 1000))
 while true; do
   if probe; then
     exit 0
   fi
-  if [ "$SECONDS" -ge "$deadline" ]; then
+  if [ "$(now_ms)" -ge "$deadline" ]; then
     echo "dns-ready: ${reason}" >&2
     exit 1
   fi
