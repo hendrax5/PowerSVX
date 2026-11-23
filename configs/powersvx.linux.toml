@@ -18,8 +18,6 @@ dot_port = 853
 doh_port = 443
 doq_port = 784
 workers = 0
-# Set true only with CAP_NET_ADMIN + nftables/iptables TPROXY (host network).
-tproxy = false
 
 [server.tls]
 enabled = true

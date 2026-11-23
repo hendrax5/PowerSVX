@@ -118,21 +118,22 @@ func (a *API) handleSecurityBlocks(w http.ResponseWriter, r *http.Request) {
 		dynBlocks = []dnsdistctl.DynBlockEntry{}
 	}
 
-	aclBans := a.srv.ACLBanList()
-	if aclBans == nil {
-		aclBans = nil
-	}
-	rlBlocked := a.srv.RateLimitBlocked(100)
-
 	out := map[string]any{
 		"manual_bans":       manual,
 		"dnsdist_dynblocks": dynBlocks,
-		"acl_bans":          aclBans,
-		"ratelimit_blocked": rlBlocked,
 		"ratelimit_config":  a.srv.RateLimitConfig(),
 	}
 	if dynErr != nil {
 		out["dnsdist_error"] = dynErr.Error()
+	}
+	// dnsdist's own drop counters: the same /jsonstat the cache page reads.
+	if st, err := dnsdistctl.DefaultClient().Stats(ctx); err == nil {
+		out["dnsdist_counters"] = map[string]any{
+			"dyn_blocked":   st["dyn-blocked"],
+			"rule_drop":     st["rule-drop"],
+			"rule_refused":  st["rule-refused"],
+			"rule_nxdomain": st["rule-nxdomain"],
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -196,15 +197,6 @@ func (a *API) handleSecurityBan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Also mirror single IPs in Go ACLBan guard when Go dataplane handles queries.
-		if ipOnly := strings.TrimSuffix(strings.TrimSuffix(norm, "/32"), "/128"); !strings.Contains(ipOnly, "/") {
-			ttl := 24 * time.Hour
-			if body.TTLSec > 0 {
-				ttl = time.Duration(body.TTLSec) * time.Second
-			}
-			_ = a.srv.BanIP(ipOnly, ttl)
-		}
-
 		if a.audit != nil {
 			a.audit.Record(audit.Event{
 				Actor: p.Name, Role: p.Role, Action: "security_ban", Path: r.URL.Path, Status: http.StatusOK,
@@ -237,9 +229,6 @@ func (a *API) handleSecurityBan(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		ipOnly := strings.TrimSuffix(strings.TrimSuffix(norm, "/32"), "/128")
-		a.srv.UnbanIP(ipOnly)
-
 		if a.audit != nil {
 			a.audit.Record(audit.Event{
 				Actor: p.Name, Role: p.Role, Action: "security_unban", Path: r.URL.Path, Status: http.StatusOK,
@@ -258,7 +247,6 @@ func (a *API) handleSecurityClearDynBlocks(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	a.srv.ClearRateLimitBlocks()
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	err := dnsdistctl.DefaultClient().ClearDynBlocks(ctx)

@@ -73,7 +73,6 @@ func main() {
 		log.Info("runtime settings loaded", "path", rsPath)
 	}
 	watchdog.Start(log)
-	cfg.Server.TProxy = false
 	_ = blockcdb.EnsureEmpty(*dataDir)
 	_, _ = blockcdb.WriteBanksWhitelist(*dataDir)
 	log.Info("dns dataplane dnsdist+CDB — PowerSVX is control-plane",

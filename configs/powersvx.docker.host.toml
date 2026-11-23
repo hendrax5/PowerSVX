@@ -19,7 +19,6 @@ workers = 2
 # (a node whose dnsdist is not updated yet) is still answered. "required" refuses plain queries,
 # "off" ignores headers. Match POWERSVX_AUTH_PROXY_PROTOCOL of gen-dnsdist-conf.sh.
 proxy_protocol = "optional"
-tproxy = false
 
 [server.tls]
 enabled = false

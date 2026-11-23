@@ -39,6 +39,32 @@ Only the dnsdist Dataplane exists. The `unbound`, `external` and `powersvx` (Go 
 - To fix a node: set `POWERSVX_DNS_DATAPLANE=dnsdist`, regenerate configs with `deploy/linux/gen-dnsdist-conf.sh`, and recreate the stack.
 - `python ops/probe.py` prints each node's configured mode.
 
+### Leftover TPROXY intercept (2.0 upgrade)
+
+Older versions could install a kernel TPROXY intercept from the console (Settings, TPROXY). The transparent listener it pointed at is gone, and the console can no longer remove the rules. `[server] tproxy` is removed too: a configuration that still sets it starts with one warning (`docs/CONFIG-REMOVED.md`).
+
+`deploy/linux/apply-update.sh` runs `deploy/linux/tproxy-leftover.sh` and prints a warning when it finds a leftover. It removes nothing and never fails the update. To check by hand, as root:
+
+```
+nft list table inet powersvx_tproxy        # a table means the intercept is still installed
+ip rule show | grep 'lookup 100'           # "fwmark 0x1 lookup 100" (priority 100)
+ip -6 rule show | grep 'lookup 100'
+ip route show table 100                    # "local default dev lo"
+ip -6 route show table 100
+```
+
+Remove it, only if nothing else on the host uses routing table 100 (the old code always used table 100 and fwmark 0x1; use the mark the `ip rule` line shows if it differs):
+
+```
+nft delete table inet powersvx_tproxy
+ip rule del fwmark 0x1 lookup 100 priority 100
+ip -6 rule del fwmark 0x1 lookup 100 priority 100
+ip route flush table 100
+ip -6 route flush table 100
+```
+
+Until it is removed, the host keeps diverting client DNS to port 53 with TPROXY, a path PowerSVX 2.0 no longer sets up or tests. Remove it, and use DNAT (MikroTik / iptables `dstnat`) to bring client queries to the Dataplane.
+
 ### Unbound forwards to itself (ticket #40)
 
 Before this fix the shipped host configuration said `[resolver] mode = "forward"` with `forwarders = ["127.0.0.1:5353"]`. The Control Plane copied that into Unbound's runtime configuration as `forward-zone: name: "."`, so Unbound forwarded every query to its own listener: every name outside the hosted zones failed, as soon as Unbound loaded the file (at start, or on the reload the Control Plane triggers).

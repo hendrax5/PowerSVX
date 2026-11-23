@@ -17,6 +17,7 @@ var removedKeys = []string{
 	"server.doh_port",
 	"server.doq_port",
 	"server.tls",
+	"server.tproxy",
 	"resolver.root_hints_file",
 	"resolver.qname_minimization",
 	"resolver.timeout_ms",

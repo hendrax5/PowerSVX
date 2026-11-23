@@ -145,10 +145,6 @@ sudo systemctl reload powersvx   # SIGHUP: runtime-settings.json
 | `/var/lib/powersvx/` | `--data-dir` (cache, DNSSEC, RPZ, runtime-settings) |
 | `/usr/share/PowerSVX/web` | Built UI |
 
-### TPROXY note
-
-If using kernel TPROXY, set `tproxy = true`, add `CAP_NET_ADMIN` to the unit’s `AmbientCapabilities` / `CapabilityBoundingSet`, and use host routing/nftables. See root `README.md`.
-
 ---
 
 ## B. Docker Compose on Linux
