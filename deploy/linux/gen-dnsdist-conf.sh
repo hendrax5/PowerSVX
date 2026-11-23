@@ -276,6 +276,103 @@ LUA
   echo "addAction(AllRule(), PoolAction(\"\"))"
   echo "setSecurityPollSuffix(\"\")"
   echo ""
+  # Sampled query log: opt in with POWERSVX_QUERY_LOG_DNSTAP=1. Off by default, and then
+  # nothing below is emitted, so the configuration is identical to one without this feature.
+  if [ "${POWERSVX_QUERY_LOG_DNSTAP:-0}" = "1" ]; then
+    mkdir -p "$ROOT/data/dnstap"
+    cat <<'QLLUA'
+-- Sampled query log (dnstap). The Control Plane listens on dnstap/query.sock and writes the
+-- sample rate (0..1) to dnstap/rate. maintenance() picks the rate up. While it is 0 or the
+-- file is missing, no rule is installed, so the query path is untouched. The logger only holds
+-- the connection to the Control Plane open, which lets the console see that the link is up.
+-- qlClassify names the Filter action for a sampled answer. It runs only for sampled
+-- queries and follows the rule order above: keep the two in step.
+local qlDir = "/etc/dnsdist/dnstap"
+local qlRuleName = "powersvx-querylog"
+local qlLogger = newFrameStreamUnixLogger(qlDir .. "/query.sock")
+local qlRate = 0
+local qlLast = nil
+
+local function qlSuffixHit(kvs, name)
+  local n = name
+  while n:find(".", 1, true) do
+    if kvs:lookup(n) ~= "" then return true end
+    n = n:sub(n:find(".", 1, true) + 1)
+  end
+  return false
+end
+
+local function qlClassify(dr)
+  local name = dr.qname:toStringNoDot():lower()
+  if dr.opcode == DNSOpcode.Notify or qlSuffixHit(authzonesKVS, name) then return "auth" end
+  if qlSuffixHit(whitelistKVS, name) or whitelistSMN:check(dr.qname) then return "allowed" end
+  if qlSuffixHit(customBlackKVS, name) then return "blocked-custom" end
+  if dr.qtype == DNSQType.PTR and dr.rcode == DNSRCode.REFUSED then return "refused" end
+  if qlSuffixHit(blocklistKVS, name) then return "blocked-filter" end
+  if dr.rcode == DNSRCode.REFUSED then return "refused" end
+  return "recursed"
+end
+
+local function qlAlter(dr, tap)
+  tap:setExtra("action=" .. qlClassify(dr))
+end
+
+local function qlRemove()
+  pcall(rmResponseRule, qlRuleName)
+  pcall(rmCacheHitResponseRule, qlRuleName)
+  pcall(rmSelfAnsweredResponseRule, qlRuleName)
+end
+
+local function qlInstall(rate)
+  local function rule()
+    if rate >= 1 then return AllRule() end
+    return ProbaRule(rate)
+  end
+  local function action() return DnstapLogResponseAction("powersvx", qlLogger, qlAlter) end
+  -- Answers come from a backend, the packet cache, or dnsdist itself: one rule for each.
+  addResponseAction(rule(), action(), {name=qlRuleName})
+  addCacheHitResponseAction(rule(), action(), {name=qlRuleName})
+  addSelfAnsweredResponseAction(rule(), action(), {name=qlRuleName})
+end
+
+local function qlReload()
+  local f = io.open(qlDir .. "/rate", "r")
+  local body = ""
+  if f ~= nil then
+    body = f:read("*a") or ""
+    f:close()
+  end
+  if body == qlLast then return end
+  qlLast = body
+  local rate = tonumber((body:gsub("%s+", ""))) or 0
+  if rate ~= rate or rate < 0 then rate = 0 end
+  if rate > 1 then rate = 1 end
+  if rate == qlRate then return end
+  qlRemove()
+  qlRate = 0
+  if rate > 0 then
+    local ok, err = pcall(qlInstall, rate)
+    if ok then
+      qlRate = rate
+      infolog("powersvx query log sampling at " .. rate)
+    else
+      qlRemove()
+      errlog("powersvx query log not started: " .. tostring(err))
+    end
+  else
+    infolog("powersvx query log sampling off")
+  end
+end
+
+qlReload()
+local qlPrevMaintenance = maintenance
+function maintenance()
+  qlPrevMaintenance()
+  qlReload()
+end
+QLLUA
+    echo ""
+  fi
   echo "webserver(\"127.0.0.1:8083\")"
   echo "setWebserverConfig({password=\"${WEB_PASS}\", apiKey=\"${API_KEY}\", acl=\"127.0.0.1\"})"
 } >"$TMP"

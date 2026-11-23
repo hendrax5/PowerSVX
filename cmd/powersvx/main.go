@@ -72,7 +72,6 @@ func main() {
 		cfg.ApplyRuntimeSettings(rs)
 		log.Info("runtime settings loaded", "path", rsPath)
 	}
-	config.ApplyQueryLogGuard(cfg)
 	watchdog.Start(log)
 	cfg.Server.TProxy = false
 	_ = blockcdb.EnsureEmpty(*dataDir)
@@ -289,7 +288,8 @@ func main() {
 		rest.SetSessionStore(sessStore)
 	}
 	rest.StartRPZAutoUpdate()
-	rest.StartLiveQuerySampler()
+	rest.StartQueryLog()
+	defer rest.StopQueryLog()
 	rest.SyncAllDataplanes()
 	rest.RefreshUnboundEntryCount()
 	rest.StartDNSDistStatsBridge()
@@ -360,7 +360,6 @@ func main() {
 			log.Info("SIGHUP: reloading runtime settings")
 			if rs, err := config.LoadRuntimeSettings(config.RuntimeSettingsPath(*dataDir)); err == nil {
 				cfg.ApplyRuntimeSettings(rs)
-				config.ApplyQueryLogGuard(cfg)
 				dnsSrv.ApplyRuntimeFlags(server.RuntimeFlags{
 					GeoDNS: cfg.GeoDNS.Enabled, RPZ: cfg.RPZ.Enabled,
 					RateLimit: cfg.RateLimit.Enabled, ECS: cfg.Resolver.ECSEnabled,
@@ -379,6 +378,7 @@ func main() {
 				if db != nil {
 					db.SetQueryLogLimits(cfg.Logging.QueryLogRetentionDays, cfg.Logging.QueryLogMaxSizeMB)
 				}
+				rest.SyncQueryLogRate()
 			}
 			continue
 		}

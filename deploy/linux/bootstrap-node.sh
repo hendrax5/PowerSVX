@@ -73,7 +73,7 @@ fi
 
 # 4. Initialize Data Directories & Permissions
 echo "==> [4/7] Preparing directories & permissions..."
-mkdir -p data/postgres data/blocklist data/unbound-rpz data/unbound-logs configs/unbound configs/dnsdist
+mkdir -p data/postgres data/blocklist data/dnstap data/unbound-rpz data/unbound-logs configs/unbound configs/dnsdist
 # PostgreSQL alpine uses UID 70
 chown -R 70:70 data/postgres 2>/dev/null || true
 

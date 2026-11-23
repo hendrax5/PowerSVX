@@ -25,6 +25,7 @@ import (
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/database"
 	"github.com/powersvx/powersvx/internal/dnsdistctl"
+	"github.com/powersvx/powersvx/internal/dnstap"
 	"github.com/powersvx/powersvx/internal/dnssec"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/monitor"
@@ -50,6 +51,9 @@ type API struct {
 	start    time.Time
 	webFS    fs.FS
 	dataDir  string
+
+	qlistener *dnstap.Listener
+	qlog      *database.QueryLogger
 
 	unboundRPZEntries atomic.Int64
 	unboundSync       unboundSyncState
@@ -1087,10 +1091,6 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.QueryLog != nil {
 			cur.QueryLog = *body.QueryLog
-			// Go-edge guard only.
-			if config.QueryLogForcedOff() {
-				cur.QueryLog = false
-			}
 		}
 		if body.QueryLogRetentionDays != nil {
 			if *body.QueryLogRetentionDays < 0 || *body.QueryLogRetentionDays > 3650 {
@@ -1238,6 +1238,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			AxfrSyncEnabled: &kominfoOn, AxfrSyncTargets: axfrTargets,
 			KominfoSyncEnabled: &kominfoOn,
 		}))
+		a.SyncQueryLogRate()
 		a.SyncAllDataplanes()
 		writeJSON(w, http.StatusOK, a.settingsPayload())
 	default:
@@ -1296,6 +1297,7 @@ func (a *API) settingsPayload() map[string]any {
 		"query_log_retention_days":  a.cfg.Logging.QueryLogRetentionDays,
 		"query_log_max_size_mb":     a.cfg.Logging.QueryLogMaxSizeMB,
 		"query_log_sample_rate":     a.cfg.Logging.QueryLogSampleRate,
+		"query_log_dataplane_connected": a.queryLogConnected(),
 		"allow_query":               allow,
 		"deny_query":                deny,
 		"transfer": map[string]any{

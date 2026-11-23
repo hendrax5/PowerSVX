@@ -573,7 +573,6 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 		}
 		s.cfg.SplitHorizon.Enabled = f.SplitHorizon
 		s.cfg.Logging.QueryLogEnabled = f.QueryLog
-		config.ApplyQueryLogGuard(s.cfg)
 		s.cfg.KominfoSync.Enabled = f.KominfoSync
 	}
 	if s.kominfo != nil {

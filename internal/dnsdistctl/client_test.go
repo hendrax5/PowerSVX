@@ -25,20 +25,6 @@ What                      Seconds    Blocks Warning  Action               Reason
 	}
 }
 
-func TestParseGrepQ(t *testing.T) {
-	sample := `
-Time     Client         ID    Name                    Type  Lat.  TC RD AA RCode
--0.2     10.10.1.5:53412 1234  api.example.com.        A     0.4   RD No Error
-`
-	got := ParseGrepQ(sample)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 query sample, got %d", len(got))
-	}
-	if got[0].QName != "api.example.com" || got[0].QType != "A" || got[0].Client != "10.10.1.5:53412" {
-		t.Fatalf("unexpected sample: %#v", got[0])
-	}
-}
-
 func TestWriteManualBans(t *testing.T) {
 	dir := t.TempDir()
 	err := WriteManualBans(dir, []string{"198.51.100.7", "203.0.113.0/24", "invalid\nbad"})

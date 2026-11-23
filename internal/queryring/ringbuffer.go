@@ -22,7 +22,9 @@ type QueryEvent struct {
 	Path      string    `json:"path"`
 	LatencyMS float64   `json:"latency_ms"`
 	Blocked   bool      `json:"blocked"`
-	Source    string    `json:"source,omitempty"` // go | dnsdist
+	Source    string    `json:"source,omitempty"` // dnsdist
+	// Action is the Filter action dnsdist took: allowed, blocked-filter, blocked-custom, auth, recursed or refused.
+	Action string `json:"action,omitempty"`
 }
 
 // QueryFilter filters ring-buffer queries cleanly.

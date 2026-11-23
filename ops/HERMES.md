@@ -70,7 +70,7 @@ Default target if unspecified: **isehat2 / 103.172.70.254**.
 - **Do not put Go PowerSVX back on public `:53`** in production.
 - CDB holds the **full** AXFR list (no 1.5M Unbound RPZ cap). Banks filtered from CDB + dnsdist SMN.
 - Dataplane: PowerSVX `POWERSVX_MEM_PERCENT` defaults to **30%**.
-- Query log (Go edge) stays off (`POWERSVX_DISABLE_QUERY_LOG=1`).
+- Query log sampling is off by default (see "Sampled query log" in `deploy/linux/README.md`).
 
 ## Host hygiene (fleet standard)
 
