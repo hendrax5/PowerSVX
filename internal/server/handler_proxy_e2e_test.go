@@ -235,6 +235,11 @@ func freePort(t *testing.T) int {
 
 // startListeners runs the Auth Backend on 127.0.0.1 with the given proxy_protocol setting.
 func startListeners(t *testing.T, mode string, opts ...option) (*harness, string) {
+	return startListenersWith(t, mode, nil, opts...)
+}
+
+// startListenersWith runs pre on the harness before the listeners start.
+func startListenersWith(t *testing.T, mode string, pre func(*harness), opts ...option) (*harness, string) {
 	t.Helper()
 	port := freePort(t)
 	opts = append(opts, withConfig(func(c *config.Config) {
@@ -243,6 +248,9 @@ func startListeners(t *testing.T, mode string, opts ...option) (*harness, string
 		c.Server.ProxyProtocol = mode
 	}))
 	h := newHarness(t, opts...)
+	if pre != nil {
+		pre(h)
+	}
 	go func() { _ = h.srv.ListenAndServe() }()
 	t.Cleanup(func() { _ = h.srv.Shutdown() })
 	addr := net.JoinHostPort("127.0.0.1", itoa(port))
@@ -416,5 +424,28 @@ func TestListenersOverTCPRefuseAConnectionWithoutAHeaderInRequiredMode(t *testin
 	_ = conn.WriteMsg(q)
 	if m, err := conn.ReadMsg(); err == nil {
 		t.Fatalf("a headerless connection was answered: %v", m)
+	}
+}
+
+// In required mode a plain datagram is dropped even from loopback, so a NOTIFY without a header gets
+// no answer, and one with a header is judged on the client it names.
+func TestRequiredModeJudgesNotifyOnTheClientTheHeaderNames(t *testing.T) {
+	_, addr := startListenersWith(t, "required", func(h *harness) {
+		h.srv.SetSecondary(secondaryHarness(t, "sec.test.", "198.51.100.7").srv.Secondary())
+	})
+	notify := func(header []byte) (*dns.Msg, error) {
+		return udpExchange(t, addr, header, notifyReq("sec.test.", false))
+	}
+
+	if r, err := notify(nil); err == nil {
+		t.Fatalf("a plain NOTIFY in required mode must be dropped, got %v", r)
+	}
+	r, err := notify(hdr("198.51.100.7", proxyproto.Dgram))
+	if err != nil || r.Rcode != dns.RcodeSuccess {
+		t.Fatalf("NOTIFY from the master: %v %v", r, err)
+	}
+	r, err = notify(hdr("203.0.113.66", proxyproto.Dgram))
+	if err != nil || r.Rcode != dns.RcodeRefused {
+		t.Fatalf("NOTIFY from another host: %v %v", r, err)
 	}
 }
