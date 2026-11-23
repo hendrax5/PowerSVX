@@ -424,7 +424,6 @@ CREATE TABLE IF NOT EXISTS records (
 
 ALTER TABLE records ADD COLUMN IF NOT EXISTS geo_tag VARCHAR(50) DEFAULT '';
 ALTER TABLE records ADD COLUMN IF NOT EXISTS view_name VARCHAR(50) DEFAULT '';
-ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS action VARCHAR(16) DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS idx_records_zone_name ON records(zone_id, name);
 
@@ -452,6 +451,9 @@ CREATE TABLE IF NOT EXISTS query_logs (
 CREATE INDEX IF NOT EXISTS idx_query_logs_time ON query_logs (timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_query_logs_client ON query_logs (client_ip);
 CREATE INDEX IF NOT EXISTS idx_query_logs_client_time ON query_logs (client_ip, timestamp DESC);
+
+-- Filter action the Dataplane took (sampled query log); added to tables created before it existed.
+ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS action VARCHAR(16) DEFAULT '';
 
 INSERT INTO config (key, value) VALUES ('version', '1.0.0'), ('setup_complete', 'false')
 ON CONFLICT (key) DO NOTHING;

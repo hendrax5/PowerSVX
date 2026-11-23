@@ -181,6 +181,24 @@ func TestSampledQueryLogHistory(t *testing.T) {
 	}
 	defer raw.Close()
 
+	db, err := database.Connect(config.DatabaseConfig{Enabled: true, Host: host, Port: port, User: "powersvx", Password: pgPassword, Database: "powersvx"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// A new node: the table is created with the action column.
+	if err := db.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate on a fresh database: %v", err)
+	}
+	var cols int
+	if err := raw.QueryRow(`SELECT count(*) FROM information_schema.columns WHERE table_name='query_logs' AND column_name='action'`).Scan(&cols); err != nil || cols != 1 {
+		t.Fatalf("fresh database has no action column (count %d, err %v)", cols, err)
+	}
+	if _, err := raw.Exec(`DROP TABLE query_logs`); err != nil {
+		t.Fatal(err)
+	}
+
 	// A node upgrading from a release that already had the table, with a row in it.
 	if _, err := raw.Exec(oldQueryLogs); err != nil {
 		t.Fatal(err)
@@ -188,11 +206,6 @@ func TestSampledQueryLogHistory(t *testing.T) {
 	if _, err := raw.Exec(`INSERT INTO query_logs (client_ip, query_name, query_type) VALUES ('192.0.2.1', 'old.example', 'A')`); err != nil {
 		t.Fatal(err)
 	}
-	db, err := database.Connect(config.DatabaseConfig{Enabled: true, Host: host, Port: port, User: "powersvx", Password: pgPassword, Database: "powersvx"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
 	for i := 0; i < 2; i++ { // twice: the migration must be idempotent
 		if err := db.Migrate(context.Background()); err != nil {
 			t.Fatalf("migrate #%d: %v", i+1, err)

@@ -112,7 +112,8 @@ type liveQuery struct {
 	Source   string `json:"source"`
 }
 
-func (r *queryLogRig) live(wantAtLeast int) []liveQuery {
+// live returns the live stream once it has wantAtLeast entries and one for each action in waitFor.
+func (r *queryLogRig) live(wantAtLeast int, waitFor ...string) []liveQuery {
 	r.t.Helper()
 	var out struct {
 		Queries []liveQuery `json:"queries"`
@@ -127,7 +128,15 @@ func (r *queryLogRig) live(wantAtLeast int) []liveQuery {
 		if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
 			r.t.Fatal(err)
 		}
-		if len(out.Queries) >= wantAtLeast {
+		seen := map[string]bool{}
+		for _, q := range out.Queries {
+			seen[q.Action] = true
+		}
+		missing := false
+		for _, a := range waitFor {
+			missing = missing || !seen[a]
+		}
+		if len(out.Queries) >= wantAtLeast && !missing {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -140,7 +149,7 @@ func TestQueryLogFeedsLiveStreamWithActions(t *testing.T) {
 	c := r.replay()
 	defer c.Close()
 
-	qs := r.live(6)
+	qs := r.live(6, "allowed", "blocked-filter", "blocked-custom", "auth", "recursed", "refused")
 	if len(qs) < 6 {
 		t.Fatalf("only %d queries reached the live stream", len(qs))
 	}
