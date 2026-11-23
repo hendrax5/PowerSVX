@@ -30,9 +30,9 @@ func (s *Server) handleUpdate(w dns.ResponseWriter, req *dns.Msg, clientIP strin
 		return true
 	}
 	if s.cfg.Update.RequireTSIG {
-		if status := w.TsigStatus(); status != nil {
+		if rcode, deny := tsigDenial(w, req); deny {
 			m := new(dns.Msg)
-			m.SetRcode(req, dns.RcodeNotAuth)
+			m.SetRcode(req, rcode)
 			_ = w.WriteMsg(m)
 			metrics.QueriesTotal.WithLabelValues(proto, "update_tsig").Inc()
 			return true
@@ -102,14 +102,19 @@ func updatePolicyAllows(policies []config.UpdatePolicyTOML, key, zone string) bo
 	if len(policies) == 0 {
 		return true
 	}
+	// Policies bind a TSIG key to zones: a request without a TSIG key is never
+	// admitted by a policy, and an entry without a key name never matches.
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
 	key = strings.ToLower(dns.Fqdn(key))
 	zone = config.NormalizeName(zone)
 	for _, p := range policies {
-		pk := strings.ToLower(dns.Fqdn(strings.TrimSpace(p.Key)))
-		if pk == "" || (key != "" && pk != key) {
+		if strings.TrimSpace(p.Key) == "" {
 			continue
 		}
-		if key == "" && p.Key != "" {
+		if strings.ToLower(dns.Fqdn(strings.TrimSpace(p.Key))) != key {
 			continue
 		}
 		if len(p.Zones) == 0 {
