@@ -30,9 +30,9 @@ func (s *Server) handleUpdate(w dns.ResponseWriter, req *dns.Msg, clientIP strin
 		return true
 	}
 	if s.cfg.Update.RequireTSIG {
-		if status := w.TsigStatus(); status != nil {
+		if rcode, deny := tsigDenial(w, req); deny {
 			m := new(dns.Msg)
-			m.SetRcode(req, dns.RcodeNotAuth)
+			m.SetRcode(req, rcode)
 			_ = w.WriteMsg(m)
 			metrics.QueriesTotal.WithLabelValues(proto, "update_tsig").Inc()
 			return true
