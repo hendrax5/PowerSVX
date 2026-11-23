@@ -1,0 +1,46 @@
+{
+  "label": "powersvx-full",
+  "system": "powersvx",
+  "size": "full",
+  "taken_at_utc": "20261123T144133Z",
+  "note": "Tranco 2026-11-23 top100k, filter sample 1/300, core profile, 2.0 integration build",
+  "passed": true,
+  "max_loss_pct": 0.1,
+  "max_p99_ms": 5,
+  "max_qps": 19108.2,
+  "limited_by": "server",
+  "loss_pct": 0.0457,
+  "sent": 2294040,
+  "completed": 2292991,
+  "latency_ms": {
+    "avg": 0.332,
+    "p50": 0.175,
+    "p95": 0.271,
+    "p99": 0.639
+  },
+  "search_steps": [{"requested_qps":0,"achieved_qps":52029.3,"loss_pct":0.0721,"p99_ms":204.799},{"requested_qps":26033,"achieved_qps":25722.0,"loss_pct":0.0361,"p99_ms":5.887},{"requested_qps":13016,"achieved_qps":12963.9,"loss_pct":0.0853,"p99_ms":4.351},{"requested_qps":19524,"achieved_qps":18998.2,"loss_pct":0.0907,"p99_ms":6.527},{"requested_qps":16270,"achieved_qps":15781.0,"loss_pct":0.0676,"p99_ms":0.687},{"requested_qps":17897,"achieved_qps":17364.3,"loss_pct":0.0948,"p99_ms":1.279},{"requested_qps":18710,"achieved_qps":18497.3,"loss_pct":0.0454,"p99_ms":0.751},{"requested_qps":19117,"achieved_qps":18248.7,"loss_pct":0.0424,"p99_ms":0.359}],
+  "server": {
+    "address": "103.168.254.250",
+    "port": 53,
+    "cpus": null,
+    "mem_total_kb": null,
+    "kernel": "",
+    "images": [],
+    "memory_under_load": []
+  },
+  "load_generator": {
+    "dnsperf": "Version 2.14.0",
+    "clients": 100,
+    "threads": 8,
+    "max_outstanding": 10000,
+    "warm_up_qps": 2000,
+    "step_seconds": 30,
+    "measure_seconds": 120
+  },
+  "query_set": {
+    "file": "queries.txt",
+    "lines": 1000000,
+    "distinct": 155021,
+    "sha256": "515c39de3140d9e7a1b560a3103621bab849543027787c507b0cfd95fe1d726f"
+  }
+}
