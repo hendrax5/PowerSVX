@@ -10,7 +10,6 @@ import (
 
 	"github.com/powersvx/powersvx/internal/apiauth"
 	"github.com/powersvx/powersvx/internal/audit"
-	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/dnsdistctl"
 	"github.com/powersvx/powersvx/internal/unboundrpz"
 )
@@ -20,21 +19,7 @@ func (a *API) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	// The Go process keeps no resolver cache; the keys stay so the console renders.
-	var l1Hits, l1Misses, l1Size uint64
-	var l1Ratio float64
-	if l1Hits+l1Misses > 0 {
-		l1Ratio = float64(l1Hits) / float64(l1Hits+l1Misses)
-	}
-	out := map[string]any{
-		"dataplane": config.DNSDataplane(),
-		"go": map[string]any{
-			"l1_hits":   l1Hits,
-			"l1_misses": l1Misses,
-			"l1_size":   l1Size,
-			"hit_ratio": l1Ratio,
-		},
-	}
+	out := map[string]any{}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	if st, err := dnsdistctl.DefaultClient().Stats(ctx); err == nil {

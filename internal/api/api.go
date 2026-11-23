@@ -108,10 +108,6 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/security/dynblocks/clear", a.withAuth(a.handleSecurityClearDynBlocks))
 	mux.HandleFunc("/api/v1/queries/live", a.withAuth(a.handleLiveQueries))
 	mux.HandleFunc("/api/v1/queries/stream", a.withAuth(a.handleQueryStream))
-	mux.HandleFunc("/api/v1/tproxy", a.withAuth(a.handleTProxy))
-	mux.HandleFunc("/api/v1/tproxy/apply", a.withAuth(a.handleTProxyApply))
-	mux.HandleFunc("/api/v1/tproxy/disable", a.withAuth(a.handleTProxyDisable))
-	mux.HandleFunc("/api/v1/tproxy/restart", a.withAuth(a.handleTProxyRestart))
 	mux.HandleFunc("/api/v1/conntrack", a.withAuth(a.handleConntrack))
 	mux.HandleFunc("/api/v1/conntrack/apply", a.withAuth(a.handleConntrackApply))
 	mux.HandleFunc("/api/v1/host/network", a.withAuth(a.handleHostNetwork))
@@ -358,10 +354,6 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 			checks["unbound"] = map[string]any{"status": "disabled", "hint": "Resolver mode: " + a.srv.RuntimeFlags().ResolverMode}
 		}
 	}
-	checks["dns_dot"] = statusOrDisabled(a.srv.DoTEnabled(), a.srv.DoTAddr())
-	checks["dns_doh"] = statusOrDisabled(a.srv.DoHEnabled(), a.srv.DoHAddr())
-	checks["dns_doh3"] = statusOrDisabled(a.srv.DoH3Enabled(), a.srv.DoHAddr())
-	checks["dns_doq"] = statusOrDisabled(a.srv.DoQEnabled(), a.srv.DoQAddr())
 
 	if a.cfg.Database.Enabled {
 		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -377,8 +369,6 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 		checks["database"] = map[string]any{"status": "disabled", "hint": "not configured; query history needs the Observability Profile"}
 	}
 
-	// The Go process keeps no resolver cache; the Dataplane and Unbound report theirs.
-	checks["cache"] = map[string]any{"status": "disabled", "hint": "resolver cache lives in dnsdist and Unbound"}
 	rpzDetail := map[string]any{"status": "pass", "entries": a.srv.RPZCount(), "policies": len(a.cfg.RPZ.Policies)}
 	if config.DNSDistDataplane() {
 		a.refreshUnboundEntryCount()
@@ -558,16 +548,8 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 	return out
 }
 
-func statusOrDisabled(on bool, addr string) map[string]any {
-	if on {
-		return map[string]any{"status": "pass", "addr": addr}
-	}
-	return map[string]any{"status": "disabled"}
-}
-
 func (a *API) statusPayload() map[string]any {
 	queries, uptime := a.srv.Stats()
-	var hits, misses, size uint64 // the Go process keeps no resolver cache
 	zones := 0
 	if a.auth != nil {
 		zones = a.auth.ZoneCount()
@@ -575,20 +557,16 @@ func (a *API) statusPayload() map[string]any {
 	flags := a.srv.RuntimeFlags()
 	out := map[string]any{
 		"uptime_seconds": int(uptime.Seconds()),
-		"mode":           a.cfg.Resolver.Mode, "dnssec_mode": a.srv.DNSSECMode(),
-		"dot_enabled": a.srv.DoTEnabled(), "doh_enabled": a.srv.DoHEnabled(), "doh3_enabled": a.srv.DoH3Enabled(), "doq_enabled": a.srv.DoQEnabled(),
-		"dot_addr": a.srv.DoTAddr(), "doh_addr": a.srv.DoHAddr(), "doq_addr": a.srv.DoQAddr(),
+		"dnssec_mode":    a.srv.DNSSECMode(),
 		"queries_total": queries, "rate_limited": a.srv.Blocked(),
-		"cache_hits": hits, "cache_misses": misses, "cache_l1_size": size,
+		"cache_hits": uint64(0), "cache_misses": uint64(0),
 		"rpz_entries": a.srv.RPZCount(), "zones": zones, "udp_addr": a.srv.UDPAddr(),
 		"ratelimit_enabled": flags.RateLimit, "rpz_enabled": flags.RPZ,
 		"ecs_enabled":           flags.ECS,
 		"geodns_enabled":        flags.GeoDNS,
 		"split_horizon_enabled": flags.SplitHorizon,
-		"dns_dataplane":         config.DNSDataplane(),
 	}
 	if config.DNSDistDataplane() {
-		out["mode"] = "dnsdist"
 		out["udp_addr"] = "0.0.0.0:53 (dnsdist)"
 		out["rpz_entries"] = a.unboundRPZEntryCount()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -647,7 +625,6 @@ func (a *API) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		payload["monitor"] = monitor.New().Snapshot(allow, active)
 	}
 	payload["health"] = a.healthPayload(r.Context())
-	payload["dns_dataplane"] = config.DNSDataplane()
 	writeJSON(w, http.StatusOK, payload)
 }
 
@@ -1227,7 +1204,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			maxMB = a.cfg.Logging.QueryLogMaxSizeMB
 			sampleRate = a.cfg.Logging.QueryLogSampleRate
 		}
-		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), a.withPreservedTProxy(config.RuntimeSettings{
+		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), a.withPreservedConntrack(config.RuntimeSettings{
 			GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 			RateLimitQPS: &rlLive.QPS, RateLimitBurst: &rlLive.Burst, RateLimitBlockDur: &rlLive.BlockDuration,
 			RateLimitWhitelist: rlLive.Whitelist,
@@ -1311,7 +1288,6 @@ func (a *API) settingsPayload() map[string]any {
 		"auth_type":            a.cfg.API.AuthType,
 		"auth_required":        apiauth.AuthRequired(a.cfg.API.AuthType),
 		"auth_configured":      a.authConfigured(),
-		"tls_min_version":      "1.3",
 		"editable": []string{
 			"geodns", "rpz_enabled", "rate_limit", "rate_limit_qps", "rate_limit_burst",
 			"rate_limit_block_duration", "rate_limit_whitelist",

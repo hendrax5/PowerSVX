@@ -102,9 +102,6 @@ func AllowPath(role, method, path string) bool {
 	if strings.HasPrefix(path, "/api/v1/settings") {
 		return false
 	}
-	if strings.HasPrefix(path, "/api/v1/tproxy") {
-		return false
-	}
 	if strings.HasPrefix(path, "/api/v1/conntrack") {
 		return false
 	}
