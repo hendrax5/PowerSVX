@@ -146,6 +146,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # Supports private GHCR via `sudo docker login ghcr.io` (reads config.json inside dir).
+      # If the directory is missing Docker creates it empty and Watchtower has no login, silently:
+      # deploy/linux/registry-preflight.sh (run by bootstrap and apply-update) warns about that.
       - ${DOCKER_CONFIG_DIR:-/root/.docker}:/config:ro
     restart: unless-stopped
 

@@ -165,6 +165,8 @@ if [[ -n "$GHCR_TOKEN_VAL" ]]; then
   echo "    Logging in to ghcr.io for private image pull..."
   printf '%s\n' "$GHCR_TOKEN_VAL" | docker login ghcr.io -u "${GHCR_USER_VAL:-hendrax5}" --password-stdin >/dev/null
 fi
+# Only warns; a node without registry credentials still installs, it just cannot auto-update.
+sh "$ROOT/deploy/linux/registry-preflight.sh" "$ROOT" || true
 
 PROFILE="$(sh "$ROOT/deploy/linux/select-profile.sh")" || exit 1
 PROFILE_EXPLICIT=0

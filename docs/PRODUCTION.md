@@ -235,7 +235,37 @@ The simplest way is `bash deploy/linux/apply-update.sh` after step 1: it does st
 - **Docker CD (`ghcr.io/hendrax5/powersvx`):**
   - Tag pushes (`v*`) build and push multi-arch images (`linux/amd64`, `linux/arm64`) as `:latest` + `:<version>` via `.github/workflows/release.yml`, and attach standalone Linux binaries (`make_latest: false` keeps `filter-seed` intact). Pushes to `main` publish `:edge` for staging.
   - **Watchtower (`nickfedor/watchtower`):** runs via `docker-compose.yml` with `WATCHTOWER_LABEL_ENABLE=true`, `WATCHTOWER_CLEANUP=true`, `DOCKER_CONFIG=/config` (mounted from `${DOCKER_CONFIG_DIR:-/root/.docker}`), and `WATCHTOWER_SCHEDULE=0 15 3 * * *` (`TZ=Asia/Jakarta`, 03:15 WIB daily). Only `powersvx` carries `com.centurylinklabs.watchtower.enable=true` — `dnsdist`, `Unbound`, and `Postgres` are never auto-restarted so `:53` stays uninterrupted.
-  - **Public vs Private GHCR:** If `ghcr.io/hendrax5/powersvx` stays **Private**, create a GitHub PAT (`read:packages` scope only) and either run `sudo docker login ghcr.io -u hendrax5` on each node or set `GHCR_USER` + `GHCR_TOKEN` in `.env` — Watchtower reads `/root/.docker/config.json` automatically via `/config`.
+  - **Public vs Private GHCR:** If `ghcr.io/hendrax5/powersvx` stays **Private**, create a GitHub PAT (`read:packages` scope only) and either run `sudo docker login ghcr.io -u hendrax5` on each node or set `GHCR_USER` + `GHCR_TOKEN` in `.env` — Watchtower reads `/root/.docker/config.json` automatically via `/config`. Without either, Watchtower gets `401` and never updates the node; see "Watchtower and the private GHCR image" below for how to check and fix it.
+
+## Watchtower and the private GHCR image
+
+`ghcr.io/hendrax5/powersvx` is a **private** package (checked with the GitHub API). Anonymous pulls get `401`, so a node can auto-update only if Watchtower has a registry login.
+
+**How Watchtower authenticates.** `docker-compose.yml` mounts `${DOCKER_CONFIG_DIR:-/root/.docker}` read-only into the Watchtower container as `/config` and sets `DOCKER_CONFIG=/config`. Watchtower reads `/config/config.json`, the same file `docker login ghcr.io` writes on the host. (Watchtower also accepts `REPO_USER` and `REPO_PASS`; the compose file does not set them, the mounted config is the supported path.) `bootstrap-node.sh` and `apply-update.sh` run `docker login` only when `GHCR_TOKEN` is set in the environment or `.env`. A node bootstrapped without a token never logs in, so `/root/.docker/config.json` has no `ghcr.io` entry, Watchtower pulls anonymously and gets `401 Unauthorized`. Its session line still says `failed=0` because the failed pull counts as skipped:
+
+```text
+level=warn msg="Digest retrieval failed, falling back to full pull" error="... status 401 Unauthorized"
+level=warn msg="Could not pull image" error="... error from registry: unauthorized"
+level=info msg="Update session completed" failed=0 scanned=0 skipped=1 updated=0
+```
+
+Docker creates the mount directory empty if it does not exist, and a login kept in a credential helper (`credsStore`) cannot be used inside the container. Both look the same from outside: no login.
+
+**Check that a node updates.**
+- `sh deploy/linux/registry-preflight.sh` says whether the image is public and whether the mounted config holds a `ghcr.io` login. It never prints a token.
+- `sh deploy/linux/watchtower-health.sh` reads the Watchtower log of the last 72 h and prints a `WARNING` with the fix when it finds `unauthorized`, `401`, `denied`, `Could not pull image` or `scanned=0`. Both scripts always exit 0. `apply-update.sh` runs both before it recreates Watchtower, and `bootstrap-node.sh` runs the preflight. Recreating Watchtower starts a new log, so a node that was just updated shows "no update session yet" until 03:15.
+- `python ops/probe.py all` includes the Watchtower check per node and ends with the list of nodes that cannot update.
+- A healthy scheduled run has `scanned=1` (or more) and no `401`, for example `Update session completed failed=0 scanned=1 skipped=0 updated=0` (`updated=1` after a new release). On the node: `docker logs --since 48h powersvx-watchtower`.
+
+**Fix 1: make the package public (owner action).** GitHub, the `powersvx` package, Package settings, Danger Zone, Change visibility, Public. Nodes then need no credentials and the warning goes away on the next check. Do this only if publishing the image is acceptable.
+
+**Fix 2: give the node a token.** Create a GitHub personal access token (classic) with only the `read:packages` scope, or a fine-grained token with read access to the package. Then either:
+1. put `GHCR_USER=<github user>` and `GHCR_TOKEN=<token>` in the node's `.env` and run `bash deploy/linux/apply-update.sh` (it logs in and recreates Watchtower), or
+2. run `sudo docker login ghcr.io -u <github user>` on the node and paste the token when asked.
+
+The login must land in the directory that is mounted: `/root/.docker` by default (`sudo` makes that the right one), or set `DOCKER_CONFIG_DIR` in `.env`. Recreate Watchtower afterwards so it re-reads the mount: `docker compose up -d --no-deps --force-recreate watchtower`. Keep the token only in `.env` (mode 600) and `config.json`; never in an issue, a commit or a chat.
+
+**Rotate the token.** Create the new token, replace `GHCR_TOKEN` in each node's `.env` (or run `sudo docker login ghcr.io -u <github user>` again), run `apply-update.sh` or recreate Watchtower, run `watchtower-health.sh` after the next scheduled run (or `docker restart powersvx-watchtower` and read the log after 03:15), then delete the old token on GitHub. A revoked or expired token shows up as the same `401` warning.
 
 ## Deferred (enterprise)
 - Raft HA / multi-node failover
