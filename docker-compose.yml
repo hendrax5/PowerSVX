@@ -49,6 +49,9 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    # SIGTERM cancels a running filter rebuild, which removes its temp file and records
+    # "interrupted" within seconds; 20s matches TimeoutStopSec in powersvx.service.
+    stop_grace_period: 20s
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:5380/api/v1/health"]
       interval: 30s

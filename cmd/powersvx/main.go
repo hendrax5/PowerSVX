@@ -265,6 +265,7 @@ func main() {
 
 	rest := api.New(cfg, dnsSrv, db, auth, log)
 	rest.SetDataDir(*dataDir)
+	rest.CleanFilterTmp() // before any writer or sync runs: leftover *.tmp from a killed process
 	rest.SetEvents(bus)
 	rest.SetACME(acmeMgr)
 	dnsSrv.SetRPZNotifyHandler(rest.HandleRPZNotify)
