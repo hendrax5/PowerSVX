@@ -39,6 +39,39 @@ Only the dnsdist Dataplane exists. The `unbound`, `external` and `powersvx` (Go 
 - To fix a node: set `POWERSVX_DNS_DATAPLANE=dnsdist`, regenerate configs with `deploy/linux/gen-dnsdist-conf.sh`, and recreate the stack.
 - `python ops/probe.py` prints each node's configured mode.
 
+### Unbound forwards to itself (ticket #40)
+
+Before this fix the shipped host configuration said `[resolver] mode = "forward"` with `forwarders = ["127.0.0.1:5353"]`. The Control Plane copied that into Unbound's runtime configuration as `forward-zone: name: "."`, so Unbound forwarded every query to its own listener: every name outside the hosted zones failed, as soon as Unbound loaded the file (at start, or on the reload the Control Plane triggers).
+
+What changed:
+
+- The shipped host configuration is `mode = "recursive"` with no forwarders: Unbound recurses by itself.
+- The Control Plane never writes a forwarder that points back into the Dataplane: a loopback address (`127.0.0.1`, `::1`, `localhost`) on Unbound's own port (`POWERSVX_UNBOUND_BACKEND_PORT`, default `5353`) or on port `53` (dnsdist, which sends the query back to Unbound). It skips it, logs a `WARN` (`resolver forwarder skipped`) and shows it in `GET /api/v1/health` under `checks.unbound_runtime.skipped_forwarders` (status `degraded`). It does not matter whether the forwarder came from the TOML file, the saved settings (`data/runtime-settings.json`) or the console: all of them go through the same writer. A real forwarder keeps working.
+- The saved settings file overrides the TOML, and any save in the console persists the whole settings structure, so a node where someone ever saved the settings page keeps the old `forward` / `127.0.0.1:5353` values in `data/runtime-settings.json` whatever the TOML says. The settings API now answers `400` to a forwarder (global or per zone) that is Unbound's own listener or dnsdist, and the console's "Unbound backend" preset now means mode `recursive` with no forwarders. At start the Control Plane rewrites such saved settings (it removes the looping forwarders, switches a `forward` mode left with none to `recursive`, and logs `saved resolver settings pointed Unbound at itself`). Saving other settings no longer writes an old looping value back. The render-time guard above still protects every other source.
+- `bootstrap-node.sh` and `apply-update.sh` run `deploy/linux/check-unbound-conf.sh` after generating the configs and before creating or recreating any container. It refuses to continue, naming the file, when `unbound.conf` has the control interface disabled or does not load the runtime files, when `data/unbound-rpz/runtime-zones.conf` has a forward-zone pointing at Unbound or dnsdist, or when `unbound-checkconf` in the pinned Unbound image rejects the configuration.
+- The readiness check can fail on broken recursion: `dns-ready.sh -r` resolves a fresh label under a real domain (`example.com` by default), which only recursion can answer. `.invalid` is answered by Unbound itself, so `-u invalid` passes while recursion is broken; it is kept as the local-path check. The dnsdist healthcheck, `bootstrap-node.sh` and `apply-update.sh` use `-r` (one real query per run; the healthcheck runs it every 30 s). `-r` also fails while the node cannot reach the Internet.
+- A failed Unbound reload (control interface disabled or unreachable) is logged as an `ERROR` and shown in `checks.unbound_runtime.reload_error`; the Control Plane retries for about 9 minutes (after 5, 15, 30 and 60 s, then 2 and 5 minutes) and the health output returns to normal when one works.
+
+**Recognise the problem on an existing node** (do this before updating it; `apply-update.sh` now refuses to continue on such a node):
+
+```sh
+docker exec powersvx-unbound-1 unbound-control list_forwards      # a line like ". IN forward 127.0.0.1" is the loop
+grep -n -A3 'forward-zone' data/unbound-rpz/runtime-zones.conf    # forward-addr: 127.0.0.1@5353
+grep -n control-enable configs/unbound/unbound.conf               # "no" means the Control Plane cannot reload Unbound
+bash deploy/linux/dns-ready.sh -r                                 # fails (SERVFAIL, or no answer) while recursion is broken
+```
+
+If `list_forwards` cannot connect, the control interface is disabled: Unbound is still running the configuration it started with, and the loop is in the file on disk, waiting for the next restart of Unbound (an update recreates it).
+
+**Repair:**
+
+1. In the console (Settings, resolver mode) set the mode to **recursive** and clear the forwarders, or edit `configs/powersvx.docker.host.toml` (`mode = "recursive"`, `forwarders = []`). Settings saved earlier in `data/runtime-settings.json` override the file, so check them: `grep -E 'resolver_mode|forwarders' data/runtime-settings.json` (a Control Plane with this fix rewrites that file at its next start).
+2. Remove the `forward-zone:` block with `name: "."` from `data/unbound-rpz/runtime-zones.conf` (or empty the file; the Control Plane rewrites it). With the new Control Plane this block is not written again.
+3. Regenerate and reload: `bash deploy/linux/gen-unbound-conf.sh` (control interface on `127.0.0.1:8953`), then `docker exec powersvx-unbound-1 unbound-control reload_keep_cache`, or recreate Unbound with `bash deploy/linux/apply-update.sh`.
+4. Verify: `unbound-control list_forwards` shows no `.` entry and `bash deploy/linux/dns-ready.sh -r` exits 0.
+
+**Why a node can have the control interface disabled.** `deploy/linux/gen-unbound-conf.sh` has always written `control-enable: yes` on `127.0.0.1:8953`. Two other files in the field say `control-enable: no`: the sample `configs/unbound/unbound.conf` that used to be committed (it also lacked the `include:` lines for the Control Plane's runtime files), and the default configuration the `mvance/unbound` image writes when no `unbound.conf` is mounted. A node runs one of them when the generated file was overwritten or never produced before the container started (for example `git checkout` or a tarball restoring the sample after generation, or `docker compose up` before `gen-unbound-conf.sh`). We could not establish which of these happened on the two lab nodes that showed it. The sample now matches the generator, and `check-unbound-conf.sh` refuses to continue on a configuration with the control interface disabled.
+
 ## Query ACL
 - `[acl] allow_query` — CIDRs/IPs allowed to query DNS. **Empty = allow all.**
 - `[acl] deny_query` — always refused (wins over allow).
@@ -71,7 +104,7 @@ Only the dnsdist Dataplane exists. The `unbound`, `external` and `powersvx` (Go 
 - Updates: add (IN), delete RRset (ANY), delete exact RR (NONE). SOA serial bumps; secondaries are NOTIFYed.
 
 ## Conditional forwarders
-- Default resolver mode is **recursive**. Global `[resolver] forwarders` plus optional `[[resolver.forward_zones]]` are used when `mode=forward` or `forward_on_fail=true`. Editable in Settings.
+- Default resolver mode is **recursive**. Global `[resolver] forwarders` plus optional `[[resolver.forward_zones]]` are used when `mode=forward` or `forward_on_fail=true`. Editable in Settings. Never list Unbound's own address (`127.0.0.1:5353`) or dnsdist (`:53`) as a forwarder: the Control Plane skips it (see "Unbound forwards to itself").
 - Outbound schemes: `host:53` (UDP), `tls://host:853` (DoT, optional `#sni`), `https://host/dns-query` (DoH).
 
 ## TLS (DoT / DoH / DoQ)

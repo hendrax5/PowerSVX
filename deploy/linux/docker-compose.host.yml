@@ -97,11 +97,15 @@ services:
     # (that is parsed as a listen address → Fatal: Unable to convert ... 'dnsdist').
     command: ["--supervised", "--disable-syslog", "-C", "/etc/dnsdist/dnsdist.conf"]
     healthcheck:
-      # A fresh name under .invalid is answered by Unbound without leaving the host,
-      # so this fails when dnsdist or Unbound stops answering, not when upstream is down.
-      test: ["CMD", "bash", "/usr/local/bin/dns-ready.sh", "-u", "invalid"]
+      # One fresh name under a real domain per interval: only recursion can answer it, so this
+      # fails when dnsdist or Unbound stops answering and when recursion is broken (a forward
+      # loop answers SERVFAIL). It also fails while the node cannot reach the Internet.
+      # Exactly one probe (one real recursive lookup) per interval: no -w, so a failure is not
+      # retried inside the check. Docker's retries do the smoothing: the container only turns
+      # unhealthy after 3 failed intervals in a row (90 s), so one transient hiccup does not flip it.
+      test: ["CMD", "bash", "/usr/local/bin/dns-ready.sh", "-r", "-t", "4"]
       interval: 30s
-      timeout: 5s
+      timeout: 8s
       retries: 3
       start_period: 20s
 

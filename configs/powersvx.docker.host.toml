@@ -44,8 +44,12 @@ stale_ttl = 0
 prefetch_pct = 0
 
 [resolver]
-mode = "forward"
-forwarders = ["127.0.0.1:5353"]
+# Unbound recurses by itself. Do NOT list 127.0.0.1:5353 (Unbound) or :53 (dnsdist) as a
+# forwarder: Unbound would forward to itself and answer SERVFAIL for every name outside
+# the hosted zones. The Control Plane refuses to write such a forwarder to Unbound.
+# To use an upstream resolver instead, set mode = "forward" and list that resolver.
+mode = "recursive"
+forwarders = []
 forward_on_fail = false
 dnssec_mode = "off"
 edns_buffer_size = 1232

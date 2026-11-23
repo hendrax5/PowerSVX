@@ -267,9 +267,10 @@ func Default() *Config {
 			Database: "PowerSVX", User: "PowerSVX", MaxConnections: 20,
 		},
 		Resolver: ResolverConfig{
-			// Default: Unbound hybrid (loopback). Host compose starts Unbound on :5353.
-			Mode:          "forward",
-			Forwarders:    []string{"127.0.0.1:5353"},
+			// Default: Unbound recurses by itself. A forwarder on Unbound's own address
+			// (127.0.0.1:5353) would make it forward to itself.
+			Mode:          "recursive",
+			Forwarders:    nil,
 			ForwardOnFail: false,
 			DNSSECMode:    "off",
 			EDNSBufferSize: 1232,
