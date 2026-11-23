@@ -7,6 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/powersvx/powersvx/internal/allowlist"
@@ -228,5 +231,75 @@ func TestWhitelistAndDomainLookup(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &out)
 	if out["whitelisted"] != true || out["blocked"] != false {
 		t.Fatalf("whitelist should win: %v", out)
+	}
+}
+
+func TestSettingsRefuseAForwarderToUnboundItself(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.API.RESTEnabled = true
+	cfg.Resolver.Mode = "recursive"
+	auth := authoritative.NewStore()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := server.New(cfg, server.Deps{Auth: auth}, log)
+	a := api.New(cfg, srv, nil, auth, log)
+	dir := t.TempDir()
+	a.SetDataDir(dir)
+	h := a.Handler()
+
+	put := func(body string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v1/settings", bytes.NewBufferString(body)))
+		return rr
+	}
+	for _, body := range []string{
+		// the "Unbound backend" preset the console used to offer
+		`{"resolver_mode":"forward","forward_on_fail":false,"forwarders":["127.0.0.1:5353"]}`,
+		`{"forwarders":["::1"]}`,
+		`{"forwarders":["1.1.1.1","127.0.0.1"]}`,
+		`{"forward_zones":[{"zone":"corp.local","forwarders":["127.0.0.1:5353"]}]}`,
+	} {
+		rr := put(body)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("%s: want 400, got %d %s", body, rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "Unbound would forward to itself") {
+			t.Fatalf("%s: the message must say why: %s", body, rr.Body.String())
+		}
+	}
+	if len(cfg.Resolver.Forwarders) != 0 || cfg.Resolver.Mode != "recursive" {
+		t.Fatalf("a refused request must not change anything: %s %v", cfg.Resolver.Mode, cfg.Resolver.Forwarders)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "runtime-settings.json")); err == nil {
+		t.Fatal("a refused request must not write the settings file")
+	}
+
+	if rr := put(`{"resolver_mode":"forward","forwarders":["9.9.9.9","127.0.0.1:5399"]}`); rr.Code != http.StatusOK {
+		t.Fatalf("a real forwarder and a loopback address on another port are fine: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSavingOtherSettingsDoesNotWriteAnOldLoopBack(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.API.RESTEnabled = true
+	cfg.Resolver.Mode = "forward"
+	cfg.Resolver.Forwarders = []string{"127.0.0.1:5353"} // an old TOML
+	auth := authoritative.NewStore()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := server.New(cfg, server.Deps{Auth: auth}, log)
+	a := api.New(cfg, srv, nil, auth, log)
+	dir := t.TempDir()
+	a.SetDataDir(dir)
+
+	rr := httptest.NewRecorder()
+	a.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v1/settings", bytes.NewBufferString(`{"ecs_enabled":true}`)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	saved, err := os.ReadFile(filepath.Join(dir, "runtime-settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), "127.0.0.1") {
+		t.Fatalf("saving another setting persisted the loop:\n%s", saved)
 	}
 }

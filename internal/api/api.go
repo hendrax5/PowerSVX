@@ -52,6 +52,7 @@ type API struct {
 	dataDir  string
 
 	unboundRPZEntries atomic.Int64
+	unboundSync       unboundSyncState
 
 	rpzAutoMu   sync.Mutex
 	rpzAutoStop chan struct{}
@@ -314,6 +315,12 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 		} else {
 			checks["unbound"] = map[string]any{"status": "degraded", "err": err.Error(), "addr": "127.0.0.1:5353"}
 			if status == "healthy" {
+				status = "degraded"
+			}
+		}
+		if rt := a.unboundSync.health(); rt != nil {
+			checks["unbound_runtime"] = rt
+			if rt["status"] != "pass" && status == "healthy" {
 				status = "degraded"
 			}
 		}
@@ -1112,11 +1119,19 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			if err := loopForwarderError(fwd, nil); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			cur.Forwarders = fwd
 		}
 		if body.ForwardZones != nil {
 			fz, err := config.NormalizeForwardZones(*body.ForwardZones)
 			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := loopForwarderError(nil, fz); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -1190,6 +1205,8 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if fz == nil && a.cfg != nil {
 			fz = a.cfg.Resolver.ForwardZones
 		}
+		// Values nobody typed just now (TOML defaults, earlier settings) must not write a loop back.
+		fwd, fz, _ = dropLoopForwarders(fwd, fz)
 		rlLive := a.srv.RateLimitConfig()
 		kominfoOn := cur.KominfoSync
 		axfrTargets := []string(nil)

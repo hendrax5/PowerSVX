@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- The default host configuration no longer makes Unbound forward every query to itself (ticket #40): `[resolver] mode = "recursive"`, no forwarders. The Control Plane never writes a forwarder that points at Unbound's own listener or at dnsdist, logs a warning and reports it in the health output. `bootstrap-node.sh` and `apply-update.sh` validate the Unbound configuration (`deploy/linux/check-unbound-conf.sh`) before touching Unbound. `dns-ready.sh -r` checks recursion with a real name and is used by the dnsdist healthcheck, `bootstrap-node.sh` and `apply-update.sh`. A failed Unbound reload is logged as an error and shown in the health output. The sample `configs/unbound/unbound.conf` enables the control interface like the generator. Operators of existing nodes: see docs/PRODUCTION.md, "Unbound forwards to itself".
+
+---
+
 ## [1.7.1] - 2026-11-17
 
 ### Added

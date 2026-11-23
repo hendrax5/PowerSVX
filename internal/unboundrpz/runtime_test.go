@@ -23,7 +23,7 @@ func TestWriteRuntimeConfig(t *testing.T) {
 		ECSEnabled: true,
 		AuthZones:  []string{"example.co.id."},
 	}
-	if err := WriteRuntimeConfig(dir, spec); err != nil {
+	if _, err := WriteRuntimeConfig(dir, spec); err != nil {
 		t.Fatalf("WriteRuntimeConfig failed: %v", err)
 	}
 

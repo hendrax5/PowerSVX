@@ -728,10 +728,9 @@ export default function Settings({ tools = {} }) {
   const needsForwarders =
     draft.resolver_mode === 'forward' || (draft.resolver_mode === 'recursive' && draft.forward_on_fail)
   const noForwarders = (draft.forwarders || []).length === 0
-  const isUnboundBackend =
-    draft.resolver_mode === 'forward' &&
-    (draft.forwarders || []).length === 1 &&
-    ['127.0.0.1:5353', '127.0.0.1', '[::1]:5353', '::1'].includes(String(draft.forwarders[0] || '').trim())
+  // Unbound recurses by itself behind dnsdist. Never save its own address as a forwarder:
+  // that makes Unbound forward to itself, and the API refuses it.
+  const isUnboundBackend = draft.resolver_mode === 'recursive'
 
   const railGroups = [
     {
@@ -1059,7 +1058,7 @@ export default function Settings({ tools = {} }) {
               ) : null}
               {isUnboundBackend ? (
                 <SettingCallout tone="muted">
-                  Unbound backend active: cache misses go to <span className="mono font-semibold">127.0.0.1:5353</span>. Conditional forward
+                  Unbound backend active: Unbound resolves cache misses by itself, from the root servers. Conditional forward
                   zones still win for matching domains (evaluated first).
                 </SettingCallout>
               ) : null}
@@ -1071,7 +1070,7 @@ export default function Settings({ tools = {} }) {
               >
                 <div className="settings-mode-grid">
                   {[
-                    ['unbound', 'Unbound backend', 'Default ISP — misses → local Unbound on 127.0.0.1:5353 with DNSSEC', '< 1ms local'],
+                    ['unbound', 'Unbound backend', 'Default ISP — Unbound behind dnsdist resolves cache misses by itself, no forwarders', '< 1ms local'],
                     ['forward', 'Forward Proxy', 'Send all misses to the forwarders list (Cloudflare, Google, or any upstream)', '~15-30ms'],
                     ['recursive', 'Recursive (Go Native)', 'Lab only — ask the DNS root nameservers directly from PowerSVX', '~80-150ms'],
                   ].map(([mode, title, desc, lat]) => {
@@ -1088,9 +1087,9 @@ export default function Settings({ tools = {} }) {
                           if (mode === 'unbound') {
                             setDraft((d) => ({
                               ...d,
-                              resolver_mode: 'forward',
+                              resolver_mode: 'recursive',
                               forward_on_fail: false,
-                              forwarders: ['127.0.0.1:5353'],
+                              forwarders: [],
                             }))
                             return
                           }
@@ -1135,27 +1134,13 @@ export default function Settings({ tools = {} }) {
                 title="Upstream Resolvers (Route 53 Outbound Endpoints)"
                 hint={
                   isUnboundBackend
-                    ? 'Unbound backend uses 127.0.0.1:5353. Keep this loopback — do not point at public resolvers unless you intend to.'
+                    ? 'Unbound backend recurses by itself: leave this list empty. Do not list 127.0.0.1:5353 (Unbound) or :53 (dnsdist): the API refuses it.'
                     : 'Upstream for forward mode and recursive fallback. UDP 1.1.1.1:53, DoT tls://…, or DoH https://…'
                 }
               >
                 {/* Route 53 Quick Presets */}
                 <div className="flex flex-wrap items-center gap-2 mb-3">
                   <span className="text-xs text-[var(--muted)] font-medium">Quick Presets:</span>
-                  <button
-                    type="button"
-                    disabled={busy || !isAdmin}
-                    className="preset-chip-btn"
-                    onClick={() => {
-                      setDraft((d) => ({
-                        ...d,
-                        forwarders: ['127.0.0.1:5353'],
-                      }))
-                      setOk('Preset applied: Local Unbound (127.0.0.1:5353)')
-                    }}
-                  >
-                    + Local Unbound (127.0.0.1:5353)
-                  </button>
                   <button
                     type="button"
                     disabled={busy || !isAdmin}
