@@ -65,6 +65,19 @@ ip -6 route flush table 100
 
 Until it is removed, the host keeps diverting client DNS to port 53 with TPROXY, a path PowerSVX 2.0 no longer sets up or tests. Remove it, and use DNAT (MikroTik / iptables `dstnat`) to bring client queries to the Dataplane.
 
+### Containers on the default Docker bridge cannot resolve names (ticket #23)
+
+`deploy/linux/os-hardening.sh` used to install `iptables -t raw -A PREROUTING -p udp --dport 53 -j NOTRACK`. That rule also matched packets a container on the default bridge sends to an outside resolver (forwarded, not addressed to the node), so they were never tracked and NAT could not map the replies back: UDP/53 from such a container failed while TCP/53 and host-network UDP/53 worked. The rule now carries `-m addrtype --dst-type LOCAL`: only queries addressed to the node (the Dataplane) stay untracked. The `OUTPUT --sport 53` rule is unchanged.
+
+Upgrade: `apply-update.sh` runs `os-hardening.sh`, which runs `deploy/linux/notrack-dns.sh`. It adds the narrow rule first, then deletes the old broad rule until none is left, so queries to the node are never without a rule. It does not touch other rules. A broad rule in a saved `/etc/iptables/rules.v4` is rewritten to the narrow one. The rules are not otherwise persisted by PowerSVX: they come back from `os-hardening.sh` at the next update or bootstrap. To check by hand, as root:
+
+```
+deploy/linux/check-notrack.sh -u <upstream resolver IP>
+# or: docker run --rm --entrypoint drill mvance/unbound:1.22.0 -Q -p 53 @<upstream> example.org A
+```
+
+The script prints `FAIL broad rule present` while the old rule exists and probes a bridge container with UDP. The Dataplane path (host networking, dnsdist on the node's own addresses) is unchanged, so no throughput change is expected.
+
 ### Unbound forwards to itself (ticket #40)
 
 Before this fix the shipped host configuration said `[resolver] mode = "forward"` with `forwarders = ["127.0.0.1:5353"]`. The Control Plane copied that into Unbound's runtime configuration as `forward-zone: name: "."`, so Unbound forwarded every query to its own listener: every name outside the hosted zones failed, as soon as Unbound loaded the file (at start, or on the reload the Control Plane triggers).

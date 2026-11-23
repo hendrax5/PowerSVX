@@ -325,3 +325,7 @@ How it works:
 - The live stream always gets the entries. With Postgres they are also stored, with the client address truncated (/24, /48) when `query_log_mask_ip` is on, and subject to the existing retention and size limits. Without Postgres the console says history is unavailable and the live stream still works.
 - Entries hold client addresses. The live stream keeps them in memory only, and the unmasked address is never written to disk by the Control Plane.
 - Cost: each sampled answer runs a small Lua function in dnsdist and writes one dnstap message, so the cost grows with the rate. In a laptop test (Docker Desktop, loopback load, one UDP listener) sampling every query cut throughput to roughly 40% of what it was with the rate at 0, while 1% was within the noise of that test. Use a low rate (1–5%) for normal operation and 1.0 only briefly while diagnosing. Query logging must be off during a Baseline run.
+
+### NOTRACK scope
+
+`os-hardening.sh` (through `notrack-dns.sh`) untracks UDP/53 only for packets addressed to the node (`-m addrtype --dst-type LOCAL`), so containers on the default Docker bridge can still resolve through an outside resolver. Nodes installed earlier are migrated on the next update. Check with `deploy/linux/check-notrack.sh`; see `docs/PRODUCTION.md`, "Containers on the default Docker bridge cannot resolve names".

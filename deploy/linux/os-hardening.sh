@@ -30,13 +30,8 @@ EOF
 sysctl -p /etc/sysctl.d/98-powersvx.conf 2>/dev/null || sysctl --system >/dev/null 2>&1 || true
 
 # Bypass conntrack for DNS UDP traffic to eliminate conntrack CPU overhead and prevent table overflow
-if command -v iptables &>/dev/null; then
-  echo "==> Configuring iptables NOTRACK on UDP port 53..."
-  iptables -t raw -C PREROUTING -p udp --dport 53 -j NOTRACK 2>/dev/null || \
-    iptables -t raw -A PREROUTING -p udp --dport 53 -j NOTRACK 2>/dev/null || true
-  iptables -t raw -C OUTPUT -p udp --sport 53 -j NOTRACK 2>/dev/null || \
-    iptables -t raw -A OUTPUT -p udp --sport 53 -j NOTRACK 2>/dev/null || true
-fi
+# Only packets addressed to this node are untracked; forwarded container traffic stays tracked (ticket #23).
+bash "$(dirname "${BASH_SOURCE[0]}")/notrack-dns.sh" || true
 
 # Maximize NIC ring buffers if ethtool is available
 if command -v ethtool &>/dev/null; then
