@@ -43,7 +43,22 @@ func golden(t *testing.T, kind, cpus, mem string) string {
 }
 
 // With no knob set, the generated configuration is byte for byte what the generators wrote
-// before the knobs existed (testdata/default was produced by the generators of that time).
+// before the knobs existed (testdata/default was produced by the integration branch's
+// generators with every knob unset, not by this branch's code).
+//
+// This test breaks on ANY change to what the generators write by default. When that change is
+// intended, refresh the golden files from the repository root on a Linux host (sh, nproc) and
+// review the diff of testdata/default/ as part of the generator change itself:
+//
+//	for s in "2 2048" "12 16384"; do set -- $s; \
+//	  POWERSVX_DNS_DATAPLANE=dnsdist POWERSVX_DNSDIST_IPV6=1 POWERSVX_HOST_CPUS=$1 POWERSVX_HOST_MEM_MB=$2 \
+//	    sh deploy/linux/gen-unbound-conf.sh deploy/linux/testdata/default/unbound-$1cpu-$2mb.conf; \
+//	  POWERSVX_DNS_DATAPLANE=dnsdist POWERSVX_DNSDIST_IPV6=1 POWERSVX_HOST_CPUS=$1 POWERSVX_HOST_MEM_MB=$2 \
+//	    sh deploy/linux/gen-dnsdist-conf.sh deploy/linux/testdata/default/dnsdist-$1cpu-$2mb.conf; \
+//	done
+//
+// (The generators also create data/ under the repository root; delete it afterwards.) Never
+// refresh to make a failure go away without knowing which generator change caused it.
 func TestDefaultConfigurationIsUnchangedByTheKnobs(t *testing.T) {
 	for _, size := range []struct{ cpus, mem string }{{"2", "2048"}, {"12", "16384"}} {
 		t.Run(size.cpus+"cpu-"+size.mem+"mb", func(t *testing.T) {
