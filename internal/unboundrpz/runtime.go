@@ -26,14 +26,31 @@ type RuntimeSyncSpec struct {
 	ECSEnabled    bool
 	AuthZones     []string
 	AuthAddr      string // default 127.0.0.1@5354
+	// BackendPort is Unbound's own listener port, so a forwarder pointing at it can be
+	// refused. Zero reads POWERSVX_UNBOUND_BACKEND_PORT, then 5353.
+	BackendPort int
+}
+
+// RuntimeReport says what WriteRuntimeConfig left out.
+type RuntimeReport struct {
+	// SkippedForwarders are forwarders that point back into the Dataplane (Unbound's own
+	// listener or dnsdist). Writing one would make Unbound forward to itself and answer
+	// SERVFAIL for every name outside the hosted zones, so the writer never emits it.
+	SkippedForwarders []SkippedForwarder
 }
 
 // WriteRuntimeConfig renders runtime-server.conf (included inside Unbound's server: block)
 // and runtime-zones.conf (stub-zone for local auth zones + forward-zone directives).
-func WriteRuntimeConfig(dataDir string, spec RuntimeSyncSpec) error {
+// A forwarder that points back into the Dataplane is skipped and listed in the report.
+func WriteRuntimeConfig(dataDir string, spec RuntimeSyncSpec) (RuntimeReport, error) {
+	var report RuntimeReport
 	dir := Dir(dataDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return report, err
+	}
+	backendPort := spec.BackendPort
+	if backendPort <= 0 {
+		backendPort = BackendPort()
 	}
 
 	authAddr := strings.TrimSpace(spec.AuthAddr)
@@ -92,7 +109,9 @@ func WriteRuntimeConfig(dataDir string, spec RuntimeSyncSpec) error {
 		if dom == "" {
 			continue
 		}
-		addrs := sanitizeUnboundAddrs(fz.Forwarders)
+		kept, skipped := dropLoops(dom, fz.Forwarders, backendPort)
+		report.SkippedForwarders = append(report.SkippedForwarders, skipped...)
+		addrs := sanitizeUnboundAddrs(kept)
 		if len(addrs) == 0 {
 			continue
 		}
@@ -108,7 +127,9 @@ func WriteRuntimeConfig(dataDir string, spec RuntimeSyncSpec) error {
 	}
 
 	if strings.EqualFold(strings.TrimSpace(spec.ResolverMode), "forward") {
-		addrs := sanitizeUnboundAddrs(spec.Forwarders)
+		kept, skipped := dropLoops(".", spec.Forwarders, backendPort)
+		report.SkippedForwarders = append(report.SkippedForwarders, skipped...)
+		addrs := sanitizeUnboundAddrs(kept)
 		if len(addrs) > 0 {
 			zones.WriteString("forward-zone:\n")
 			zones.WriteString("    name: \".\"\n")
@@ -123,9 +144,9 @@ func WriteRuntimeConfig(dataDir string, spec RuntimeSyncSpec) error {
 	}
 
 	if err := atomicWriteFile(filepath.Join(dir, RuntimeServerFile), []byte(srv.String())); err != nil {
-		return err
+		return report, err
 	}
-	return atomicWriteFile(filepath.Join(dir, RuntimeZonesFile), []byte(zones.String()))
+	return report, atomicWriteFile(filepath.Join(dir, RuntimeZonesFile), []byte(zones.String()))
 }
 
 func atomicWriteFile(path string, data []byte) error {

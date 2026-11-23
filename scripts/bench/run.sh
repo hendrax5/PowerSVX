@@ -138,7 +138,7 @@ record_step() { # $1 requested rate
 }
 
 log "1/5 waiting for $server:$port to answer"
-bash "$READY" -s "$server" -p "$port" -w 60 -u invalid || die "$server:$port does not answer DNS"
+bash "$READY" -s "$server" -p "$port" -w 60 -r || die "$server:$port does not answer DNS"
 
 log "2/5 warm-up at $warm_qps qps"
 sort -u "$queries" >"$work/distinct.txt"
