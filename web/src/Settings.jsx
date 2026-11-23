@@ -1652,6 +1652,11 @@ export default function Settings({ tools = {} }) {
                   {saved.query_history_note || 'Query history is unavailable: it needs the Observability Profile (Postgres).'}
                 </p>
               ) : null}
+              {saved && saved.query_log_enabled && saved.query_log_dataplane_connected === false ? (
+                <p role="status" className="text-xs text-[var(--muted)] mb-3 leading-relaxed">
+                  The Dataplane is not sending a query log. Generate its configuration with POWERSVX_QUERY_LOG_DNSTAP=1 and recreate dnsdist (deploy/linux/README.md, “Sampled query log”).
+                </p>
+              ) : null}
               <SettingToggle
                 label="Enable query log"
                 hint="Record queries for the Logs view"
@@ -1712,7 +1717,7 @@ export default function Settings({ tools = {} }) {
                 </label>
               </div>
               <p className="text-[11px] text-[var(--muted)] mt-3 leading-relaxed">
-                Oldest rows are deleted first when over the size limit. 0 disables that guard. Default size cap is 5 GB (5120 MB). Sample rate 0.05 = log ~5%; under high load sampling tightens further.
+                Oldest rows are deleted first when over the size limit. 0 disables that guard. Default size cap is 5 GB (5120 MB). Sample rate 0.05 = log about 5% of answered queries; 0 turns sampling off.
               </p>
             </SettingSection>
           ) : null}

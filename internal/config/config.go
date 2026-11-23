@@ -164,7 +164,7 @@ type LoggingConfig struct {
 	QueryLogMaxSizeMB int `toml:"query_log_max_size_mb"`
 	// QueryLogMaskIP truncates client IPs before storage (/24 IPv4, /48 IPv6).
 	QueryLogMaskIP bool `toml:"query_log_mask_ip"`
-	// QueryLogSampleRate keeps this fraction of query logs (1.0 = all, 0.05 = 5%). 0 = all when logging enabled.
+	// QueryLogSampleRate is the fraction of answered queries dnsdist samples into the query log (1.0 = all, 0.05 = 5%). 0 = none.
 	QueryLogSampleRate float64 `toml:"query_log_sample_rate"`
 }
 

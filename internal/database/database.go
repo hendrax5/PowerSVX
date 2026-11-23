@@ -175,6 +175,8 @@ type QueryLogEntry struct {
 	ResponseMS   int
 	Cached       bool
 	Protocol     string
+	// Action is the Filter action the Dataplane took (allowed, blocked-filter, ...).
+	Action string
 }
 
 type QueryLogger struct {
@@ -228,8 +230,8 @@ func (q *QueryLogger) loop() {
 			return
 		}
 		stmt, err := tx.PrepareContext(ctx, `
-			INSERT INTO query_logs (timestamp, client_ip, query_name, query_type, response_code, response_time_ms, cached, protocol)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			INSERT INTO query_logs (timestamp, client_ip, query_name, query_type, response_code, response_time_ms, cached, protocol, action)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		`)
 		if err != nil {
 			_ = tx.Rollback()
@@ -237,7 +239,7 @@ func (q *QueryLogger) loop() {
 			return
 		}
 		for _, e := range batch {
-			_, _ = stmt.ExecContext(ctx, e.Timestamp, e.ClientIP, e.QueryName, e.QueryType, e.ResponseCode, e.ResponseMS, e.Cached, e.Protocol)
+			_, _ = stmt.ExecContext(ctx, e.Timestamp, e.ClientIP, e.QueryName, e.QueryType, e.ResponseCode, e.ResponseMS, e.Cached, e.Protocol, e.Action)
 		}
 		_ = stmt.Close()
 		_ = tx.Commit()
@@ -279,6 +281,7 @@ type QueryLogRow struct {
 	ResponseMS   int       `json:"response_time_ms"`
 	Cached       bool      `json:"cached"`
 	Protocol     string    `json:"protocol"`
+	Action       string    `json:"action"`
 }
 
 // QueryLogFilter selects recent query log rows.
@@ -325,7 +328,7 @@ func (db *DB) ListQueryLogs(ctx context.Context, f QueryLogFilter) ([]QueryLogRo
 	listQ := fmt.Sprintf(`
 		SELECT id, timestamp, host(client_ip), query_name, query_type,
 		       COALESCE(response_code,0), COALESCE(response_time_ms,0),
-		       COALESCE(cached,false), COALESCE(protocol,'')
+		       COALESCE(cached,false), COALESCE(protocol,''), COALESCE(action,'')
 		FROM query_logs
 		%s
 		ORDER BY timestamp DESC, id DESC
@@ -342,7 +345,7 @@ func (db *DB) ListQueryLogs(ctx context.Context, f QueryLogFilter) ([]QueryLogRo
 	for rows.Next() {
 		var r QueryLogRow
 		if err := rows.Scan(&r.ID, &r.Timestamp, &r.ClientIP, &r.QueryName, &r.QueryType,
-			&r.ResponseCode, &r.ResponseMS, &r.Cached, &r.Protocol); err != nil {
+			&r.ResponseCode, &r.ResponseMS, &r.Cached, &r.Protocol, &r.Action); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, r)
@@ -421,6 +424,7 @@ CREATE TABLE IF NOT EXISTS records (
 
 ALTER TABLE records ADD COLUMN IF NOT EXISTS geo_tag VARCHAR(50) DEFAULT '';
 ALTER TABLE records ADD COLUMN IF NOT EXISTS view_name VARCHAR(50) DEFAULT '';
+ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS action VARCHAR(16) DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS idx_records_zone_name ON records(zone_id, name);
 

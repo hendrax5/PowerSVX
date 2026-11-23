@@ -300,3 +300,26 @@ Fallback without Docker image builds: use the **systemd** path in section A (com
 The host override pins `powerdns/dnsdist-19:1.9.16` (the version running nodes report; its build includes DNS over QUIC). Never use `:latest`: a silent upgrade changes the Dataplane without a measurement. To bump it, change the tag in `deploy/linux/docker-compose.host.yml` and the `dnsdistImage` constant in `test/dataplane/blackbox_test.go`, run the Dataplane black-box test (`POWERSVX_DOCKER_TESTS=1 go test -count=1 ./test/dataplane/`) and a fresh Reference Load benchmark, and ship it as its own change.
 
 DoT, DoH and DoQ are enabled in the generated dnsdist config only when `fullchain.pem` and `privkey.pem` are mounted at `/etc/dnsdist/certs/`; open `853/tcp`, `443/tcp` and `784/udp` in the firewall. The Go listeners still serve the same ports until they are removed.
+
+### Sampled query log
+
+The console's live query stream, and query history when Postgres is present, come from a sampled record of the queries dnsdist answers. It is off by default, and a default node's `dnsdist.conf` is exactly what it was before this feature: no rule, no logger and no Lua for it.
+
+To use it, generate the dnsdist configuration with the sampled query log enabled, then recreate dnsdist:
+
+```bash
+POWERSVX_QUERY_LOG_DNSTAP=1 bash deploy/linux/gen-dnsdist-conf.sh
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d dnsdist
+```
+
+`apply-update.sh` and `bootstrap-node.sh` regenerate the file, so export `POWERSVX_QUERY_LOG_DNSTAP=1` in the environment they run in to keep it on.
+
+Then turn it on in the console: **Settings → Query log**, enable it and set the sample rate (0–1). `query_log_enabled` off, or a sample rate of 0, means no sampling. The Control Plane writes the rate to `data/dnstap/rate`, and dnsdist picks it up within about a second, with no restart. At rate 0 dnsdist has no sampling rule installed, so nothing is added to the query path; the generated configuration only holds an idle connection to the Control Plane and reads the rate file once a second.
+
+How it works:
+
+- The Control Plane listens on `data/dnstap/query.sock` (dnsdist sees the directory as `/etc/dnsdist/dnstap`). The socket is mode 0660, so only the Control Plane's user and root, which dnsdist runs as, can write to it.
+- dnsdist sends one dnstap message per sampled answer, whether it came from Unbound, the packet cache or dnsdist itself. The message carries the Filter action actually taken: `allowed`, `blocked-filter`, `blocked-custom`, `auth`, `recursed` or `refused`. The action is worked out for sampled queries only, in the Lua block `qlClassify`, which follows the rule order of the Filter above it. Change both together.
+- The live stream always gets the entries. With Postgres they are also stored, with the client address truncated (/24, /48) when `query_log_mask_ip` is on, and subject to the existing retention and size limits. Without Postgres the console says history is unavailable and the live stream still works.
+- Entries hold client addresses. The live stream keeps them in memory only, and the unmasked address is never written to disk by the Control Plane.
+- Cost: each sampled answer runs a small Lua function in dnsdist and writes one dnstap message, so the cost grows with the rate. In a laptop test (Docker Desktop, loopback load, one UDP listener) sampling every query cut throughput to roughly 40% of what it was with the rate at 0, while 1% was within the noise of that test. Use a low rate (1–5%) for normal operation and 1.0 only briefly while diagnosing. Query logging must be off during a Baseline run.

@@ -61,3 +61,9 @@ _Avoid_: Benchmark traffic, test load
 **Baseline**:
 A measurement of Technitium and of PowerSVX under the Reference Load on the same hardware, taken before any target is set.
 _Avoid_: Benchmark result
+
+### Observation
+
+**Query Log**:
+A sample of the queries the Dataplane answers, sent by dnsdist to the Control Plane over a local socket. Each entry names the Filter action actually taken. Off by default; the console's live query stream shows it, and history is stored only in the Observability Profile.
+_Avoid_: Query sampler, query analytics
