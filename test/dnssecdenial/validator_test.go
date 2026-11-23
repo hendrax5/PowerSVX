@@ -152,6 +152,7 @@ func TestValidatorAuthenticatesPositiveNXDOMAINAndNODATAFromANSECSignedZone(t *t
 		{"www.example.com.", "AAAA", []string{"; negative response, fully validated", "nxrrset"}},
 		{"example.com.", "TXT", []string{"; negative response, fully validated", "nxrrset"}},
 		{"z.example.com.", "A", []string{"; negative response, fully validated", "nxrrset"}},
+		{"example.com.", "NSEC3PARAM", []string{"; negative response, fully validated", "nxrrset"}}, // an NSEC zone has none
 		{"foo.w.example.com.", "AAAA", []string{"; negative response, fully validated", "nxrrset"}}, // wildcard NODATA
 	}
 	for _, tcp := range []bool{false, true} {

@@ -320,6 +320,9 @@ func (z *denialZone) nsec3Chain(salt string) *nsec3Chain {
 		if owned, ok := z.types[name]; ok {
 			types = append(types, owned...)
 			types = append(types, dns.TypeRRSIG)
+			if name == z.apex {
+				types = append(types, dns.TypeNSEC3PARAM) // served from the signer, see Signer.NSEC3PARAM
+			}
 		}
 		c.entries = append(c.entries, nsec3Entry{hash: nsec3Hash(name, salt), types: sortUniqueTypes(types)})
 	}
@@ -408,14 +411,42 @@ func nextCloser(qname, ce string) string {
 
 // signNSEC3Denial adds the signed NSEC3 proof for an NSEC3-signed zone.
 func (s *Signer) signNSEC3Denial(zone, qname string, zk *zoneKeys, names map[string][]uint16, now time.Time, resp *dns.Msg) error {
-	salt := zk.Policy.Salt
-	if salt == "" {
-		salt = nsec3DefaultSalt
-	}
+	salt := zk.Policy.nsec3Salt()
 	z := newDenialZone(zone, names)
 	var proof []dns.RR
 	for _, n := range z.nsec3Proof(qname, salt, resp.Rcode == dns.RcodeNameError, negativeTTL(resp)) {
 		proof = append(proof, n)
 	}
 	return signNegative(zone, zk, now, resp, proof)
+}
+
+// nsec3Salt is the salt the zone's NSEC3 chain and its NSEC3PARAM record use.
+func (o SignOptions) nsec3Salt() string {
+	if o.Salt == "" {
+		return nsec3DefaultSalt
+	}
+	return o.Salt
+}
+
+// NSEC3PARAM returns the NSEC3PARAM record for the apex of an NSEC3-signed zone,
+// with the parameters the chain is built with (RFC 5155 section 4: flags are 0
+// in NSEC3PARAM), or nil when the zone is unsigned or signed with NSEC.
+func (s *Signer) NSEC3PARAM(zone string, ttl uint32) *dns.NSEC3PARAM {
+	if s == nil {
+		return nil
+	}
+	zone = dns.CanonicalName(zone)
+	zk, err := s.load(zone)
+	if err != nil || !zk.Policy.NSEC3 {
+		return nil
+	}
+	salt := zk.Policy.nsec3Salt()
+	return &dns.NSEC3PARAM{
+		Hdr:        dns.RR_Header{Name: zone, Rrtype: dns.TypeNSEC3PARAM, Class: dns.ClassINET, Ttl: ttl},
+		Hash:       dns.SHA1,
+		Flags:      0,
+		Iterations: nsec3Iterations,
+		SaltLength: uint8(len(salt) / 2),
+		Salt:       salt,
+	}
 }
