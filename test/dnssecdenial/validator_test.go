@@ -154,6 +154,9 @@ func TestValidatorAuthenticatesPositiveNXDOMAINAndNODATAFromANSECSignedZone(t *t
 		{"z.example.com.", "A", []string{"; negative response, fully validated", "nxrrset"}},
 		{"example.com.", "NSEC3PARAM", []string{"; negative response, fully validated", "nxrrset"}}, // an NSEC zone has none
 		{"foo.w.example.com.", "AAAA", []string{"; negative response, fully validated", "nxrrset"}}, // wildcard NODATA
+		{"foo.w.example.com.", "A", []string{"; fully validated", "192.0.2.77", "RRSIG A 13 3 "}},   // answered through a wildcard
+		{"a.b.w.example.com.", "A", []string{"; fully validated", "192.0.2.77", "RRSIG A 13 3 "}},   // closest encloser w.example.com., next closer b.w
+		{"x.c.example.com.", "A", []string{"; fully validated", "192.0.2.10"}},                      // wildcard CNAME, then the target
 	}
 	for _, tcp := range []bool{false, true} {
 		proto := map[bool]string{false: "udp", true: "tcp"}[tcp]
@@ -194,7 +197,8 @@ func buildZone(t *testing.T, opts dnssec.SignOptions) (*dnssec.Signer, *server.S
 	add("www.example.com.", dns.TypeTXT, "hello")
 	add("b.example.com.", dns.TypeA, "192.0.2.11")
 	add("a.z.example.com.", dns.TypeAAAA, "2001:db8::1")
-	add("*.w.example.com.", dns.TypeA, "192.0.2.77") // wildcard with only an A record
+	add("*.w.example.com.", dns.TypeA, "192.0.2.77")           // wildcard with only an A record
+	add("*.c.example.com.", dns.TypeCNAME, "www.example.com.") // wildcard CNAME into the zone
 	if err := signer.EnsureWithOptions(zone, opts); err != nil {
 		t.Fatal(err)
 	}
