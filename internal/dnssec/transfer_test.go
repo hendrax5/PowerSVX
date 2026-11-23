@@ -218,10 +218,16 @@ func TestPresignedProofForAWildcardExpansionIsTheCoverOfTheNameOrTheClosestEnclo
 	salt := zs3.zk.Policy.nsec3Salt()
 	c := dz.nsec3Chain(salt)
 	ce := dz.closestEncloser("a.b.w.example.com.")
-	want3 := ownerSet([]*dns.NSEC3{
-		c.record(c.matchOrCover(nsec3Hash(ce, salt)), 300),
-		c.record(c.matchOrCover(nsec3Hash(nextCloser("a.b.w.example.com.", ce), salt)), 300),
-	})
+	// The two lookups can land on the same record, which is then sent once.
+	uniq := map[int]bool{
+		c.matchOrCover(nsec3Hash(ce, salt)):                                   true,
+		c.matchOrCover(nsec3Hash(nextCloser("a.b.w.example.com.", ce), salt)): true,
+	}
+	var wantRecs []*dns.NSEC3
+	for i := range uniq {
+		wantRecs = append(wantRecs, c.record(i, 300))
+	}
+	want3 := ownerSet(wantRecs)
 	// ce is w.example.com., an empty non-terminal with its own NSEC3 record.
 	if ownerSet(got3) != want3 {
 		t.Fatalf("NSEC3 expansion proof = %s, want %s", ownerSet(got3), want3)

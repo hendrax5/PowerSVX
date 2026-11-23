@@ -6,7 +6,9 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -325,12 +327,65 @@ func TestSignedTransferOverTCPWithTSIGStillWorksAcrossMessages(t *testing.T) {
 		h.auth.AddRecord(zoneName, rec(fmt.Sprintf("host%04d.example.com.", i), dns.TypeA, fmt.Sprintf("10.1.%d.%d", i/250, i%250+1)))
 	}
 	addr := startTCP(t, h.srv, map[string]string{"xfer-key.": tsigSecret})
+	if _, err := pullAXFR(addr, zoneName, "", ""); err == nil {
+		t.Fatal("a transfer without TSIG must be refused when TSIG is required")
+	}
 	rrs, err := pullAXFR(addr, zoneName, "xfer-key.", tsigSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantSOAFirstAndLast(t, rrs)
 	verifyEveryRRset(t, &dns.Msg{}, rrs, h.signer.DNSKEYs(zoneName))
+}
+
+// tcpWriter is a fake TCP connection that counts closes.
+type tcpWriter struct {
+	*fakeWriter
+	closed int
+}
+
+func (w *tcpWriter) LocalAddr() net.Addr { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53} }
+func (w *tcpWriter) Close() error        { w.closed++; return nil }
+
+func TestATransferThatCannotBeProducedAnswersSERVFAILOrIsCutShortNeverFinished(t *testing.T) {
+	h := signedPrimary(t, false)
+	req := new(dns.Msg)
+	req.SetAxfr(zoneName)
+	soa := findOrSynthSOA(zoneName, nil)
+	boom := errors.New("signing failed")
+
+	// Before anything was sent: a plain SERVFAIL.
+	w := &tcpWriter{fakeWriter: newWriter(anyClientIP)}
+	err := h.srv.sendTransfer(w, req, nil, func(emit func(dns.RR) error) error {
+		_ = emit(soa)
+		return boom
+	})
+	if !errors.Is(err, boom) || len(w.msgs) != 1 || w.msgs[0].Rcode != dns.RcodeServerFailure || len(w.msgs[0].Answer) != 0 || w.closed != 0 {
+		t.Fatalf("err=%v msgs=%v closed=%d, want a lone SERVFAIL", err, w.msgs, w.closed)
+	}
+
+	// After messages went out: the connection is closed, no closing SOA is sent.
+	w = &tcpWriter{fakeWriter: newWriter(anyClientIP)}
+	err = h.srv.sendTransfer(w, req, nil, func(emit func(dns.RR) error) error {
+		_ = emit(soa)
+		for i := 0; i < 2000; i++ {
+			if err := emit(&dns.A{Hdr: dns.RR_Header{Name: fmt.Sprintf("h%d.example.com.", i), Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300}, A: net.IPv4(192, 0, 2, 1)}); err != nil {
+				return err
+			}
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) || len(w.msgs) < 2 || w.closed != 1 {
+		t.Fatalf("err=%v messages=%d closed=%d, want several messages and one close", err, len(w.msgs), w.closed)
+	}
+	for _, m := range w.msgs {
+		if m.Rcode != dns.RcodeSuccess || len(m.Answer) == 0 {
+			t.Fatalf("unexpected message %v", m)
+		}
+		if m.Answer[len(m.Answer)-1].Header().Rrtype == dns.TypeSOA && m != w.msgs[0] {
+			t.Fatal("a cut-short transfer must not end with the SOA")
+		}
+	}
 }
 
 func TestSignedZoneTransferAccessRulesAreUnchanged(t *testing.T) {
@@ -529,21 +584,21 @@ func secondaryServesWhatItReceived(t *testing.T, nsec3 bool) {
 		name  string
 		qtype uint16
 	}{
-		{"www.example.com.", dns.TypeA},         // positive
-		{"www.example.com.", dns.TypeTXT},       // positive, other type
-		{"example.com.", dns.TypeSOA},           // the apex
-		{"example.com.", dns.TypeDNSKEY},        // the keys, signed by the KSK
-		{"example.com.", dns.TypeNS},            // apex NS
-		{"missing.example.com.", dns.TypeA},     // NXDOMAIN
-		{"x.www.example.com.", dns.TypeA},       // NXDOMAIN below a name
-		{"zz.example.com.", dns.TypeA},          // NXDOMAIN after the last name
-		{"www.example.com.", dns.TypeAAAA},      // NODATA
-		{"z.example.com.", dns.TypeA},           // NODATA for an empty non-terminal
-		{"foo.w.example.com.", dns.TypeA},       // answered through a wildcard
-		{"a.b.w.example.com.", dns.TypeA},       // wildcard, deeper
-		{"foo.w.example.com.", dns.TypeAAAA},    // wildcard NODATA
-		{"x.c.example.com.", dns.TypeA},         // wildcard CNAME and its target
-		{"example.com.", dns.TypeNSEC3PARAM},    // signed NSEC3PARAM (NODATA for an NSEC zone)
+		{"www.example.com.", dns.TypeA},      // positive
+		{"www.example.com.", dns.TypeTXT},    // positive, other type
+		{"example.com.", dns.TypeSOA},        // the apex
+		{"example.com.", dns.TypeDNSKEY},     // the keys, signed by the KSK
+		{"example.com.", dns.TypeNS},         // apex NS
+		{"missing.example.com.", dns.TypeA},  // NXDOMAIN
+		{"x.www.example.com.", dns.TypeA},    // NXDOMAIN below a name
+		{"zz.example.com.", dns.TypeA},       // NXDOMAIN after the last name
+		{"www.example.com.", dns.TypeAAAA},   // NODATA
+		{"z.example.com.", dns.TypeA},        // NODATA for an empty non-terminal
+		{"foo.w.example.com.", dns.TypeA},    // answered through a wildcard
+		{"a.b.w.example.com.", dns.TypeA},    // wildcard, deeper
+		{"foo.w.example.com.", dns.TypeAAAA}, // wildcard NODATA
+		{"x.c.example.com.", dns.TypeA},      // wildcard CNAME and its target
+		{"example.com.", dns.TypeNSEC3PARAM}, // signed NSEC3PARAM (NODATA for an NSEC zone)
 	}
 	for _, q := range queries {
 		got := compareWithPrimary(t, p, s, q.name, q.qtype)
