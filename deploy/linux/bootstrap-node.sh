@@ -83,18 +83,22 @@ if [[ ! -f ".env" ]]; then
   PG_PASS=$(openssl rand -hex 16 2>/dev/null || echo "psvx_pg_$(date +%s)")
   API_TOK=$(openssl rand -hex 24 2>/dev/null || echo "psvx_api_$(date +%s)")
   GRAF_PASS=$(openssl rand -hex 16 2>/dev/null || echo "psvx_graf_$(date +%s)")
-  DIST_PASS=$(openssl rand -hex 16 2>/dev/null || echo "psvx_dist_$(date +%s)")
-  DIST_KEY=$(openssl rand -hex 24 2>/dev/null || echo "psvx_key_$(date +%s)")
   cat > .env <<EOF
 PG_PASSWORD=${PG_PASS}
 API_TOKEN=${API_TOK}
 GRAFANA_USER=admin
 GRAFANA_PASSWORD=${GRAF_PASS}
-POWERSVX_DNSDIST_WEB_PASSWORD=${DIST_PASS}
-POWERSVX_DNSDIST_API_KEY=${DIST_KEY}
 EOF
   chmod 600 .env
 fi
+
+# dnsdist web password and API key: created here for a new .env, and for an existing one that lacks them.
+sh "$ROOT/deploy/linux/ensure-dnsdist-credentials.sh" "$ROOT/.env"
+for k in POWERSVX_DNSDIST_WEB_PASSWORD POWERSVX_DNSDIST_API_KEY; do
+  if [[ -z "${!k:-}" ]]; then
+    export "$k=$(grep -E "^$k=" "$ROOT/.env" | tail -n1 | cut -d= -f2- | tr -d "\"'")"
+  fi
+done
 
 # Seed bank whitelist if missing
 if [[ ! -f "data/blocklist/banks.lua" ]]; then
