@@ -22,6 +22,7 @@ import (
 	"github.com/powersvx/powersvx/internal/apiauth"
 	"github.com/powersvx/powersvx/internal/audit"
 	"github.com/powersvx/powersvx/internal/authoritative"
+	"github.com/powersvx/powersvx/internal/blockcdb"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/database"
 	"github.com/powersvx/powersvx/internal/dnsdistctl"
@@ -60,6 +61,11 @@ type API struct {
 
 	rpzAutoMu   sync.Mutex
 	rpzAutoStop chan struct{}
+
+	syncMu     sync.Mutex
+	syncCtx    context.Context
+	syncCancel context.CancelFunc
+	syncWG     sync.WaitGroup
 }
 
 func New(cfg *config.Config, srv *server.Server, db *database.DB, auth *authoritative.Store, log *slog.Logger) *API {
@@ -143,6 +149,7 @@ func (a *API) Handler() http.Handler {
 }
 
 func (a *API) Shutdown(ctx context.Context) error {
+	a.StopFilterSync(ctx)
 	if a.http == nil {
 		return nil
 	}
@@ -378,6 +385,9 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 		a.refreshUnboundEntryCount()
 		rpzDetail["entries"] = a.unboundRPZEntryCount()
 		rpzDetail["engine"] = "dnsdist-cdb"
+		if ls := a.filterSyncPayload(); ls != nil {
+			rpzDetail["last_sync"] = ls
+		}
 	}
 	if a.cfg.RPZ.Enabled {
 		if len(a.cfg.RPZ.Policies) == 0 {
@@ -406,9 +416,9 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 			rpzDetail["reason"] = "waiting for filter sync"
 		} else if config.DNSDistDataplane() && a.unboundRPZEntryCount() > 0 {
 			// Last sync may have failed while still serving a good CDB.
-			if feedSyncFailed(a.axfrFeedSnapshot()) {
+			if ls, ok := blockcdb.ReadSyncStatus(a.dataDir); feedSyncFailed(a.axfrFeedSnapshot()) || (ok && (ls.Status == blockcdb.SyncFailed || ls.Status == blockcdb.SyncInterrupted)) {
 				rpzDetail["status"] = "pass"
-				rpzDetail["reason"] = "filter sync failed; serving last CDB"
+				rpzDetail["reason"] = "filter sync did not complete; serving last CDB"
 				rpzDetail["filter_sync"] = "failed"
 			} else {
 				rpzDetail["filter_sync"] = "ok"
@@ -1390,13 +1400,13 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 		force := body.Force != nil && *body.Force
 		var startErr error
 		if axfrOnly {
-			startErr = a.startRPZAXFRRefresh(sync)
+			startErr = a.startRPZAXFRRefresh(sync, "policy update")
 		} else {
 			if hostsFullReloadDaytime(time.Now()) && !force {
 				http.Error(w, "full hosts RPZ reload blocked 06:00–22:00 local; set force=true or wait for update_at", http.StatusForbidden)
 				return
 			}
-			startErr = a.startRPZReload(sync)
+			startErr = a.startRPZReload(sync, "policy update")
 		}
 		payload := a.rpzPayload()
 		if startErr != nil {
@@ -1415,13 +1425,13 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 		force := r.URL.Query().Get("force") == "1" || r.URL.Query().Get("force") == "true"
 		var startErr error
 		if axfrOnly {
-			startErr = a.startRPZAXFRRefresh(false)
+			startErr = a.startRPZAXFRRefresh(false, "manual reload")
 		} else {
 			if hostsFullReloadDaytime(time.Now()) && !force {
 				http.Error(w, "full hosts RPZ reload blocked 06:00–22:00 local; set force=1 or wait for update_at", http.StatusForbidden)
 				return
 			}
-			startErr = a.startRPZReload(false)
+			startErr = a.startRPZReload(false, "manual reload")
 		}
 		if startErr != nil {
 			http.Error(w, startErr.Error(), http.StatusConflict)
@@ -1465,6 +1475,7 @@ func (a *API) rpzPayload() map[string]any {
 		"from_disk":            st.FromDisk,
 		"axfr_feeds":           axfrFeeds,
 		"axfr_events":          axfrEvents,
+		"filter_sync":          a.filterSyncPayload(),
 		"tsig_keys":            a.secondaryTSIGKeyNames(),
 		"filter_seed_url":      config.FilterSeedURL(),
 		"note":                 note,
@@ -1607,12 +1618,12 @@ func hostsFullReloadDaytime(now time.Time) bool {
 	return h >= 6 && h < 22
 }
 
-func (a *API) startRPZReload(sync bool) error {
-	return a.startDNSDistCDBRefresh(sync)
+func (a *API) startRPZReload(sync bool, reason string) error {
+	return a.startDNSDistCDBRefresh(sync, reason)
 }
 
-func (a *API) startRPZAXFRRefresh(sync bool) error {
-	return a.startDNSDistCDBRefresh(sync)
+func (a *API) startRPZAXFRRefresh(sync bool, reason string) error {
+	return a.startDNSDistCDBRefresh(sync, reason)
 }
 
 func notifyMasterMatch(clientIP string, masters []string) bool {
@@ -1672,7 +1683,7 @@ func (a *API) HandleRPZNotify(zone, clientIP string, tsigValid bool) bool {
 		}
 		return false
 	}
-	if err := a.startRPZAXFRRefresh(false); err != nil {
+	if err := a.startRPZAXFRRefresh(false, "RPZ NOTIFY from master"); err != nil {
 		a.log.Debug("rpz notify reload skip", "zone", zone, "err", err)
 	} else {
 		a.log.Info("rpz axfr notify reload started", "zone", zone, "client", clientIP)
@@ -1771,7 +1782,7 @@ func (a *API) StartRPZAutoUpdate() {
 					armHosts()
 					continue
 				}
-				if err := a.startRPZReload(false); err != nil {
+				if err := a.startRPZReload(false, "scheduled hosts refresh"); err != nil {
 					a.log.Debug("rpz hosts auto-update skip", "err", err)
 				} else {
 					a.log.Info("rpz hosts auto-update started")
@@ -1782,7 +1793,7 @@ func (a *API) StartRPZAutoUpdate() {
 					armAxfr()
 					continue
 				}
-				if err := a.startRPZAXFRRefresh(false); err != nil {
+				if err := a.startRPZAXFRRefresh(false, "scheduled AXFR refresh"); err != nil {
 					a.log.Debug("rpz axfr auto-update skip", "err", err)
 				} else {
 					a.log.Info("rpz axfr auto-update started")

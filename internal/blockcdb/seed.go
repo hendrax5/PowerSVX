@@ -3,6 +3,7 @@ package blockcdb
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -308,4 +309,13 @@ func BootstrapFromURL(dataDir, url string, timeout time.Duration) (SeedManifest,
 		return man, fmt.Errorf("seed HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return InstallSeedTarGz(dataDir, resp.Body)
+}
+
+// SyncNamesGuardedContext is SyncNamesGuarded that stops when ctx is done.
+func SyncNamesGuardedContext(ctx context.Context, dataDir string, names []string) (txtN, cdbN int, err error) {
+	prev := existingMetaEntries(dataDir)
+	if len(names) == 0 && prev > 0 {
+		return 0, prev, fmt.Errorf("refusing to wipe blocklist CDB (%d entries) with empty set", prev)
+	}
+	return SyncNamesContext(ctx, dataDir, names)
 }

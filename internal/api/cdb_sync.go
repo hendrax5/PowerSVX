@@ -23,7 +23,7 @@ func rpzUsesDNSDistDataplane() bool { return config.DNSDistDataplane() }
 
 // TriggerDNSDistCDBSync starts async AXFR/hosts → CDB rebuild (dnsdist dataplane).
 func (a *API) TriggerDNSDistCDBSync() error {
-	return a.startDNSDistCDBRefresh(false)
+	return a.startDNSDistCDBRefresh(false, "startup")
 }
 
 // TryBootstrapFilterSeed downloads GitHub (or configured) seed when CDB is empty.
@@ -52,37 +52,6 @@ func (a *API) TryBootstrapFilterSeed() (bool, error) {
 	a.log.Info("filter seed installed",
 		"url", url, "serial", man.Serial, "entries", man.Entries, "policy", man.Policy)
 	return true, nil
-}
-
-// startDNSDistCDBRefresh pulls AXFR/IXFR (or hosts) and builds domains.cdb for dnsdist.
-func (a *API) startDNSDistCDBRefresh(sync bool) error {
-	eng := a.srv.RPZ()
-	if eng != nil && !eng.TryBeginLoad() {
-		return errRPZ("rpz sync already in progress")
-	}
-	policies := a.rpzPolicyConfigs(a.cfg.RPZ.Policies)
-	run := func() {
-		n, err := a.pullAndWriteBlockCDB(policies)
-		if eng != nil {
-			eng.EndLoad(err)
-		}
-		if n > 0 {
-			a.unboundRPZEntries.Store(int64(n))
-		}
-		if err != nil {
-			a.log.Warn("dnsdist cdb refresh failed", "err", err)
-			return
-		}
-		_, _ = blockcdb.WriteBanksWhitelist(a.dataDir)
-		a.tryReloadDNSDist()
-		a.log.Info("dnsdist cdb refreshed", "entries", n)
-	}
-	if sync {
-		run()
-		return nil
-	}
-	go run()
-	return nil
 }
 
 func feedCachePath(dataDir, policyName string) string {
@@ -181,8 +150,8 @@ func streamAXFRToFeedFile(ctx context.Context, zone string, masters []string, au
 	return ser, m, cnt, nil
 }
 
-func (a *API) pullAndWriteBlockCDB(policies []rpz.PolicyConfig) (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+func (a *API) pullAndWriteBlockCDB(parent context.Context, policies []rpz.PolicyConfig) (int, error) {
+	ctx, cancel := context.WithTimeout(parent, 45*time.Minute)
 	defer cancel()
 
 	state := rpz.LoadAxfrState(rpz.AxfrStatePath(a.dataDir))
@@ -205,13 +174,18 @@ func (a *API) pullAndWriteBlockCDB(policies []rpz.PolicyConfig) (int, error) {
 	activeManifest := strings.Join(activeKeyList, "\n")
 	manifestPath := filepath.Join(blockcdb.Dir(a.dataDir), "feeds", "manifest.txt")
 	prevManifestBytes, _ := os.ReadFile(manifestPath)
-	needRewrite := string(prevManifestBytes) != activeManifest
+	// A previous run that changed the feeds but never finished the CDB must be redone even when
+	// the upstream serial has not moved, or the older CDB would stay in service.
+	needRewrite := string(prevManifestBytes) != activeManifest || blockcdb.RebuildPending(a.dataDir)
 
 	feedFiles := make([]string, 0, len(enabled))
 	for _, p := range enabled {
 		format := strings.ToLower(strings.TrimSpace(p.Format))
 		if format == "" {
 			format = "hosts"
+		}
+		if err := ctx.Err(); err != nil {
+			return existing, err
 		}
 		feedPath := feedCachePath(a.dataDir, p.Name)
 
@@ -258,6 +232,7 @@ func (a *API) pullAndWriteBlockCDB(policies []rpz.PolicyConfig) (int, error) {
 				continue
 			}
 
+			_ = blockcdb.MarkRebuildPending(a.dataDir)
 			var transferSerial uint32
 			var mode string
 			if localSerial > 0 && hasFeedFile {
@@ -349,6 +324,7 @@ func (a *API) pullAndWriteBlockCDB(policies []rpz.PolicyConfig) (int, error) {
 			if strings.TrimSpace(p.Source) == "" {
 				continue
 			}
+			_ = blockcdb.MarkRebuildPending(a.dataDir)
 			names, err := a.hostsNamesForCDB(p)
 			if err != nil {
 				if existing > 0 {
@@ -372,6 +348,7 @@ func (a *API) pullAndWriteBlockCDB(policies []rpz.PolicyConfig) (int, error) {
 	if len(feedFiles) == 0 {
 		_ = os.MkdirAll(filepath.Dir(manifestPath), 0o755)
 		_ = os.WriteFile(manifestPath, []byte(activeManifest), 0o644)
+		blockcdb.ClearRebuildPending(a.dataDir)
 		if err := blockcdb.EnsureEmpty(a.dataDir); err != nil {
 			return 0, err
 		}
@@ -388,12 +365,13 @@ func (a *API) pullAndWriteBlockCDB(policies []rpz.PolicyConfig) (int, error) {
 	}
 
 	filtered := blockcdb.FilterBlockNames(all)
-	_, cdbN, err := blockcdb.SyncNamesGuarded(a.dataDir, filtered)
+	_, cdbN, err := blockcdb.SyncNamesGuardedContext(ctx, a.dataDir, filtered)
 	if err != nil {
 		return 0, err
 	}
 	_ = os.MkdirAll(filepath.Dir(manifestPath), 0o755)
 	_ = os.WriteFile(manifestPath, []byte(activeManifest), 0o644)
+	blockcdb.ClearRebuildPending(a.dataDir)
 	return cdbN, nil
 }
 

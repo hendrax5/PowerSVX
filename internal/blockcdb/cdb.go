@@ -2,6 +2,7 @@ package blockcdb
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -39,8 +40,17 @@ type slot struct {
 	h, pos uint32
 }
 
+// ctxCheckEvery is how many names are processed between context checks while writing.
+const ctxCheckEvery = 4096
+
 // WriteDomainsTxt writes one lowercase domain per line (no trailing dots).
 func WriteDomainsTxt(path string, names []string) (int, error) {
+	return WriteDomainsTxtContext(context.Background(), path, names)
+}
+
+// WriteDomainsTxtContext is WriteDomainsTxt that stops when ctx is done. On any error,
+// including cancellation, its temporary file is removed and the existing file is untouched.
+func WriteDomainsTxtContext(ctx context.Context, path string, names []string) (n int, err error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return 0, err
 	}
@@ -49,10 +59,21 @@ func WriteDomainsTxt(path string, names []string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = f.Close()
+			_ = os.Remove(tmp)
+		}
+	}()
 	w := bufio.NewWriterSize(f, 1<<20)
-	n := 0
 	seen := make(map[string]struct{}, len(names)/2+1)
-	for _, name := range names {
+	for i, name := range names {
+		if i%ctxCheckEvery == 0 {
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
+		}
 		name = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
 		if name == "" || name == "localhost" {
 			continue
@@ -62,34 +83,35 @@ func WriteDomainsTxt(path string, names []string) (int, error) {
 		}
 		seen[name] = struct{}{}
 		if _, err := w.WriteString(name); err != nil {
-			_ = f.Close()
-			_ = os.Remove(tmp)
 			return 0, err
 		}
 		if err := w.WriteByte('\n'); err != nil {
-			_ = f.Close()
-			_ = os.Remove(tmp)
 			return 0, err
 		}
 		n++
 	}
 	if err := w.Flush(); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
 		return 0, err
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
 		return 0, err
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return 0, err
 	}
+	committed = true
 	return n, nil
 }
 
 // BuildCDB writes a tinycdb-compatible CDB: key=domain, value="1".
 func BuildCDB(cdbPath string, names []string) (int, error) {
+	return BuildCDBContext(context.Background(), cdbPath, names)
+}
+
+// BuildCDBContext is BuildCDB that stops when ctx is done. The CDB is built in cdbPath+".tmp"
+// and renamed over cdbPath only when complete, so a cancelled or failed build leaves the
+// existing CDB byte-identical and removes its own temporary file.
+func BuildCDBContext(ctx context.Context, cdbPath string, names []string) (n int, err error) {
 	if err := os.MkdirAll(filepath.Dir(cdbPath), 0o755); err != nil {
 		return 0, err
 	}
@@ -98,18 +120,28 @@ func BuildCDB(cdbPath string, names []string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if _, err := f.Write(make([]byte, headerSize)); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
+	committed := false
+	defer func() {
+		if !committed {
+			_ = f.Close()
+			_ = os.Remove(tmp)
+		}
+	}()
+	w := bufio.NewWriterSize(f, 1<<20)
+	if _, err := w.Write(make([]byte, headerSize)); err != nil {
 		return 0, err
 	}
 	pos := uint32(headerSize)
 	var tables [256][]slot
 	val := []byte("1")
-	n := 0
 	seen := make(map[string]struct{}, len(names)/2+1)
 	buf := make([]byte, 8)
-	for _, name := range names {
+	for i, name := range names {
+		if i%ctxCheckEvery == 0 {
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
+		}
 		name = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
 		if name == "" || name == "localhost" {
 			continue
@@ -122,25 +154,22 @@ func BuildCDB(cdbPath string, names []string) (int, error) {
 		recPos := pos
 		binary.LittleEndian.PutUint32(buf[0:4], uint32(len(key)))
 		binary.LittleEndian.PutUint32(buf[4:8], uint32(len(val)))
-		if _, err := f.Write(buf); err != nil {
-			_ = f.Close()
-			_ = os.Remove(tmp)
+		if _, err := w.Write(buf); err != nil {
 			return 0, err
 		}
-		if _, err := f.Write(key); err != nil {
-			_ = f.Close()
-			_ = os.Remove(tmp)
+		if _, err := w.Write(key); err != nil {
 			return 0, err
 		}
-		if _, err := f.Write(val); err != nil {
-			_ = f.Close()
-			_ = os.Remove(tmp)
+		if _, err := w.Write(val); err != nil {
 			return 0, err
 		}
 		pos += 8 + uint32(len(key)) + uint32(len(val))
 		h := cdbHash(key)
 		tables[h&0xff] = append(tables[h&0xff], slot{h: h, pos: recPos})
 		n++
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 
 	header := make([]byte, headerSize)
@@ -169,44 +198,52 @@ func BuildCDB(cdbPath string, names []string) (int, error) {
 				}
 			}
 		}
-		if _, err := f.Write(cell); err != nil {
-			_ = f.Close()
-			_ = os.Remove(tmp)
+		if _, err := w.Write(cell); err != nil {
 			return 0, err
 		}
 		pos += tlen * 8
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
+	if err := w.Flush(); err != nil {
+		return 0, err
 	}
 	if _, err := f.WriteAt(header, 0); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
 		return 0, err
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
 		return 0, err
 	}
 	if err := os.Rename(tmp, cdbPath); err != nil {
 		return 0, err
 	}
+	committed = true
 	return n, nil
 }
 
 // SyncNames writes domains.txt + domains.cdb under Dir(dataDir).
 func SyncNames(dataDir string, names []string) (txtN, cdbN int, err error) {
+	return SyncNamesContext(context.Background(), dataDir, names)
+}
+
+// SyncNamesContext is SyncNames that stops when ctx is done, leaving no temporary files and
+// the previous domains.cdb in place.
+func SyncNamesContext(ctx context.Context, dataDir string, names []string) (txtN, cdbN int, err error) {
 	dir := Dir(dataDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return 0, 0, err
 	}
-	txtN, err = WriteDomainsTxt(filepath.Join(dir, DomainsFile), names)
+	txtN, err = WriteDomainsTxtContext(ctx, filepath.Join(dir, DomainsFile), names)
 	if err != nil {
 		return 0, 0, fmt.Errorf("domains.txt: %w", err)
 	}
-	cdbN, err = BuildCDB(filepath.Join(dir, CDBFile), names)
+	cdbN, err = BuildCDBContext(ctx, filepath.Join(dir, CDBFile), names)
 	if err != nil {
 		return txtN, 0, fmt.Errorf("domains.cdb: %w", err)
 	}
-	_ = os.WriteFile(filepath.Join(dir, "blocklist.meta.json"), []byte(fmt.Sprintf(
-		`{"domains":%d,"cdb":%d,"format":"cdb"}`+"\n", txtN, cdbN)), 0o644)
+	_ = writeFileAtomic(filepath.Join(dir, MetaFile), []byte(fmt.Sprintf(
+		`{"domains":%d,"cdb":%d,"format":"cdb"}`+"\n", txtN, cdbN)))
 	return txtN, cdbN, nil
 }
 

@@ -22,6 +22,13 @@ import {
   Stat,
 } from '../../ui'
 
+// A failed or cut-off filter rebuild keeps the last good CDB serving; say so on the card.
+function lastSyncNote(s) {
+  if (!s || s.status === 'ok' || s.status === 'running') return ''
+  const when = s.finished_at ? new Date(s.finished_at).toLocaleString() : ''
+  return ` · last sync ${s.status}${when ? ` ${when}` : ''}${s.error ? `: ${s.error}` : ''}`
+}
+
 function formatEventTime(t) {
   try {
     return new Date(t).toLocaleTimeString()
@@ -302,7 +309,7 @@ export default function Dashboard() {
       role: 'Official National Blocklist & CDB Fast Spoofing',
       status: checks.rpz?.status || (cdbEntries > 0 ? 'pass' : 'disabled'),
       latency: cdbEntries > 0 ? 'Instant (CDB)' : '—',
-      detail: `${Number(cdbEntries).toLocaleString()} domains synced`,
+      detail: `${Number(cdbEntries).toLocaleString()} domains synced${lastSyncNote(checks.rpz?.last_sync)}`,
     },
     {
       name: 'PostgreSQL Relational DB',
