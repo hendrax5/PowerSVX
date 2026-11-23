@@ -21,7 +21,7 @@ func node(t *testing.T) string {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"gen-unbound-conf.sh", "gen-dnsdist-conf.sh", "calc-mem-env.sh"} {
+	for _, name := range []string{"gen-unbound-conf.sh", "gen-dnsdist-conf.sh", "calc-mem-env.sh", "ensure-dnsdist-credentials.sh"} {
 		b, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
@@ -36,7 +36,7 @@ func node(t *testing.T) string {
 func sh(t *testing.T, root string, env []string, script string, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command("sh", append([]string{filepath.Join(root, "deploy", "linux", script)}, args...)...)
-	cmd.Env = append(os.Environ(), append([]string{"POWERSVX_DNS_DATAPLANE=dnsdist"}, env...)...)
+	cmd.Env = append(os.Environ(), append([]string{"POWERSVX_DNS_DATAPLANE=dnsdist", "POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1"}, env...)...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

@@ -40,13 +40,7 @@ func DefaultClient() *Client {
 		user = "dontcare"
 	}
 	pass := strings.TrimSpace(os.Getenv("POWERSVX_DNSDIST_WEB_PASSWORD"))
-	if pass == "" {
-		pass = "powersvx"
-	}
 	key := strings.TrimSpace(os.Getenv("POWERSVX_DNSDIST_API_KEY"))
-	if key == "" {
-		key = "powersvx-api"
-	}
 	container := strings.TrimSpace(os.Getenv("POWERSVX_DNSDIST_CONTAINER"))
 	if container == "" {
 		container = "powersvx-dnsdist-1"

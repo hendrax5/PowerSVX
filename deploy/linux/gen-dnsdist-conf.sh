@@ -63,8 +63,29 @@ if [ "$TCP_THREADS" -gt 32 ]; then TCP_THREADS=32; fi
 SPOOF_V4="${POWERSVX_SPOOF_IPV4:-139.255.196.196}"
 SPOOF_V6="${POWERSVX_SPOOF_IPV6:-::}"
 DNSDIST_KEY="${POWERSVX_DNSDIST_KEY:-powersvx-dnsdist-console}"
-WEB_PASS="${POWERSVX_DNSDIST_WEB_PASSWORD:-powersvx}"
-API_KEY="${POWERSVX_DNSDIST_API_KEY:-powersvx-api}"
+# The dnsdist web server and API (loopback) need a password and an API key. There is no built-in
+# default: the values come from the environment (bootstrap-node.sh and apply-update.sh create them
+# in .env). POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1 opts in to fixed, publicly known values for
+# local development and tests only. The values are never printed.
+WEB_PASS="${POWERSVX_DNSDIST_WEB_PASSWORD:-}"
+API_KEY="${POWERSVX_DNSDIST_API_KEY:-}"
+if [ -z "$WEB_PASS" ] || [ -z "$API_KEY" ]; then
+  if [ "${POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS:-}" = "1" ]; then
+    if [ -z "$WEB_PASS" ]; then WEB_PASS="powersvx"; fi
+    if [ -z "$API_KEY" ]; then API_KEY="powersvx-api"; fi
+    echo "WARNING: using the built-in default dnsdist web credentials (POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1). Development only." >&2
+  else
+    echo "POWERSVX_DNSDIST_WEB_PASSWORD and POWERSVX_DNSDIST_API_KEY must both be set to non-empty values; refusing to write a dnsdist configuration with a built-in default. Create them with deploy/linux/ensure-dnsdist-credentials.sh (apply-update.sh does this), or set POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1 for local development only." >&2
+    exit 1
+  fi
+fi
+# Both values are written inside Lua double quotes.
+for v in "$WEB_PASS" "$API_KEY"; do
+  case "$v" in
+    *\"*|*\\*|*"
+"*) echo "POWERSVX_DNSDIST_WEB_PASSWORD and POWERSVX_DNSDIST_API_KEY must not contain a double quote, a backslash or a newline" >&2; exit 1 ;;
+  esac
+done
 RECURSIVE_PORT="${POWERSVX_UNBOUND_BACKEND_PORT:-5353}"
 AUTH_PORT="${POWERSVX_AUTH_BACKEND_PORT:-5354}"
 # 1 (default): dnsdist sends a PROXY protocol v2 header with the real client address to the Auth Backend

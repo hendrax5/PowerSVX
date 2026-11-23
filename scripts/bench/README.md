@@ -131,6 +131,7 @@ The Core Profile needs three containers for this benchmark: dnsdist, Unbound and
 ```bash
 sudo scripts/bench/size-slice.sh up
 eval "$(scripts/bench/size-slice.sh env)"       # POWERSVX_HOST_CPUS=2, POWERSVX_HOST_MEM_MB=2048
+export POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1   # throwaway bench host; otherwise export the two dnsdist web values from .env
 bash deploy/linux/gen-unbound-conf.sh && bash deploy/linux/gen-dnsdist-conf.sh
 eval "$(deploy/linux/calc-mem-env.sh)"
 docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \
