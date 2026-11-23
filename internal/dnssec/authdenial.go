@@ -230,6 +230,12 @@ func rrsigLabels(owner string) uint8 {
 
 // signRRset signs one RRset with the zone signing key.
 func signRRset(zone string, rrs []dns.RR, key *dns.DNSKEY, priv crypto.Signer, now time.Time) (*dns.RRSIG, error) {
+	return signRRsetWindow(zone, rrs, key, priv,
+		uint32(now.Add(-signInceptionSkew).Unix()), uint32(now.Add(signValidity).Unix()))
+}
+
+// signRRsetWindow signs one RRset with a chosen validity window.
+func signRRsetWindow(zone string, rrs []dns.RR, key *dns.DNSKEY, priv crypto.Signer, inception, expiration uint32) (*dns.RRSIG, error) {
 	h := rrs[0].Header()
 	sig := &dns.RRSIG{
 		Hdr:         dns.RR_Header{Name: h.Name, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: h.Ttl},
@@ -237,8 +243,8 @@ func signRRset(zone string, rrs []dns.RR, key *dns.DNSKEY, priv crypto.Signer, n
 		Algorithm:   key.Algorithm,
 		Labels:      rrsigLabels(h.Name),
 		OrigTtl:     h.Ttl,
-		Expiration:  uint32(now.Add(signValidity).Unix()),
-		Inception:   uint32(now.Add(-signInceptionSkew).Unix()),
+		Expiration:  expiration,
+		Inception:   inception,
 		KeyTag:      key.KeyTag(),
 		SignerName:  zone,
 	}

@@ -106,6 +106,10 @@ allow_axfr = false
 require_tsig = true
 # notify = ["192.0.2.10:53"]
 # allow_from = ["10.0.0.0/8"]
+# Signed zones: how long the RRSIGs in a transfer are valid, and how often the SOA
+# serial moves so secondaries pull renewed ones (refresh is held to half of validity).
+# signature_validity_days = 30
+# signature_refresh_days = 7
 
 [api]
 rest_enabled = true

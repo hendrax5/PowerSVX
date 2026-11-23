@@ -294,7 +294,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			m.SetReply(req)
 			m.Authoritative = true
 			zone := s.auth.FindZone(qname)
-			if qtype == dns.TypeDNSKEY && s.signer != nil && s.signer.Enabled(zone) {
+			if qtype == dns.TypeDNSKEY && s.signsLocally(zone) {
 				m.Answer = s.signer.DNSKEYs(zone)
 				m.Rcode = dns.RcodeSuccess
 				s.signer.SignResponse(zone, req, m)
@@ -307,7 +307,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 				// Each zone's part of the answer is signed with that zone's key.
 				for _, seg := range res.Segments {
 					part := &dns.Msg{Answer: seg.RRs}
-					if qtype != dns.TypeDNSKEY && s.signer != nil && s.signer.Enabled(seg.Zone) {
+					if qtype != dns.TypeDNSKEY && s.signsLocally(seg.Zone) {
 						if seg.Wildcard != "" {
 							// Synthesized from a wildcard: sign the wildcard's RRset and prove the name does not exist.
 							s.signer.SignWildcardResponse(seg.Zone, seg.Wildcard, req, part)
@@ -316,6 +316,12 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 							}
 						} else {
 							s.signer.SignResponse(seg.Zone, req, part)
+						}
+					} else if wantsDO(req) && s.presigned(seg.Zone) {
+						// A Secondary Zone is served as received: its signatures are zone data.
+						part.Answer = s.withStoredSignatures(seg.Zone, seg.Wildcard, seg.RRs)
+						if seg.Wildcard != "" {
+							s.addStoredProof(seg.Zone, seg.Name, dnssec.ProofWildcardExpansion, m)
 						}
 					}
 					m.Answer = append(m.Answer, part.Answer...)
@@ -331,10 +337,16 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 					if soaRRs, ok := s.auth.LookupScoped(res.Zone, dns.TypeSOA, viewName, geoTag); ok && len(soaRRs) > 0 {
 						m.Ns = append(m.Ns, soaRRs[0])
 					}
-					if s.signer != nil && s.signer.Enabled(res.Zone) {
+					if s.signsLocally(res.Zone) {
 						if err := s.signer.SignDenialForNames(res.Zone, res.Name, s.auth.ZoneNameTypes(res.Zone, viewName, geoTag), req, m); err != nil && s.log != nil {
 							s.log.Warn("dnssec denial incomplete", "zone", res.Zone, "qname", res.Name, "err", err)
 						}
+					} else if wantsDO(req) && s.presigned(res.Zone) {
+						kind := dnssec.ProofNODATA
+						if !res.Exists {
+							kind = dnssec.ProofNXDOMAIN
+						}
+						s.addStoredProof(res.Zone, res.Name, kind, m)
 					}
 				}
 			}

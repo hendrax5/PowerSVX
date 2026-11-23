@@ -11,7 +11,8 @@ import (
 	"github.com/powersvx/powersvx/internal/metrics"
 )
 
-// handleTransfer serves AXFR. IXFR is answered as a full-zone AXFR (no journal).
+// handleTransfer serves AXFR and IXFR. IXFR sends the changes since the client's
+// serial for an unsigned zone and the whole zone for a signed one (xfer_signed.go).
 func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP string) bool {
 	if len(req.Question) == 0 {
 		return false
@@ -58,7 +59,21 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 	}
 
 	zone := config.NormalizeName(q.Name)
-	recs, ok := s.auth.GetRecords(zone)
+	signed := s.signsLocally(zone)
+	var recs []authoritative.Record
+	var ok bool
+	if signed {
+		// A signature covers one RRset, so a signed zone goes out as the client's own
+		// view of it shows (split horizon: the view its address is in; GeoDNS: the
+		// default answer), never as the union of all views.
+		view := "default"
+		if s.views != nil {
+			view = s.views.Match(clientIP)
+		}
+		recs, ok = s.auth.RecordsScoped(zone, view, "default")
+	} else {
+		recs, ok = s.auth.GetRecords(zone)
+	}
 	if !ok {
 		m := new(dns.Msg)
 		m.SetRcode(req, dns.RcodeNameError)
@@ -67,16 +82,21 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 	}
 
 	soa := findOrSynthSOA(zone, recs)
-	// NSEC3PARAM is published from the signing policy, not stored; a zone that has
-	// one is always sent in full so a secondary never misses a parameter change.
-	np := s.nsec3param(zone, zone, 0, "", "")
 	var rrs []dns.RR
 	if q.Qtype == dns.TypeIXFR && len(req.Ns) > 0 {
 		if clientSOA, isSOA := req.Ns[0].(*dns.SOA); isSOA {
-			if deltas, curSerial, ok := s.auth.IXFRDeltas(zone, clientSOA.Serial); ok {
+			if signed {
+				// The signatures of a signed zone change without any record changing
+				// (a new refresh interval, a rolled key), and a delta would leave a
+				// secondary with stale or missing ones. RFC 1995 section 4 lets the
+				// server answer with the whole zone; only "you are current" is short.
+				if clientSOA.Serial != 0 && int32(soa.(*dns.SOA).Serial-clientSOA.Serial) <= 0 {
+					rrs = []dns.RR{soa}
+				}
+			} else if deltas, curSerial, ok := s.auth.IXFRDeltas(zone, clientSOA.Serial); ok {
 				if curSerial == clientSOA.Serial || int32(curSerial-clientSOA.Serial) <= 0 {
 					rrs = []dns.RR{soa}
-				} else if np == nil {
+				} else {
 					rrs = make([]dns.RR, 0, 16)
 					rrs = append(rrs, soa)
 					for _, d := range deltas {
@@ -108,31 +128,26 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 			}
 		}
 	}
+	var produce func(emit func(dns.RR) error) error
 	if len(rrs) == 0 {
-		rrs = make([]dns.RR, 0, len(recs)+2)
-		rrs = append(rrs, soa)
-		for _, rec := range recs {
-			if rec.Type == dns.TypeSOA {
-				continue
+		if signed {
+			produce = s.signedZoneStream(zone, soa, recs, time.Now().UTC())
+		} else {
+			rrs = make([]dns.RR, 0, len(recs)+2)
+			rrs = append(rrs, soa)
+			for _, rec := range recs {
+				if rec.Type == dns.TypeSOA {
+					continue
+				}
+				if rr := authoritative.RecordToRR(rec); rr != nil {
+					rrs = append(rrs, rr)
+				}
 			}
-			if rr := authoritative.RecordToRR(rec); rr != nil {
-				rrs = append(rrs, rr)
-			}
+			rrs = append(rrs, soa)
 		}
-		if np != nil {
-			rrs = append(rrs, np)
-		}
-		rrs = append(rrs, soa)
 	}
 
-	// Multi-message AXFR/IXFR transfer stream over TCP.
-	ch := make(chan *dns.Envelope)
-	tr := new(dns.Transfer)
-	go func() {
-		ch <- &dns.Envelope{RR: rrs}
-		close(ch)
-	}()
-	if err := tr.Out(w, req, ch); err != nil {
+	if err := s.sendTransfer(w, req, rrs, produce); err != nil {
 		s.log.Warn("xfer failed", "zone", zone, "qtype", dns.TypeToString[q.Qtype], "err", err)
 	} else if s.kominfo != nil {
 		s.kominfo.RecordAXFRPull(zone, clientIP)
@@ -222,7 +237,7 @@ func (s *Server) NotifySecondaries(zone string) {
 // qname/qtype ask for it (qtype NSEC3PARAM at the apex; any qtype when qtype is
 // 0), and the zone is signed with NSEC3. Nil otherwise.
 func (s *Server) nsec3param(zone, qname string, qtype uint16, viewName, geoTag string) *dns.NSEC3PARAM {
-	if s.signer == nil || qtype != dns.TypeNSEC3PARAM && qtype != 0 || qname != zone {
+	if !s.signsLocally(zone) || qtype != dns.TypeNSEC3PARAM && qtype != 0 || qname != zone {
 		return nil
 	}
 	return s.signer.NSEC3PARAM(zone, s.apexNegativeTTL(zone, viewName, geoTag))
