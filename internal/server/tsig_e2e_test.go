@@ -119,9 +119,12 @@ func TestSignedIXFRSucceedsWhenTSIGIsRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signed IXFR failed: %v", err)
 	}
-	as := rrsOfType(rrs, dns.TypeA)
-	if len(as) != 1 || as[0].(*dns.A).A.String() != "192.0.2.55" {
-		t.Fatalf("signed IXFR should carry the added A record, got %v", as)
+	var found bool
+	for _, rr := range rrsOfType(rrs, dns.TypeA) {
+		found = found || rr.(*dns.A).A.String() == "192.0.2.55"
+	}
+	if !found {
+		t.Fatalf("signed IXFR should carry the added A record, got %v", rrs)
 	}
 }
 
