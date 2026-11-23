@@ -152,7 +152,7 @@ fi
 echo "==> [6/7] Starting Docker Compose stack (Host Networking)..."
 export GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-export POWERSVX_VERSION="${POWERSVX_VERSION:-1.7.1}"
+export POWERSVX_VERSION="${POWERSVX_VERSION:-1.7.2}"
 export GOGC=50
 
 GHCR_USER_VAL="${GHCR_USER:-}"
