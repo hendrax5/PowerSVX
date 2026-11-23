@@ -11,8 +11,9 @@ import (
 	"github.com/powersvx/powersvx/internal/metrics"
 )
 
-// handleTransfer serves AXFR and IXFR. IXFR sends the changes since the client's
-// serial for an unsigned zone and the whole zone for a signed one (xfer_signed.go).
+// handleTransfer serves AXFR and IXFR. Both carry the zone as the requesting
+// address would be answered (see transferScope); an IXFR is the whole zone, or the
+// lone SOA when the client is current.
 func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP string) bool {
 	if len(req.Question) == 0 {
 		return false
@@ -60,20 +61,11 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 
 	zone := config.NormalizeName(q.Name)
 	signed := s.signsLocally(zone)
-	var recs []authoritative.Record
-	var ok bool
-	if signed {
-		// A signature covers one RRset, so a signed zone goes out as the client's own
-		// view of it shows (split horizon: the view its address is in; GeoDNS: the
-		// default answer), never as the union of all views.
-		view := "default"
-		if s.views != nil {
-			view = s.views.Match(clientIP)
-		}
-		recs, ok = s.auth.RecordsScoped(zone, view, "default")
-	} else {
-		recs, ok = s.auth.GetRecords(zone)
-	}
+	// A transfer carries what the primary would answer to the requesting address
+	// (its split-horizon view, its GeoDNS answer), for a signed and an unsigned
+	// zone alike, never the union of all views and geo tags.
+	view, geoTag := s.transferScope(clientIP)
+	recs, ok := s.auth.RecordsScoped(zone, view, geoTag)
 	if !ok {
 		m := new(dns.Msg)
 		m.SetRcode(req, dns.RcodeNameError)
@@ -85,46 +77,13 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 	var rrs []dns.RR
 	if q.Qtype == dns.TypeIXFR && len(req.Ns) > 0 {
 		if clientSOA, isSOA := req.Ns[0].(*dns.SOA); isSOA {
-			if signed {
-				// The signatures of a signed zone change without any record changing
-				// (a new refresh interval, a rolled key), and a delta would leave a
-				// secondary with stale or missing ones. RFC 1995 section 4 lets the
-				// server answer with the whole zone; only "you are current" is short.
-				if clientSOA.Serial != 0 && int32(soa.(*dns.SOA).Serial-clientSOA.Serial) <= 0 {
-					rrs = []dns.RR{soa}
-				}
-			} else if deltas, curSerial, ok := s.auth.IXFRDeltas(zone, clientSOA.Serial); ok {
-				if curSerial == clientSOA.Serial || int32(curSerial-clientSOA.Serial) <= 0 {
-					rrs = []dns.RR{soa}
-				} else {
-					rrs = make([]dns.RR, 0, 16)
-					rrs = append(rrs, soa)
-					for _, d := range deltas {
-						oldSOA := *soa.(*dns.SOA)
-						oldSOA.Serial = d.FromSerial
-						rrs = append(rrs, &oldSOA)
-						for _, rem := range d.Removed {
-							if rem.Type == dns.TypeSOA {
-								continue
-							}
-							if rr := authoritative.RecordToRR(rem); rr != nil {
-								rrs = append(rrs, rr)
-							}
-						}
-						newSOA := *soa.(*dns.SOA)
-						newSOA.Serial = d.ToSerial
-						rrs = append(rrs, &newSOA)
-						for _, add := range d.Added {
-							if add.Type == dns.TypeSOA {
-								continue
-							}
-							if rr := authoritative.RecordToRR(add); rr != nil {
-								rrs = append(rrs, rr)
-							}
-						}
-					}
-					rrs = append(rrs, soa)
-				}
+			// The stored deltas are not per view or geo tag, and a signed zone's
+			// signatures change without any record changing, so a delta could carry
+			// records the client may not see or leave it with stale ones. RFC 1995
+			// section 4 lets the server answer with the whole zone; only "you are
+			// current" is short.
+			if clientSOA.Serial != 0 && int32(soa.(*dns.SOA).Serial-clientSOA.Serial) <= 0 {
+				rrs = []dns.RR{soa}
 			}
 		}
 	}
@@ -154,6 +113,20 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 	}
 	metrics.QueriesTotal.WithLabelValues(protocolFromWriter(w), dns.TypeToString[q.Qtype]).Inc()
 	return true
+}
+
+// transferScope is the view and GeoDNS tag a transfer to clientIP is made for:
+// the ones a query from that address is answered with. A transfer has no client
+// subnet option, so the geo tag follows the address itself.
+func (s *Server) transferScope(clientIP string) (view, geoTag string) {
+	view, geoTag = "default", "default"
+	if s.views != nil {
+		view = s.views.Match(clientIP)
+	}
+	if s.geo != nil && s.geo.Enabled() {
+		geoTag = s.geo.Lookup(clientIP).Tag
+	}
+	return view, geoTag
 }
 
 // tsigDenial decides whether a request fails a configured TSIG requirement.

@@ -698,7 +698,7 @@ func TestAXFRForUnknownZoneAnswersNXDOMAIN(t *testing.T) {
 	}
 }
 
-func TestIXFRSendsOnlyChangesSinceTheClientSerial(t *testing.T) {
+func TestIXFRSendsTheWholeZoneWhenTheClientSerialIsBehind(t *testing.T) {
 	h := newHarness(t, withConfig(allowTransfer))
 	h.addZone(zoneName, rec("www.example.com.", dns.TypeA, "192.0.2.10"))
 	start := h.auth.CurrentSOASerial(zoneName)
@@ -710,12 +710,11 @@ func TestIXFRSendsOnlyChangesSinceTheClientSerial(t *testing.T) {
 
 	rrs, _ := h.transfer(newWriter(anyClientIP), zoneName, dns.TypeIXFR, start)
 	serials := soaSerials(rrs)
-	if len(serials) != 4 || serials[0] != end || serials[1] != start || serials[2] != end || serials[3] != end {
-		t.Fatalf("IXFR SOA framing = %v, want [%d %d %d %d]", serials, end, start, end, end)
+	if len(serials) != 2 || serials[0] != end || serials[1] != end {
+		t.Fatalf("IXFR SOA framing = %v, want the whole-zone pair [%d %d] (no deltas: ticket #67)", serials, end, end)
 	}
-	as := rrsOfType(rrs, dns.TypeA)
-	if len(as) != 1 || as[0].(*dns.A).A.String() != "192.0.2.55" {
-		t.Fatalf("IXFR should carry only the added A record, got %v", as)
+	if as := rrsOfType(rrs, dns.TypeA); len(as) != 2 {
+		t.Fatalf("IXFR should carry the whole zone, got %v", as)
 	}
 }
 
