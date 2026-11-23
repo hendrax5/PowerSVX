@@ -131,8 +131,15 @@ func TestDnsdistCacheShards(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, dd := generateWith(t, tc.cpus, "16384", "POWERSVX_DNSDIST_CACHE_SHARDS="+tc.value)
 			mustContain(t, "dnsdist", dd, "pc = newPacketCache(1000000,{maxTTL=86400, minTTL=60, "+tc.want)
-			// Only the main cache is sharded; the Authoritative Zone cache is not what is measured.
-			mustContain(t, "dnsdist", dd, "pcAuth = newPacketCache(50000,{maxTTL=300, minTTL=0, maxNegativeTTL=60})\n")
+			// With the PROXY protocol (the default) the Auth Backend pool has no cache at all.
+			if strings.Contains(dd, "pcAuth") {
+				t.Error("the Auth Backend pool has a packet cache in PROXY mode")
+			}
+			// Only the main cache is sharded; with the PROXY protocol off, the Authoritative
+			// Zone cache is left as it is.
+			_, dd = generateWith(t, tc.cpus, "16384", "POWERSVX_DNSDIST_CACHE_SHARDS="+tc.value, "POWERSVX_AUTH_PROXY_PROTOCOL=0")
+			mustContain(t, "dnsdist", dd, "pc = newPacketCache(1000000,{maxTTL=86400, minTTL=60, "+tc.want,
+				"pcAuth = newPacketCache(50000,{maxTTL=300, minTTL=0, maxNegativeTTL=60})\n")
 		})
 	}
 }
