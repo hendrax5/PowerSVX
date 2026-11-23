@@ -43,10 +43,14 @@ default_tag = "default"
 overrides = [{ ip = "%[1]s", country = "ID" }, { ip = "%[2]s", country = "US" }]
 
 [transfer]
+# The test is about the allow list judging the real client, not TSIG: unsigned requests must reach it.
+require_tsig = false
 allow_axfr = true
 allow_from = ["%[1]s/32"]
 
 [update]
+# Same as [transfer]: no TSIG key in this test.
+require_tsig = false
 enabled = true
 allow_from = ["%[1]s/32"]
 `, a, b)
