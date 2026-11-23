@@ -104,7 +104,7 @@ type dataplane struct {
 	udp53, tcp53, dot, doh, doq string
 }
 
-func startDataplane(t *testing.T) *dataplane {
+func startDataplane(t *testing.T, tuning ...string) *dataplane {
 	t.Helper()
 	root := repoRoot(t)
 	work := t.TempDir()
@@ -121,11 +121,27 @@ func startDataplane(t *testing.T) *dataplane {
 		"POWERSVX_HOST_CPUS=2",
 		"POWERSVX_HOST_MEM_MB=2048",
 	}
+	genEnv = append(genEnv, tuning...) // a later value wins over an earlier one
 	run(t, work, genEnv, "sh", "deploy/linux/gen-dnsdist-conf.sh")
 	if err := os.MkdirAll(filepath.Join(work, "configs", "unbound"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	run(t, work, genEnv, "sh", "deploy/linux/gen-unbound-conf.sh")
+	if len(tuning) > 0 {
+		// A tuned run that silently fell back to the defaults would prove nothing.
+		dd, _ := os.ReadFile(filepath.Join(work, "configs", "dnsdist", "dnsdist.conf"))
+		ub, _ := os.ReadFile(filepath.Join(work, "configs", "unbound", "unbound.conf"))
+		for _, want := range []string{"{reusePort=true})", "numberOfShards=4"} {
+			if !strings.Contains(string(dd), want) {
+				t.Fatalf("tuned dnsdist.conf lacks %q", want)
+			}
+		}
+		for _, want := range []string{"num-threads: 4\n", "prefetch: yes\n"} {
+			if !strings.Contains(string(ub), want) {
+				t.Fatalf("tuned unbound.conf lacks %q", want)
+			}
+		}
+	}
 
 	// Throwaway test certificates.
 	certs := filepath.Join(work, "certs")
@@ -288,15 +304,37 @@ func answer(ask func(string, *dns.Msg) (*dns.Msg, error), addr, name string, wai
 	}
 }
 
-func TestDataplaneAnswersOverEveryTransport(t *testing.T) {
+func requireDocker(t *testing.T) {
+	t.Helper()
 	if os.Getenv("POWERSVX_DOCKER_TESTS") != "1" {
 		t.Skip("set POWERSVX_DOCKER_TESTS=1 to run the Dataplane black-box test (needs Docker)")
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Fatal("POWERSVX_DOCKER_TESTS=1 but docker is not on PATH")
 	}
-	dp := startDataplane(t)
+}
 
+func TestDataplaneAnswersOverEveryTransport(t *testing.T) {
+	requireDocker(t)
+	assertEveryTransportAnswers(t, startDataplane(t))
+}
+
+// Every tuning knob (ticket #18) on at once: the Dataplane must still answer over every
+// transport. Four CPUs, so that "all" Unbound threads differs from "half" and the UDP
+// listeners and cache shards are more than one.
+func TestDataplaneAnswersOverEveryTransportWithEveryTuningKnobOn(t *testing.T) {
+	requireDocker(t)
+	dp := startDataplane(t,
+		"POWERSVX_HOST_CPUS=4",
+		"POWERSVX_DNSDIST_UDP_LISTENERS=auto",
+		"POWERSVX_DNSDIST_CACHE_SHARDS=auto",
+		"POWERSVX_UNBOUND_THREADS=all",
+		"POWERSVX_UNBOUND_PREFETCH=yes")
+	assertEveryTransportAnswers(t, dp)
+}
+
+func assertEveryTransportAnswers(t *testing.T, dp *dataplane) {
+	t.Helper()
 	transports := []struct {
 		name string
 		addr string

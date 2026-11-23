@@ -35,6 +35,27 @@ BACKEND_SOCKETS="${POWERSVX_DNSDIST_BACKEND_SOCKETS:-$((NPROC * 2))}"
 if [ "$BACKEND_SOCKETS" -lt 8 ]; then BACKEND_SOCKETS=8; fi
 if [ "$BACKEND_SOCKETS" -gt 64 ]; then BACKEND_SOCKETS=64; fi
 
+# Tuning knobs (ticket #18). Each is off by default, which keeps today's configuration.
+# POWERSVX_DNSDIST_UDP_LISTENERS: UDP listeners per address. 1 (default) = one thread receives
+# every UDP query; N > 1 = N listeners with reusePort=true, one receive thread each; auto = CPUs.
+UDP_LISTENERS="${POWERSVX_DNSDIST_UDP_LISTENERS:-1}"
+case "$UDP_LISTENERS" in
+  auto) UDP_LISTENERS=$NPROC; if [ "$UDP_LISTENERS" -gt 64 ]; then UDP_LISTENERS=64; fi ;;
+  *[!0-9]*|0|0?*) echo "POWERSVX_DNSDIST_UDP_LISTENERS must be auto or a whole number from 1 to 64" >&2; exit 1 ;;
+  *) if [ "$UDP_LISTENERS" -gt 64 ]; then echo "POWERSVX_DNSDIST_UDP_LISTENERS must be auto or a whole number from 1 to 64" >&2; exit 1; fi ;;
+esac
+# POWERSVX_DNSDIST_CACHE_SHARDS: shards of the main packet cache. Unset (default) = dnsdist's
+# own default of one; auto = CPUs; or a whole number from 1 to 64.
+CACHE_SHARDS="${POWERSVX_DNSDIST_CACHE_SHARDS:-}"
+case "$CACHE_SHARDS" in
+  '') ;;
+  auto) CACHE_SHARDS=$NPROC; if [ "$CACHE_SHARDS" -gt 64 ]; then CACHE_SHARDS=64; fi ;;
+  *[!0-9]*|0|0?*) echo "POWERSVX_DNSDIST_CACHE_SHARDS must be auto or a whole number from 1 to 64" >&2; exit 1 ;;
+  *) if [ "$CACHE_SHARDS" -gt 64 ]; then echo "POWERSVX_DNSDIST_CACHE_SHARDS must be auto or a whole number from 1 to 64" >&2; exit 1; fi ;;
+esac
+CACHE_OPTS=""
+if [ -n "$CACHE_SHARDS" ]; then CACHE_OPTS=", numberOfShards=${CACHE_SHARDS}"; fi
+
 TCP_THREADS=$((NPROC * 2))
 if [ "$TCP_THREADS" -lt 4 ]; then TCP_THREADS=4; fi
 if [ "$TCP_THREADS" -gt 32 ]; then TCP_THREADS=32; fi
@@ -108,9 +129,25 @@ TMP="${OUT}.tmp.$$"
   echo "-- host Mem=${MEM_MB}MB packetCache=${PACKET_CACHE} authPort=${AUTH_PORT} recPort=${RECURSIVE_PORT}"
   echo ""
   echo "setACL({\"0.0.0.0/0\", \"::/0\"})"
-  echo "addLocal(\"0.0.0.0:53\")"
+  if [ "$UDP_LISTENERS" -gt 1 ]; then
+    i=0
+    while [ "$i" -lt "$UDP_LISTENERS" ]; do
+      echo "addLocal(\"0.0.0.0:53\", {reusePort=true})"
+      i=$((i + 1))
+    done
+  else
+    echo "addLocal(\"0.0.0.0:53\")"
+  fi
   if [ "$LISTEN_V6" = "1" ]; then
-    echo "addLocal(\"[::]:53\")"
+    if [ "$UDP_LISTENERS" -gt 1 ]; then
+      i=0
+      while [ "$i" -lt "$UDP_LISTENERS" ]; do
+        echo "addLocal(\"[::]:53\", {reusePort=true})"
+        i=$((i + 1))
+      done
+    else
+      echo "addLocal(\"[::]:53\")"
+    fi
   else
     echo "-- addLocal(\"[::]:53\") disabled (POWERSVX_DNSDIST_IPV6=0 or no global IPv6)"
   fi
@@ -224,7 +261,7 @@ LUA
   echo "newServer({address=\"127.0.0.1:${AUTH_PORT}\", name=\"powersvx-auth\", pool=\"auth\",${AUTH_OPTS} checkInterval=5, maxCheckFailures=3, checkTimeout=2000, rise=2})"
   echo "setServerPolicy(leastOutstanding)"
   echo ""
-  echo "pc = newPacketCache(${PACKET_CACHE},{maxTTL=86400, minTTL=60, maxNegativeTTL=300})"
+  echo "pc = newPacketCache(${PACKET_CACHE},{maxTTL=86400, minTTL=60, maxNegativeTTL=300${CACHE_OPTS}})"
   echo "getPool(\"\"):setCache(pc)"
   if [ "$AUTH_PROXY" != "1" ]; then
     echo "pcAuth = newPacketCache(50000,{maxTTL=300, minTTL=0, maxNegativeTTL=60})"
@@ -378,4 +415,4 @@ QLLUA
 } >"$TMP"
 
 mv -f "$TMP" "$OUT"
-echo "dnsdist-conf: wrote $OUT (cache=${PACKET_CACHE} spoof=${SPOOF_V4} rec=:${RECURSIVE_PORT} auth=:${AUTH_PORT} sockets=${BACKEND_SOCKETS} ipv6=${LISTEN_V6})" >&2
+echo "dnsdist-conf: wrote $OUT (cache=${PACKET_CACHE} spoof=${SPOOF_V4} rec=:${RECURSIVE_PORT} auth=:${AUTH_PORT} sockets=${BACKEND_SOCKETS} ipv6=${LISTEN_V6} udp-listeners=${UDP_LISTENERS} cache-shards=${CACHE_SHARDS:-default})" >&2

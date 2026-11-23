@@ -158,3 +158,51 @@ compare.sh results/powersvx-small-*.json results/technitium-small-*.json
 ### The Filter: sample or full
 
 A 1-in-300 sample of the Filter (about 50,000 names) is enough to measure query throughput. It is not enough to compare memory: the production Filter has about 20 million names, and holding them is a large part of both systems' footprint. For the memory comparison use the full feed on both sides. Technitium loads it into memory; at the `small` size that may not fit in 2 GB, which is itself a result worth recording.
+
+## Tuning knobs: measure each one alone
+
+Four settings in the generated Dataplane configuration change how the server uses its CPUs. Each is off by default, so the default configuration is the one the Baseline measured. They are meant to be measured one at a time against that Baseline, and kept only when they win. The settings are read by the generators, so export them in the shell that runs the generators (the way `POWERSVX_HOST_CPUS` is), then recreate the containers. The generator prints the values in effect on its last line (`udp-listeners=`, `cache-shards=`, `threads=`, `prefetch=`).
+
+| # | Knob | Setting | Values (default first) | What it changes in the generated file |
+|---|---|---|---|---|
+| 1 | One UDP listener per core | `POWERSVX_DNSDIST_UDP_LISTENERS` | `1`, `auto` (one per CPU, at most 64), or `2` to `64` | `addLocal("0.0.0.0:53", {reusePort=true})` repeated N times, and the same for `[::]:53` when IPv6 is on. Each listener has its own receive thread. With `1` the line is the plain `addLocal("0.0.0.0:53")` as before. |
+| 2 | Packet cache shards | `POWERSVX_DNSDIST_CACHE_SHARDS` | unset, `auto` (one per CPU, at most 64), or `1` to `64` | `numberOfShards=N` on the main packet cache (the Authoritative Zone cache is left alone). |
+| 3 | Unbound prefetch | `POWERSVX_UNBOUND_PREFETCH` | `no`, `yes` | `prefetch: yes` (`prefetch-key` is already `yes`). |
+| 4 | Unbound threads | `POWERSVX_UNBOUND_THREADS` | `half` (half the CPUs, 2 to 16), `all` (every CPU, 2 to 32), or `1` to `32` | `num-threads`. The cache slab counts stay the next power of two at or above the thread count. |
+
+Invalid values stop the generator with an error that names the setting.
+
+### One run per knob
+
+Take the Baseline first, with no knob set, on the same node, query set and load generator settings. Then, for each knob in turn (never two at once), on the server:
+
+```bash
+# knob 1; for the others use POWERSVX_DNSDIST_CACHE_SHARDS=auto, POWERSVX_UNBOUND_PREFETCH=yes or POWERSVX_UNBOUND_THREADS=all
+export POWERSVX_DNSDIST_UDP_LISTENERS=auto
+bash deploy/linux/gen-unbound-conf.sh && bash deploy/linux/gen-dnsdist-conf.sh
+eval "$(deploy/linux/calc-mem-env.sh)"
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \
+  -f deploy/linux/docker-compose.core.yml up -d --force-recreate dnsdist unbound powersvx
+```
+
+Use the same compose files as the Baseline run (for a small-size run, add the overlay and `POWERSVX_HOST_CPUS`/`POWERSVX_HOST_MEM_MB` as in "PowerSVX at small size"). Check the file the node now uses: `grep -c reusePort configs/dnsdist/dnsdist.conf`, `grep numberOfShards configs/dnsdist/dnsdist.conf`, `grep -E 'prefetch:|num-threads' configs/unbound/unbound.conf`. Then, from the load generator, run exactly the Baseline's command with a different label:
+
+```bash
+run.sh -s SERVER -S admin@SERVER -d queries.txt -l powersvx-full-udp-listeners -R 'dnsdist|unbound|^powersvx$'
+compare.sh results/powersvx-full-<baseline time>.json results/powersvx-full-udp-listeners-*.json
+```
+
+Unset the variable and regenerate before the next knob. For knob 1 you can also see the effect on the server during the run: `top -H -p "$(pidof dnsdist)"` should show several busy receive threads instead of one.
+
+### The rule for keeping a knob
+
+A knob becomes a default only if, against the Baseline from the same node and settings (`compare.sh` says `COMPARABLE: yes`):
+
+- `max_qps` rises by at least 5%, or the latency p99 falls (after warm-up nearly every answer is a cache hit, so p99 is the cache-hit p99), and
+- resident memory (`server.memory_under_load`) does not rise.
+
+Record every run, including the knobs that lose, by committing the results file under `docs/bench/` and adding a line to the run note saying which knob and value it was. A knob that is rejected stays available as a setting and stays off.
+
+### Status
+
+These knobs have been tested for what they write into the configuration (tests in `deploy/linux/knobs_test.go`) and for answering over UDP, TCP, DoT, DoH and DoQ with all four on (`test/dataplane`). They have **not been measured**: that needs a lab node and a separate load generator. There are no results in `docs/bench/` for them yet.

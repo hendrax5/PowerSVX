@@ -47,6 +47,24 @@ MEM_MB=$((MEM_KB / 1024))
 THREADS=$((NPROC / 2))
 if [ "$THREADS" -lt 2 ]; then THREADS=2; fi
 if [ "$THREADS" -gt 16 ]; then THREADS=16; fi
+# Tuning knobs (ticket #18). Both are off by default, which keeps today's configuration.
+# POWERSVX_UNBOUND_THREADS: half (default: half the CPUs, 2 to 16), all (every CPU, 2 to 32),
+# or a whole number from 1 to 32.
+case "${POWERSVX_UNBOUND_THREADS:-half}" in
+  half) ;;
+  all) THREADS=$NPROC
+       if [ "$THREADS" -lt 2 ]; then THREADS=2; fi
+       if [ "$THREADS" -gt 32 ]; then THREADS=32; fi ;;
+  *[!0-9]*|0|0?*) echo "POWERSVX_UNBOUND_THREADS must be half, all or a whole number from 1 to 32" >&2; exit 1 ;;
+  *) if [ "$POWERSVX_UNBOUND_THREADS" -gt 32 ]; then echo "POWERSVX_UNBOUND_THREADS must be half, all or a whole number from 1 to 32" >&2; exit 1; fi
+     THREADS=$POWERSVX_UNBOUND_THREADS ;;
+esac
+# POWERSVX_UNBOUND_PREFETCH: no (default) or yes.
+PREFETCH="${POWERSVX_UNBOUND_PREFETCH:-no}"
+case "$PREFETCH" in
+  yes|no) ;;
+  *) echo "POWERSVX_UNBOUND_PREFETCH must be yes or no" >&2; exit 1 ;;
+esac
 
 MSG_MB=$((MEM_MB * 2 / 100))
 RRSET_MB=$((MEM_MB * 4 / 100))
@@ -126,7 +144,7 @@ server:
     qname-minimisation: no
     infra-keep-probing: no
     aggressive-nsec: yes
-    prefetch: no
+    prefetch: ${PREFETCH}
     prefetch-key: yes
     domain-insecure: "in-addr.arpa."
     domain-insecure: "ip6.arpa."
@@ -164,4 +182,4 @@ remote-control:
 EOF
 
 mv -f "$TMP" "$OUT"
-echo "unbound-conf: wrote $OUT mode=${MODE} (threads=${THREADS} msg=${MSG_MB}m rrset=${RRSET_MB}m outgoing=${OUTGOING} qpt=${QPT})" >&2
+echo "unbound-conf: wrote $OUT mode=${MODE} (threads=${THREADS} msg=${MSG_MB}m rrset=${RRSET_MB}m outgoing=${OUTGOING} qpt=${QPT} prefetch=${PREFETCH})" >&2
