@@ -72,6 +72,7 @@ func (a *API) saveRuntimeFromServer(cur server.RuntimeFlags) {
 	if fz == nil && a.cfg != nil {
 		fz = a.cfg.Resolver.ForwardZones
 	}
+	fwd, fz, _ = dropLoopForwarders(fwd, fz)
 	rlLive := a.srv.RateLimitConfig()
 	en := cur.KominfoSync
 	targets := []string(nil)

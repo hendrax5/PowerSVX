@@ -576,12 +576,28 @@ func (a *API) syncUnboundRuntime(zoneNames []string) {
 		AuthZones:     zoneNames,
 		AuthAddr:      fmt.Sprintf("127.0.0.1@%d", authPort),
 	}
-	if err := unboundrpz.WriteRuntimeConfig(a.dataDir, spec); err != nil {
-		a.log.Warn("unbound runtime config write failed", "err", err)
-	} else if err := unboundrpz.TryReload(); err != nil {
-		a.log.Debug("unbound reload deferred after runtime sync", "err", err)
-	} else {
+	report, err := unboundrpz.WriteRuntimeConfig(a.dataDir, spec)
+	for _, s := range report.SkippedForwarders {
+		a.log.Warn("resolver forwarder skipped: it points back into the Dataplane and would make Unbound forward to itself",
+			"zone", s.Zone, "forwarder", s.Addr, "points_at", s.Reason)
+	}
+	if err != nil {
+		a.unboundSync.record(report, err, nil)
+		a.log.Error("unbound runtime config write failed", "err", err)
+		return
+	}
+	reloadErr := unboundrpz.TryReload()
+	gen := a.unboundSync.record(report, nil, reloadErr)
+	switch {
+	case reloadErr == nil:
 		a.log.Info("unbound runtime config synced & reloaded")
+	case !hostDeployment():
+		// Outside a host deployment no Unbound is expected, so this is not a fault.
+		a.log.Debug("unbound reload skipped after runtime sync", "err", reloadErr)
+	default:
+		a.log.Error("unbound reload failed after writing the runtime config; Unbound keeps its previous configuration",
+			"err", reloadErr, "hint", "the control interface must be enabled on 127.0.0.1:8953 in unbound.conf")
+		go a.retryReload(gen)
 	}
 }
 

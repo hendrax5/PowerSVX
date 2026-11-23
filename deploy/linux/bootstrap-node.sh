@@ -135,6 +135,9 @@ export POWERSVX_DNS_DATAPLANE=dnsdist
 bash "$ROOT/deploy/linux/gen-unbound-conf.sh" "$ROOT/configs/unbound/unbound.conf"
 bash "$ROOT/deploy/linux/gen-dnsdist-conf.sh" "$ROOT/configs/dnsdist/dnsdist.conf"
 
+# Refuse to start Unbound on a configuration it would reject or that makes it forward to itself.
+bash "$ROOT/deploy/linux/check-unbound-conf.sh" "$ROOT" || exit 1
+
 if [[ -f "$ROOT/deploy/linux/calc-mem-env.sh" ]]; then
   # shellcheck disable=SC1091
   eval "$("$ROOT/deploy/linux/calc-mem-env.sh")"
@@ -191,10 +194,11 @@ echo "==> [7/7] Verifying services..."
 READY_WAIT="${POWERSVX_READY_WAIT:-90}"
 READY_NAME="${POWERSVX_READY_NAME:-example.com}"
 ready_rc=0
-# First the local path (dnsdist -> Unbound), then a real name through recursion.
+# First the local path (dnsdist -> Unbound), then a fresh label under a real name, which
+# only recursion can answer.
 bash "$ROOT/deploy/linux/dns-ready.sh" -w "$READY_WAIT" -u invalid || ready_rc=$?
 if [[ "$ready_rc" -eq 0 ]]; then
-  bash "$ROOT/deploy/linux/dns-ready.sh" -w "$READY_WAIT" "$READY_NAME" || ready_rc=$?
+  bash "$ROOT/deploy/linux/dns-ready.sh" -w "$READY_WAIT" -r "$READY_NAME" || ready_rc=$?
 fi
 
 echo "------------------------------------------------------------"

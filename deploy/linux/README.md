@@ -165,7 +165,7 @@ docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up 
 
 This override sets `network_mode: host` and mounts `configs/powersvx.docker.host.toml` (Postgres via `127.0.0.1:5433`). Prometheus is on host **9091** (container 9090). Restrict `[acl] allow_query` and firewall unused ports.
 
-It also starts **Unbound on `127.0.0.1:5353`** as the default recursive backend (`mode=forward` in the host TOML). Conditional forward zones still override per domain. Details: [docs/PRODUCTION.md](../../docs/PRODUCTION.md).
+It also starts **Unbound on `127.0.0.1:5353`** as the recursive backend (`mode=recursive`, no forwarders, in the host TOML; never list `127.0.0.1:5353` as a forwarder, see [docs/PRODUCTION.md](../../docs/PRODUCTION.md), "Unbound forwards to itself"). Conditional forward zones still override per domain. Details: [docs/PRODUCTION.md](../../docs/PRODUCTION.md).
 
 | Host port | Service |
 |-----------|---------|
