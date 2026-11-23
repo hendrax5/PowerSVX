@@ -138,7 +138,7 @@ func (c *Collector) Observe(s Sample) {
 		c.aclAllow++
 	}
 
-	isBlocked := path == "rpz" || path == "plugin"
+	isBlocked := path == "rpz"
 	if isBlocked {
 		qname := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s.QName), "."))
 		if qname == "" {
@@ -380,7 +380,7 @@ func (c *Collector) Snapshot(allowCIDRs []string, activeBlocked []Count) Snapsho
 	out.Latency = percentileLocked(c)
 	out.Forwarders = forwarderListLocked(c)
 	out.QueriesTotal = c.queries
-	out.BlockedTotal = c.paths["rpz"] + c.paths["plugin"]
+	out.BlockedTotal = c.paths["rpz"]
 	if c.queries > 0 {
 		out.BlockedPercent = 100 * float64(out.BlockedTotal) / float64(c.queries)
 	}

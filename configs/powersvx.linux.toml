@@ -129,6 +129,3 @@ query_log_max_size_mb = 5120
 query_log_mask_ip = true
 query_log_sample_rate = 0.05
 
-[plugins]
-enabled = false
-dir = "/var/lib/powersvx/plugins"

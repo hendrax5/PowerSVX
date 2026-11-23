@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -121,7 +120,7 @@ func (s *Signer) RolloverZSK(zone string) error {
 		return err
 	}
 	alg := zk.KSK.Algorithm
-	zsk, zpriv, err := makeKey(zone, 256, alg)
+	zsk, zpriv, err := newKey(zone, 256, alg, zk.KSK.KeyTag(), zk.ZSK.KeyTag())
 	if err != nil {
 		return err
 	}
@@ -230,21 +229,23 @@ func (s *Signer) SignResponse(zone string, req, resp *dns.Msg) {
 }
 
 // SignDenial attaches signed NSEC/NSEC3 denial RRs for NXDOMAIN/NODATA when DO is set.
-func (s *Signer) SignDenial(zone, qname string, req, resp *dns.Msg) {
-	s.SignDenialForNames(zone, qname, nil, req, resp)
+func (s *Signer) SignDenial(zone, qname string, req, resp *dns.Msg) error {
+	return s.SignDenialForNames(zone, qname, nil, req, resp)
 }
 
-// SignDenialForNames builds a proper canonically ordered NSEC chain (or NSEC3 hash records)
-// using the zone's active owner names so validators never reject self-referential NSEC loops.
-func (s *Signer) SignDenialForNames(zone, qname string, ownerNames []string, req, resp *dns.Msg) {
+// SignDenialForNames adds the signed proof that qname (NXDOMAIN) or its type
+// (NODATA) does not exist, when the request has DO set. resp.Rcode says which
+// of the two it is. names maps every owner name of the zone, in the view being
+// answered, to the record types it has; it is what the NSEC chain is built from.
+func (s *Signer) SignDenialForNames(zone, qname string, names map[string][]uint16, req, resp *dns.Msg) error {
 	if s == nil || resp == nil {
-		return
+		return nil
 	}
 	zone = config.NormalizeName(zone)
 	qname = config.NormalizeName(qname)
 	zk, err := s.load(zone)
 	if err != nil {
-		return
+		return nil
 	}
 	wantDO := false
 	if req != nil {
@@ -253,145 +254,14 @@ func (s *Signer) SignDenialForNames(zone, qname string, ownerNames []string, req
 		}
 	}
 	if !wantDO {
-		return
+		return nil
 	}
 	now := time.Now().UTC()
-	inc := now.Add(30 * 24 * time.Hour)
 
 	if zk.Policy.NSEC3 {
-		s.appendNSEC3Denial(zone, qname, zk, now, inc, resp)
-		return
+		return s.signNSEC3Denial(zone, qname, zk, names, now, resp)
 	}
-
-	// Build sorted unique canonical owner list anchored at zone apex.
-	seen := map[string]struct{}{zone: {}}
-	for _, n := range ownerNames {
-		cn := dns.CanonicalName(config.NormalizeName(n))
-		if cn != "" && !strings.HasPrefix(cn, "*.") {
-			seen[cn] = struct{}{}
-		}
-	}
-	sorted := make([]string, 0, len(seen))
-	for k := range seen {
-		sorted = append(sorted, k)
-	}
-	sort.Strings(sorted)
-
-	owner := zone
-	next := zone
-	cq := dns.CanonicalName(qname)
-	exact := false
-	for _, cand := range sorted {
-		if cand == cq {
-			exact = true
-			break
-		}
-	}
-	if exact {
-		owner = cq
-		for i, cand := range sorted {
-			if cand == cq {
-				next = sorted[(i+1)%len(sorted)]
-				break
-			}
-		}
-	} else {
-		// Find predecessor owner < cq < next
-		idx := sort.SearchStrings(sorted, cq)
-		if idx == 0 || idx >= len(sorted) {
-			owner = sorted[len(sorted)-1]
-			next = sorted[0]
-		} else {
-			owner = sorted[idx-1]
-			next = sorted[idx]
-		}
-	}
-
-	nsec := &dns.NSEC{
-		Hdr: dns.RR_Header{
-			Name:   owner,
-			Rrtype: dns.TypeNSEC,
-			Class:  dns.ClassINET,
-			Ttl:    300,
-		},
-		NextDomain: next,
-		TypeBitMap: []uint16{dns.TypeA, dns.TypeAAAA, dns.TypeNS, dns.TypeSOA, dns.TypeTXT, dns.TypeRRSIG, dns.TypeNSEC, dns.TypeDNSKEY},
-	}
-	resp.Ns = append(resp.Ns, nsec)
-	sig := &dns.RRSIG{
-		Hdr: dns.RR_Header{
-			Name:   owner,
-			Rrtype: dns.TypeRRSIG,
-			Class:  dns.ClassINET,
-			Ttl:    300,
-		},
-		TypeCovered: dns.TypeNSEC,
-		Algorithm:   zk.ZSK.Algorithm,
-		Labels:      uint8(dns.CountLabel(owner)),
-		OrigTtl:     300,
-		Expiration:  uint32(inc.Unix()),
-		Inception:   uint32(now.Unix()),
-		KeyTag:      zk.ZSK.KeyTag(),
-		SignerName:  zone,
-	}
-	if err := sig.Sign(zk.ZSKPriv, []dns.RR{nsec}); err == nil {
-		resp.Ns = append(resp.Ns, sig)
-	}
-}
-
-func (s *Signer) appendNSEC3Denial(zone, qname string, zk *zoneKeys, now, inc time.Time, resp *dns.Msg) {
-	salt := zk.Policy.Salt
-	if salt == "" {
-		salt = "a1b2c3d4"
-	}
-	hashed := dns.HashName(qname, dns.SHA1, 1, salt)
-	owner := hashed + "." + zone
-	// Construct enclosing NSEC3 interval around hashed owner name
-	nextHash := hashed
-	if len(nextHash) > 0 {
-		last := nextHash[len(nextHash)-1]
-		if last == 'V' {
-			nextHash = nextHash[:len(nextHash)-1] + "0"
-		} else {
-			nextHash = nextHash[:len(nextHash)-1] + string(last+1)
-		}
-	}
-	nsec3 := &dns.NSEC3{
-		Hdr: dns.RR_Header{
-			Name:   owner,
-			Rrtype: dns.TypeNSEC3,
-			Class:  dns.ClassINET,
-			Ttl:    300,
-		},
-		Hash:       dns.SHA1,
-		Flags:      0,
-		Iterations: 1,
-		SaltLength: uint8(len(salt) / 2),
-		Salt:       salt,
-		HashLength: 20,
-		NextDomain: nextHash,
-		TypeBitMap: []uint16{dns.TypeSOA, dns.TypeRRSIG},
-	}
-	resp.Ns = append(resp.Ns, nsec3)
-	sig := &dns.RRSIG{
-		Hdr: dns.RR_Header{
-			Name:   owner,
-			Rrtype: dns.TypeRRSIG,
-			Class:  dns.ClassINET,
-			Ttl:    300,
-		},
-		TypeCovered: dns.TypeNSEC3,
-		Algorithm:   zk.ZSK.Algorithm,
-		Labels:      uint8(dns.CountLabel(owner)),
-		OrigTtl:     300,
-		Expiration:  uint32(inc.Unix()),
-		Inception:   uint32(now.Unix()),
-		KeyTag:      zk.ZSK.KeyTag(),
-		SignerName:  zone,
-	}
-	if err := sig.Sign(zk.ZSKPriv, []dns.RR{nsec3}); err == nil {
-		resp.Ns = append(resp.Ns, sig)
-	}
+	return s.signNSECDenial(zone, qname, zk, names, now, resp)
 }
 
 func groupAuthAnswers(rrs []dns.RR) [][]dns.RR {
@@ -456,11 +326,11 @@ func (s *Signer) generate(zone string, opts SignOptions) error {
 	if alg == 0 {
 		alg = dns.ECDSAP256SHA256
 	}
-	zsk, zpriv, err := makeKey(zone, 256, alg)
+	ksk, kpriv, err := newKey(zone, 257, alg)
 	if err != nil {
 		return err
 	}
-	ksk, kpriv, err := makeKey(zone, 257, alg)
+	zsk, zpriv, err := newKey(zone, 256, alg, ksk.KeyTag())
 	if err != nil {
 		return err
 	}
@@ -479,6 +349,9 @@ func (s *Signer) generate(zone string, opts SignOptions) error {
 	s.mu.Unlock()
 	return nil
 }
+
+// makeKeyFn generates zone keys; tests replace it to hand out chosen keys.
+var makeKeyFn = makeKey
 
 func makeKey(zone string, flags uint16, alg uint8) (*dns.DNSKEY, crypto.Signer, error) {
 	bits := 256
@@ -589,4 +462,28 @@ func readKey(path, zone string) (*dns.DNSKEY, crypto.Signer, error) {
 		return nil, nil, fmt.Errorf("private key is not crypto.Signer")
 	}
 	return key, signer, nil
+}
+
+// newKey generates a key whose key tag is usable. The tag is a 16-bit checksum,
+// so about one key in 65,536 has tag 0, which the signing library refuses to sign
+// with, and about as many ZSKs would share the KSK's tag (a legal but needless
+// ambiguity for validators). Such a key is discarded and another is drawn.
+func newKey(zone string, flags uint16, alg uint8, avoidTags ...uint16) (*dns.DNSKEY, crypto.Signer, error) {
+	for attempt := 0; attempt < 32; attempt++ {
+		key, priv, err := makeKeyFn(zone, flags, alg)
+		if err != nil {
+			return nil, nil, err
+		}
+		tag := key.KeyTag()
+		bad := tag == 0
+		for _, a := range avoidTags {
+			if tag == a {
+				bad = true
+			}
+		}
+		if !bad {
+			return key, priv, nil
+		}
+	}
+	return nil, nil, fmt.Errorf("no usable key tag for %s after 32 keys", zone)
 }

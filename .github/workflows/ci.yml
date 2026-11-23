@@ -27,5 +27,5 @@ jobs:
         run: |
           npm install --no-audit --no-fund
           npm run build
-      - name: Docker tests (Dataplane black-box, zone export from Postgres, Unbound loop regression)
-        run: POWERSVX_DOCKER_TESTS=1 go test -v -count=1 -timeout 10m ./test/dataplane/ ./test/zonesexport/ ./test/unboundloop/
+      - name: Docker tests (Dataplane black-box, zone export from Postgres, DNSSEC denial validator, Unbound loop regression)
+        run: POWERSVX_DOCKER_TESTS=1 go test -v -count=1 -timeout 10m ./test/dataplane/ ./test/zonesexport/ ./test/dnssecdenial/ ./test/unboundloop/

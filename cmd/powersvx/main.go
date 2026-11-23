@@ -28,11 +28,9 @@ import (
 	"github.com/powersvx/powersvx/internal/dnssec"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
-	"github.com/powersvx/powersvx/internal/grpcapi"
 	"github.com/powersvx/powersvx/internal/kominfo"
 	"github.com/powersvx/powersvx/internal/metrics"
 	"github.com/powersvx/powersvx/internal/monitor"
-	"github.com/powersvx/powersvx/internal/otelx"
 	"github.com/powersvx/powersvx/internal/queryring"
 	"github.com/powersvx/powersvx/internal/ratelimit"
 	"github.com/powersvx/powersvx/internal/rpz"
@@ -238,15 +236,6 @@ func main() {
 		}()
 	}
 
-	otelShutdown, err := otelx.Init(context.Background(), "powersvx", cfg.Metrics.OTelEnabled)
-	if err != nil {
-		log.Warn("otel init failed", "err", err)
-		otelShutdown = func(context.Context) error { return nil }
-	} else if cfg.Metrics.OTelEnabled || os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" {
-		log.Info("OpenTelemetry tracing enabled")
-	}
-	defer func() { _ = otelShutdown(context.Background()) }()
-
 	acmeStore := acme.NewChallengeStore()
 	acmeMgr := acme.NewManager(cfg.ACME, acmeStore, log)
 	stats := analytics.New(200)
@@ -336,19 +325,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	var grpcSrv *grpcapi.Server
-	if cfg.API.GRPCEnabled {
-		tok := ""
-		if cfg.API.AuthType == "token" {
-			tok = cfg.API.APIToken
-		}
-		grpcSrv, err = grpcapi.Start(cfg.API.GRPCBind, dnsSrv, log, tok)
-		if err != nil {
-			log.Error("grpc start failed", "err", err)
-			os.Exit(1)
-		}
-	}
-
 	go func() {
 		if err := dnsSrv.ListenAndServe(); err != nil {
 			log.Error("dns server stopped", "err", err)
@@ -375,14 +351,13 @@ func main() {
 		"acme", cfg.ACME.Enabled,
 		"query_log", cfg.Logging.QueryLogEnabled,
 		"api", cfg.API.RESTBind,
-		"grpc", cfg.API.GRPCEnabled,
 	)
 
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	for sig := range ch {
 		if sig == syscall.SIGHUP {
-			log.Info("SIGHUP: reloading runtime settings and plugins")
+			log.Info("SIGHUP: reloading runtime settings")
 			if rs, err := config.LoadRuntimeSettings(config.RuntimeSettingsPath(*dataDir)); err == nil {
 				cfg.ApplyRuntimeSettings(rs)
 				config.ApplyQueryLogGuard(cfg)
@@ -413,8 +388,5 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = rest.Shutdown(ctx)
-	if grpcSrv != nil {
-		grpcSrv.Stop()
-	}
 	_ = dnsSrv.Shutdown()
 }

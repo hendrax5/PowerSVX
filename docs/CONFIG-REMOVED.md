@@ -16,6 +16,9 @@ Delete the keys when convenient; nothing reads them.
 | `resolver.ecs_prefix_v4`, `resolver.ecs_prefix_v6` | ECS prefix of the Go resolver | dnsdist |
 | `logging.query_log_destination` | where the Go handler wrote query logs | the Observability Profile reads dnsdist |
 | `rpz.hot_cache_max`, `rpz.hot_seed_top_n` | in-process Filter hot cache | the Filter is the dnsdist CDB |
+| `[plugins]` (`enabled`, `dir`), and the `plugins/` directory | Lua and WASM query plugins | none; plugins are gone. Filter with the dnsdist CDB or an RPZ feed |
+| `api.grpc_enabled`, `api.grpc_bind` | gRPC API (default port 5381) | the REST API is the only API (`api.rest_bind`) |
+| `metrics.otel_enabled`, and the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable | OpenTelemetry trace export | none; Prometheus metrics (`[metrics] prometheus_enabled`) stay |
 
 Still read: `resolver.forwarders`, `resolver.dnssec_*`, `resolver.edns_buffer_size`,
 `resolver.forward_zones`, `[acl]`, `[rate_limit]`, `[rpz]` feeds, `[api]`, `[logging]`

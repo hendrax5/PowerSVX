@@ -302,7 +302,9 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 						m.Ns = append(m.Ns, soaRRs[0])
 					}
 					if s.signer != nil && s.signer.Enabled(res.Zone) {
-						s.signer.SignDenialForNames(res.Zone, res.Name, s.auth.ZoneNames(res.Zone), req, m)
+						if err := s.signer.SignDenialForNames(res.Zone, res.Name, s.auth.ZoneNameTypes(res.Zone, viewName, geoTag), req, m); err != nil && s.log != nil {
+							s.log.Warn("dnssec denial incomplete", "zone", res.Zone, "qname", res.Name, "err", err)
+						}
 					}
 				}
 			}
