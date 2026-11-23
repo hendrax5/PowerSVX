@@ -164,6 +164,18 @@ func (s *Signer) DNSKEYs(zone string) []dns.RR {
 
 // SignResponse adds RRSIGs (and DNSKEY answers) when DO is set or qtype is DNSKEY.
 func (s *Signer) SignResponse(zone string, req, resp *dns.Msg) {
+	s.signResponse(zone, "", req, resp)
+}
+
+// SignWildcardResponse signs an answer that was synthesized from the wildcard
+// record owned by wildcard ("*.example.com."): the signature is made over the
+// wildcard-owned RRset, its labels field shows the expansion (RFC 4035 section
+// 5.3.4), and the RRSIG is sent with the query name as owner.
+func (s *Signer) SignWildcardResponse(zone, wildcard string, req, resp *dns.Msg) {
+	s.signResponse(zone, wildcard, req, resp)
+}
+
+func (s *Signer) signResponse(zone, wildcard string, req, resp *dns.Msg) {
 	if s == nil || resp == nil {
 		return
 	}
@@ -187,31 +199,25 @@ func (s *Signer) SignResponse(zone string, req, resp *dns.Msg) {
 		return
 	}
 	now := time.Now().UTC()
-	inc := now.Add(30 * 24 * time.Hour)
 
 	signSet := func(rrs []dns.RR, priv crypto.Signer, key *dns.DNSKEY) {
 		if len(rrs) == 0 || priv == nil || key == nil {
 			return
 		}
-		sig := &dns.RRSIG{
-			Hdr: dns.RR_Header{
-				Name:   rrs[0].Header().Name,
-				Rrtype: dns.TypeRRSIG,
-				Class:  dns.ClassINET,
-				Ttl:    rrs[0].Header().Ttl,
-			},
-			TypeCovered: rrs[0].Header().Rrtype,
-			Algorithm:   key.Algorithm,
-			Labels:      uint8(dns.CountLabel(rrs[0].Header().Name)),
-			OrigTtl:     rrs[0].Header().Ttl,
-			Expiration:  uint32(inc.Unix()),
-			Inception:   uint32(now.Unix()),
-			KeyTag:      key.KeyTag(),
-			SignerName:  zone,
+		toSign := rrs
+		if wildcard != "" {
+			toSign = make([]dns.RR, len(rrs))
+			for i, rr := range rrs {
+				cp := dns.Copy(rr)
+				cp.Header().Name = wildcard
+				toSign[i] = cp
+			}
 		}
-		if err := sig.Sign(priv, rrs); err != nil {
+		sig, err := signRRset(zone, toSign, key, priv, now)
+		if err != nil {
 			return
 		}
+		sig.Hdr.Name = rrs[0].Header().Name
 		resp.Answer = append(resp.Answer, sig)
 	}
 
