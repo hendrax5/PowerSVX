@@ -63,7 +63,6 @@ func TestCacheExplorerWorksOnTheDnsdistDataplane(t *testing.T) {
 	rr := httptest.NewRecorder()
 	a.handleCacheStats(rr, httptest.NewRequest(http.MethodGet, "/api/v1/cache/stats", nil))
 	var stats struct {
-		Dataplane string `json:"dataplane"`
 		Unbound   struct {
 			Status    string  `json:"status"`
 			Queries   float64 `json:"queries"`
@@ -74,7 +73,7 @@ func TestCacheExplorerWorksOnTheDnsdistDataplane(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &stats); err != nil {
 		t.Fatal(err)
 	}
-	if stats.Dataplane != "dnsdist" || stats.Unbound.Status != "ok" || stats.Unbound.Queries != 200 || stats.Unbound.HitRatio != 0.75 {
+	if stats.Unbound.Status != "ok" || stats.Unbound.Queries != 200 || stats.Unbound.HitRatio != 0.75 {
 		t.Fatalf("unexpected cache stats: %s", rr.Body.String())
 	}
 

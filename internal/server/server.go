@@ -467,18 +467,6 @@ func (s *Server) Blocked() uint64 { return s.blocked.Load() }
 
 func (s *Server) UDPAddr() string { return s.cfg.ListenAddr(s.cfg.Server.UDPPort) }
 
-func (s *Server) DoTAddr() string { return "" }
-
-// DoT, DoH and DoQ are terminated by the Dataplane; the Go process no longer
-// serves them.
-func (s *Server) DoHAddr() string { return "" }
-func (s *Server) DoQAddr() string { return "" }
-
-func (s *Server) DoTEnabled() bool  { return false }
-func (s *Server) DoHEnabled() bool  { return false }
-func (s *Server) DoH3Enabled() bool { return false }
-func (s *Server) DoQEnabled() bool  { return false }
-
 func (s *Server) DNSSECMode() string {
 	if s.dnssec == nil {
 		return string(dnssec.ModeOff)
@@ -573,7 +561,6 @@ func (s *Server) ApplyRuntimeFlags(f RuntimeFlags) {
 		}
 		s.cfg.SplitHorizon.Enabled = f.SplitHorizon
 		s.cfg.Logging.QueryLogEnabled = f.QueryLog
-		config.ApplyQueryLogGuard(s.cfg)
 		s.cfg.KominfoSync.Enabled = f.KominfoSync
 	}
 	if s.kominfo != nil {

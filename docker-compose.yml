@@ -23,7 +23,6 @@ services:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
       - TZ=Asia/Jakarta
       - GOGC=${GOGC:-50}
-      - POWERSVX_DISABLE_QUERY_LOG=${POWERSVX_DISABLE_QUERY_LOG:-1}
       # 55% host RAM soft budget (scales on upgrade; leave room for Unbound/Postgres/OS).
       - POWERSVX_MEM_PERCENT=${POWERSVX_MEM_PERCENT:-55}
     logging: &powersvx-log
