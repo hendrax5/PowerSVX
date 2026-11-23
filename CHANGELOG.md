@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Zone transfers of a DNSSEC-signed zone carry the DNSKEY RRset, an RRSIG over every RRset, the NSEC or NSEC3 chain with its RRSIGs and the signed NSEC3PARAM (ticket #51), so a BIND, Knot or PowerDNS secondary serves a zone that validates against the same DS. An IXFR of a signed zone is answered with the whole zone. The SOA serial of a signed zone moves once per signature refresh interval (and when a key is rolled or the NSEC/NSEC3 policy changes) and secondaries are notified; `[transfer] signature_validity_days` (default 30) and `signature_refresh_days` (default 7) set the timing. Secondary Zones store and serve the signatures they receive and never sign. See `docs/adr/0004-primary-signs-secondaries-serve-what-they-receive.md`.
+
 ### Changed
 - The Auth Backend takes the client address from a PROXY protocol v2 header sent by dnsdist (loopback peers only): views, GeoDNS, NOTIFY master check and the transfer and update allow lists judge the real client. The EDNS client subnet steers GeoDNS for queries from the Dataplane. The generated dnsdist configuration no longer adds ECS to, or caches, Auth Backend traffic (`POWERSVX_AUTH_PROXY_PROTOCOL=0` restores both). See `docs/adr/0003-proxy-protocol-for-the-client-address.md`.
 

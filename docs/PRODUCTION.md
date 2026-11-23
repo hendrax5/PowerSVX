@@ -153,7 +153,8 @@ The simplest way is `bash deploy/linux/apply-update.sh` after step 1: it does st
 
 ## Zone transfer
 - `[transfer] allow_axfr = true` enables outbound zone transfer (`OpcodeNotify` is routed by `dnsdist` straight to PowerSVX `:5354`).
-- **Outbound IXFR is answered as full AXFR** (RFC 1982 serial check; clients up-to-date get current SOA only).
+- **Outbound IXFR** sends the changes since the client's serial for an unsigned zone, and the whole zone for a signed one (RFC 1982 serial check; clients up-to-date get current SOA only).
+- **DNSSEC-signed zones** are transferred signed (DNSKEY, RRSIGs, NSEC/NSEC3 chain, NSEC3PARAM), so any secondary serves a zone that validates against your DS; signing keys never leave this node. The signatures in transfers are valid `[transfer] signature_validity_days` (default 30) and renewed every `signature_refresh_days` (default 7, held to at most half of validity): the zone's SOA serial moves once per interval and secondaries are notified. A secondary must pull at least once within validity minus refresh days (23 by default). Split-horizon: a signed zone is sent as the requesting address's view of it. See `docs/adr/0004-primary-signs-secondaries-serve-what-they-receive.md`.
 - **Secondary (slave) authoritative zones:** configure via API (`/api/v1/secondary`) or **Settings → Tools → AXFR → Secondary Zones** (`data/secondary-zones.json` + persisted zone records in `data/secondary-zones/*.json`). Supports SOA serial pre-check (RFC 1982), true RFC 1995 incremental **IXFR** with automatic AXFR fallback, upstream SOA `Refresh`/`Retry`/`Expire` scheduling, optional RFC 2845 **TSIG** signing (`tsig_key`), source-IP/TSIG-verified inbound DNS `NOTIFY`, and automatic `authzones.cdb` / Unbound / `dnsdist` dataplane sync.
 - `require_tsig = true` (default) needs a valid TSIG on inbound transfer requests.
 - `allow_from` CIDR ACL; `notify` lists secondaries for DNS NOTIFY after zone create.

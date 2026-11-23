@@ -39,7 +39,7 @@ A zone whose records this node owns and signs.
 _Avoid_: Domain, primary zone
 
 **Secondary Zone**:
-A read-only copy of a zone owned elsewhere, kept current by zone transfer.
+A read-only copy of a zone owned elsewhere, kept current by zone transfer. A signed zone is served with the signatures it was received with and is never signed here.
 _Avoid_: Slave zone
 
 ### Deployment

@@ -261,6 +261,7 @@ func main() {
 	kominfoMgr.SetEnabled(cfg.KominfoSync.Enabled)
 	dnsSrv.SetKominfo(kominfoMgr)
 	log.Info("axfr sync ready", "enabled", kominfoMgr.Enabled(), "targets", kominfoMgr.Targets())
+	go dnsSrv.RunSignatureRefresh(context.Background()) // new transfer signatures bump the serial of signed zones
 
 	rest := api.New(cfg, dnsSrv, db, auth, log)
 	rest.SetDataDir(*dataDir)

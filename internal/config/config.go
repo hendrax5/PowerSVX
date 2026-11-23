@@ -126,6 +126,13 @@ type TransferConfig struct {
 	Notify []string `toml:"notify"`
 	// AllowFrom CIDRs allowed to request AXFR (empty = any if AllowAXFR).
 	AllowFrom []string `toml:"allow_from"`
+	// SignatureValidityDays is how long the RRSIGs in a transfer of a signed zone are
+	// valid (0 = 30). SignatureRefreshDays is how often they are renewed: the zone's
+	// SOA serial is bumped, and secondaries notified, once per interval (0 = 7).
+	// Refresh is held to at most half of validity, which leaves a secondary at least
+	// validity minus refresh days to pull before its signatures expire.
+	SignatureValidityDays int `toml:"signature_validity_days"`
+	SignatureRefreshDays  int `toml:"signature_refresh_days"`
 }
 
 // KominfoSyncConfig controls automatic NOTIFY/AXFR sync to Kominfo secondaries.
