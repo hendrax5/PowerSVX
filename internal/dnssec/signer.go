@@ -257,68 +257,11 @@ func (s *Signer) SignDenialForNames(zone, qname string, names map[string][]uint1
 		return nil
 	}
 	now := time.Now().UTC()
-	inc := now.Add(30 * 24 * time.Hour)
 
 	if zk.Policy.NSEC3 {
-		s.appendNSEC3Denial(zone, qname, zk, now, inc, resp)
-		return nil
+		return s.signNSEC3Denial(zone, qname, zk, names, now, resp)
 	}
 	return s.signNSECDenial(zone, qname, zk, names, now, resp)
-}
-
-func (s *Signer) appendNSEC3Denial(zone, qname string, zk *zoneKeys, now, inc time.Time, resp *dns.Msg) {
-	salt := zk.Policy.Salt
-	if salt == "" {
-		salt = "a1b2c3d4"
-	}
-	hashed := dns.HashName(qname, dns.SHA1, 1, salt)
-	owner := hashed + "." + zone
-	// Construct enclosing NSEC3 interval around hashed owner name
-	nextHash := hashed
-	if len(nextHash) > 0 {
-		last := nextHash[len(nextHash)-1]
-		if last == 'V' {
-			nextHash = nextHash[:len(nextHash)-1] + "0"
-		} else {
-			nextHash = nextHash[:len(nextHash)-1] + string(last+1)
-		}
-	}
-	nsec3 := &dns.NSEC3{
-		Hdr: dns.RR_Header{
-			Name:   owner,
-			Rrtype: dns.TypeNSEC3,
-			Class:  dns.ClassINET,
-			Ttl:    300,
-		},
-		Hash:       dns.SHA1,
-		Flags:      0,
-		Iterations: 1,
-		SaltLength: uint8(len(salt) / 2),
-		Salt:       salt,
-		HashLength: 20,
-		NextDomain: nextHash,
-		TypeBitMap: []uint16{dns.TypeSOA, dns.TypeRRSIG},
-	}
-	resp.Ns = append(resp.Ns, nsec3)
-	sig := &dns.RRSIG{
-		Hdr: dns.RR_Header{
-			Name:   owner,
-			Rrtype: dns.TypeRRSIG,
-			Class:  dns.ClassINET,
-			Ttl:    300,
-		},
-		TypeCovered: dns.TypeNSEC3,
-		Algorithm:   zk.ZSK.Algorithm,
-		Labels:      uint8(dns.CountLabel(owner)),
-		OrigTtl:     300,
-		Expiration:  uint32(inc.Unix()),
-		Inception:   uint32(now.Unix()),
-		KeyTag:      zk.ZSK.KeyTag(),
-		SignerName:  zone,
-	}
-	if err := sig.Sign(zk.ZSKPriv, []dns.RR{nsec3}); err == nil {
-		resp.Ns = append(resp.Ns, sig)
-	}
 }
 
 func groupAuthAnswers(rrs []dns.RR) [][]dns.RR {

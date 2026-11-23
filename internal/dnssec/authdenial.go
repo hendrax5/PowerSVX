@@ -93,7 +93,8 @@ func newDenialZone(apex string, names map[string][]uint16) *denialZone {
 	add := func(name string, types []uint16) {
 		z.types[name] = append(z.types[name], types...)
 	}
-	add(apex, nil)
+	// The apex also owns the DNSKEY RRset, which the handler answers from the signer.
+	add(apex, []uint16{dns.TypeDNSKEY})
 	for n, t := range names {
 		cn := dns.CanonicalName(n)
 		if cn != apex && !dns.IsSubDomain(apex, cn) {
@@ -242,20 +243,15 @@ func signRRset(zone string, rrs []dns.RR, key *dns.DNSKEY, priv crypto.Signer, n
 	return sig, nil
 }
 
-// signNSECDenial adds the signed NSEC proof to resp, and signs the SOA that
+// signNegative attaches the proof to resp and signs it and the SOA that
 // accompanies it: a validator rejects a negative answer whose SOA is unsigned.
-func (s *Signer) signNSECDenial(zone, qname string, zk *zoneKeys, names map[string][]uint16, now time.Time, resp *dns.Msg) error {
-	z := newDenialZone(zone, names)
-	// The apex also owns the DNSKEY RRset, which the handler answers from the signer.
-	z.types[z.apex] = sortUniqueTypes(append(z.types[z.apex], dns.TypeDNSKEY))
-
+func signNegative(zone string, zk *zoneKeys, now time.Time, resp *dns.Msg, proof []dns.RR) error {
 	var soaSet []dns.RR
 	for _, rr := range resp.Ns {
 		if rr.Header().Rrtype == dns.TypeSOA {
 			soaSet = append(soaSet, rr)
 		}
 	}
-	ttl := negativeTTL(resp)
 	var errs []error
 	if len(soaSet) > 0 {
 		if sig, err := signRRset(zone, soaSet, zk.ZSK, zk.ZSKPriv, now); err == nil {
@@ -264,16 +260,162 @@ func (s *Signer) signNSECDenial(zone, qname string, zk *zoneKeys, names map[stri
 			errs = append(errs, err)
 		}
 	}
-	for _, n := range z.nsecProof(qname, resp.Rcode == dns.RcodeNameError, ttl) {
-		sig, err := signRRset(zone, []dns.RR{n}, zk.ZSK, zk.ZSKPriv, now)
+	for _, rr := range proof {
+		sig, err := signRRset(zone, []dns.RR{rr}, zk.ZSK, zk.ZSKPriv, now)
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		resp.Ns = append(resp.Ns, n, sig)
+		resp.Ns = append(resp.Ns, rr, sig)
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("dnssec denial for %s: %v", qname, errs)
+		return fmt.Errorf("dnssec denial incomplete: %v", errs)
 	}
 	return nil
+}
+
+// signNSECDenial adds the signed NSEC proof for an NSEC-signed zone.
+func (s *Signer) signNSECDenial(zone, qname string, zk *zoneKeys, names map[string][]uint16, now time.Time, resp *dns.Msg) error {
+	z := newDenialZone(zone, names)
+	var proof []dns.RR
+	for _, n := range z.nsecProof(qname, resp.Rcode == dns.RcodeNameError, negativeTTL(resp)) {
+		proof = append(proof, n)
+	}
+	return signNegative(zone, zk, now, resp, proof)
+}
+
+// NSEC3 (RFC 5155). The hash algorithm is SHA-1, there is no opt-out, and the
+// number of additional iterations is fixed; the salt is the zone policy's.
+const (
+	nsec3Iterations uint16 = 1
+	// nsec3DefaultSalt is the salt of a zone whose policy has NSEC3 but no salt.
+	nsec3DefaultSalt = "a1b2c3d4"
+)
+
+// nsec3Entry is one record of the NSEC3 chain.
+type nsec3Entry struct {
+	hash  string // base32hex, upper case; sorts as the hash octets do
+	types []uint16
+}
+
+type nsec3Chain struct {
+	zone    string
+	salt    string
+	entries []nsec3Entry // sorted by hash
+}
+
+func nsec3Hash(name, salt string) string {
+	return dns.HashName(name, dns.SHA1, nsec3Iterations, salt)
+}
+
+// nsec3Chain hashes every name of the zone, the apex and the empty
+// non-terminals included, and sorts the result by hash.
+func (z *denialZone) nsec3Chain(salt string) *nsec3Chain {
+	c := &nsec3Chain{zone: z.apex, salt: salt}
+	for name := range z.exists {
+		if name != z.apex && !dns.IsSubDomain(z.apex, name) {
+			continue
+		}
+		var types []uint16
+		if owned, ok := z.types[name]; ok {
+			types = append(types, owned...)
+			types = append(types, dns.TypeRRSIG)
+		}
+		c.entries = append(c.entries, nsec3Entry{hash: nsec3Hash(name, salt), types: sortUniqueTypes(types)})
+	}
+	sort.Slice(c.entries, func(i, j int) bool { return c.entries[i].hash < c.entries[j].hash })
+	return c
+}
+
+// coverIndex is the index of the last entry whose hash sorts before h; a hash
+// smaller than all of them is covered by the last record, which wraps.
+func (c *nsec3Chain) coverIndex(h string) int {
+	i := sort.Search(len(c.entries), func(i int) bool { return c.entries[i].hash >= h })
+	if i == 0 {
+		return len(c.entries) - 1
+	}
+	return i - 1
+}
+
+func (c *nsec3Chain) indexOf(h string) (int, bool) {
+	i := sort.Search(len(c.entries), func(i int) bool { return c.entries[i].hash >= h })
+	return i, i < len(c.entries) && c.entries[i].hash == h
+}
+
+func (c *nsec3Chain) record(i int, ttl uint32) *dns.NSEC3 {
+	e := c.entries[i]
+	return &dns.NSEC3{
+		Hdr:        dns.RR_Header{Name: e.hash + "." + c.zone, Rrtype: dns.TypeNSEC3, Class: dns.ClassINET, Ttl: ttl},
+		Hash:       dns.SHA1,
+		Flags:      0,
+		Iterations: nsec3Iterations,
+		SaltLength: uint8(len(c.salt) / 2),
+		Salt:       c.salt,
+		HashLength: 20,
+		NextDomain: c.entries[(i+1)%len(c.entries)].hash,
+		TypeBitMap: e.types,
+	}
+}
+
+// matchOrCover is the record that has hash h as its owner, or else the one
+// that covers h.
+func (c *nsec3Chain) matchOrCover(h string) int {
+	if i, ok := c.indexOf(h); ok {
+		return i
+	}
+	return c.coverIndex(h)
+}
+
+// nsec3Proof returns the records of RFC 5155 sections 7.2.1 to 7.2.4. For
+// NODATA: the record matching qname. For NXDOMAIN, the closest encloser proof:
+// the record matching the closest encloser, the one covering the next closer
+// name and the one covering the wildcard at the closest encloser.
+func (z *denialZone) nsec3Proof(qname, salt string, nxdomain bool, ttl uint32) []*dns.NSEC3 {
+	qname = dns.CanonicalName(qname)
+	c := z.nsec3Chain(salt)
+	var idx []int
+	seen := map[int]bool{}
+	add := func(i int) {
+		if !seen[i] {
+			seen[i] = true
+			idx = append(idx, i)
+		}
+	}
+	if !nxdomain && z.exists[qname] {
+		add(c.matchOrCover(nsec3Hash(qname, salt)))
+	} else {
+		// NXDOMAIN, or NODATA for a name that only a wildcard makes exist (RFC 5155
+		// section 7.2.5): the closest encloser proof, whose wildcard record is the
+		// match for an existing wildcard.
+		ce := z.closestEncloser(qname)
+		add(c.matchOrCover(nsec3Hash(ce, salt)))
+		add(c.matchOrCover(nsec3Hash(nextCloser(qname, ce), salt)))
+		add(c.matchOrCover(nsec3Hash("*."+ce, salt)))
+	}
+	out := make([]*dns.NSEC3, 0, len(idx))
+	for _, i := range idx {
+		out = append(out, c.record(i, ttl))
+	}
+	return out
+}
+
+// nextCloser is the name one label longer than the closest encloser on the way
+// to qname.
+func nextCloser(qname, ce string) string {
+	q, c := dns.SplitDomainName(qname), dns.CountLabel(ce)
+	return dns.Fqdn(strings.Join(q[len(q)-c-1:], "."))
+}
+
+// signNSEC3Denial adds the signed NSEC3 proof for an NSEC3-signed zone.
+func (s *Signer) signNSEC3Denial(zone, qname string, zk *zoneKeys, names map[string][]uint16, now time.Time, resp *dns.Msg) error {
+	salt := zk.Policy.Salt
+	if salt == "" {
+		salt = nsec3DefaultSalt
+	}
+	z := newDenialZone(zone, names)
+	var proof []dns.RR
+	for _, n := range z.nsec3Proof(qname, salt, resp.Rcode == dns.RcodeNameError, negativeTTL(resp)) {
+		proof = append(proof, n)
+	}
+	return signNegative(zone, zk, now, resp, proof)
 }
