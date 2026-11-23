@@ -67,6 +67,13 @@ WEB_PASS="${POWERSVX_DNSDIST_WEB_PASSWORD:-powersvx}"
 API_KEY="${POWERSVX_DNSDIST_API_KEY:-powersvx-api}"
 RECURSIVE_PORT="${POWERSVX_UNBOUND_BACKEND_PORT:-5353}"
 AUTH_PORT="${POWERSVX_AUTH_BACKEND_PORT:-5354}"
+# 1 (default): dnsdist sends a PROXY protocol v2 header with the real client address to the Auth Backend
+# (docs/adr/0003). Then dnsdist adds no ECS option (it would sit behind a TSIG record and break the
+# signature) and the Auth Backend pool has no packet cache (the cache key cannot contain the PROXY address,
+# and the answer depends on the client). 0: the earlier behaviour, ECS from dnsdist and a packet cache.
+AUTH_PROXY="${POWERSVX_AUTH_PROXY_PROTOCOL:-1}"
+AUTH_OPTS=" useClientSubnet=true,"
+if [ "$AUTH_PROXY" = "1" ]; then AUTH_OPTS=" useProxyProtocol=true,"; fi
 CDB_REFRESH="${POWERSVX_CDB_REFRESH_SEC:-30}"
 PTR_QPS="${POWERSVX_PTR_QPS_PER_IP:-50}"
 
@@ -251,13 +258,15 @@ LUA
   echo ""
   # Recursive backend pool (Unbound) and Authoritative backend pool (PowerSVX Go :5354)
   echo "newServer({address=\"127.0.0.1:${RECURSIVE_PORT}\", name=\"unbound\", sockets=${BACKEND_SOCKETS}, checkInterval=2, maxCheckFailures=5, checkTimeout=2000, rise=2})"
-  echo "newServer({address=\"127.0.0.1:${AUTH_PORT}\", name=\"powersvx-auth\", pool=\"auth\", useClientSubnet=true, checkInterval=5, maxCheckFailures=3, checkTimeout=2000, rise=2})"
+  echo "newServer({address=\"127.0.0.1:${AUTH_PORT}\", name=\"powersvx-auth\", pool=\"auth\",${AUTH_OPTS} checkInterval=5, maxCheckFailures=3, checkTimeout=2000, rise=2})"
   echo "setServerPolicy(leastOutstanding)"
   echo ""
   echo "pc = newPacketCache(${PACKET_CACHE},{maxTTL=86400, minTTL=60, maxNegativeTTL=300${CACHE_OPTS}})"
   echo "getPool(\"\"):setCache(pc)"
-  echo "pcAuth = newPacketCache(50000,{maxTTL=300, minTTL=0, maxNegativeTTL=60})"
-  echo "getPool(\"auth\"):setCache(pcAuth)"
+  if [ "$AUTH_PROXY" != "1" ]; then
+    echo "pcAuth = newPacketCache(50000,{maxTTL=300, minTTL=0, maxNegativeTTL=60})"
+    echo "getPool(\"auth\"):setCache(pcAuth)"
+  fi
   echo ""
   echo "local authzonesKVS = newCDBKVStore(\"/etc/dnsdist/blocklist/authzones.cdb\",${CDB_REFRESH})"
   echo "local whitelistKVS = newCDBKVStore(\"/etc/dnsdist/blocklist/whitelist.cdb\",${CDB_REFRESH})"

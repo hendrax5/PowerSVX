@@ -27,6 +27,7 @@ import (
 	"github.com/powersvx/powersvx/internal/metrics"
 	"github.com/powersvx/powersvx/internal/monitor"
 	"github.com/powersvx/powersvx/internal/queryring"
+	"github.com/powersvx/powersvx/internal/proxyproto"
 	"github.com/powersvx/powersvx/internal/ratelimit"
 	"github.com/powersvx/powersvx/internal/rpz"
 	"github.com/powersvx/powersvx/internal/secondary"
@@ -70,6 +71,7 @@ type Server struct {
 	aclBan       *aclban.Guard
 	udp          *dns.Server
 	udps         []*dns.Server // all UDP listeners (SO_REUSEPORT shard)
+	lnMu         sync.Mutex    // guards udp, udps and tcp: ListenAndServe sets them, Shutdown reads them
 	tcp          *dns.Server
 	queries      atomic.Uint64
 	blocked      atomic.Uint64
@@ -153,6 +155,7 @@ func New(cfg *config.Config, d Deps, log *slog.Logger) *Server {
 // isLocalSource reports whether a query came from this host. The Dataplane
 // forwards from loopback; nothing else may reach the Auth Backend.
 func isLocalSource(addr net.Addr) bool {
+	addr = proxyproto.TransportPeer(addr) // the Dataplane that sent it, not the client it names
 	if addr == nil {
 		return false
 	}
@@ -266,9 +269,23 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if s.views != nil {
 		viewName = s.views.Match(clientIP)
 	}
+	// The client address (a PROXY protocol header from the Dataplane, or the connection's
+	// own source) decides views and every allow list. GeoDNS prefers the client subnet
+	// the query carries when the query came from the Dataplane (unless [geodns]
+	// ignore_client_subnet is set);
+	// otherwise it uses the client address. See docs/adr/0003.
+	geoAddr := clientIP
+	var ecs *dns.EDNS0_SUBNET
+	if s.cfg != nil && !s.cfg.GeoDNS.IgnoreClientSubnet && isLocalSource(w.RemoteAddr()) {
+		if e := clientSubnet(req); e != nil {
+			ecs, geoAddr = e, e.Address.String()
+		}
+	}
 	geoTag := "default"
 	if s.geo != nil && s.geo.Enabled() {
-		geoTag = s.geo.Lookup(clientIP).Tag
+		geoTag = s.geo.Lookup(geoAddr).Tag
+	} else {
+		ecs = nil // no GeoDNS: nothing was steered by the subnet
 	}
 
 	if s.auth != nil {
@@ -279,6 +296,11 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			zone := s.auth.FindZone(qname)
 			if qtype == dns.TypeDNSKEY && s.signer != nil && s.signer.Enabled(zone) {
 				m.Answer = s.signer.DNSKEYs(zone)
+				m.Rcode = dns.RcodeSuccess
+				s.signer.SignResponse(zone, req, m)
+			} else if np := s.nsec3param(zone, qname, qtype, viewName, geoTag); np != nil {
+				// The apex of an NSEC3-signed zone publishes the parameters of its chain.
+				m.Answer = []dns.RR{np}
 				m.Rcode = dns.RcodeSuccess
 				s.signer.SignResponse(zone, req, m)
 			} else {
@@ -316,7 +338,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 					}
 				}
 			}
-			s.write(w, req, m)
+			s.write(w, req, m, ecs)
 			metrics.QueriesTotal.WithLabelValues(proto, "auth").Inc()
 			metrics.QueryDuration.WithLabelValues(proto).Observe(time.Since(start).Seconds())
 			return
@@ -371,6 +393,10 @@ func (s *Server) ListenAndServe() error {
 	}
 	decorate := decorateEDNSRepair
 
+	if mode, on := s.proxyMode(); on {
+		return s.listenProxied(mode, udpAddr, tcpAddr, tsigMap, accept, invalid, decorate, handler)
+	}
+
 	nUDP := s.cfg.Server.Workers
 	if nUDP <= 0 {
 		nUDP = runtime.NumCPU()
@@ -394,17 +420,14 @@ func (s *Server) ListenAndServe() error {
 			TsigSecret:     tsigMap,
 			DecorateReader: decorate,
 		}
-		if i == 0 {
-			s.udp = srv
-		}
-		s.udps = append(s.udps, srv)
+		s.addUDP(srv, i == 0)
 		idx := i
 		go func() {
 			s.log.Info("UDP listener starting", "addr", udpAddr, "shard", idx, "shards", nUDP, "reuseport", reuse)
 			errCh <- srv.ListenAndServe()
 		}()
 	}
-	s.tcp = &dns.Server{Addr: tcpAddr, Net: "tcp", Handler: handler, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap, DecorateReader: decorate}
+	s.setTCP(&dns.Server{Addr: tcpAddr, Net: "tcp", Handler: handler, MsgAcceptFunc: accept, MsgInvalidFunc: invalid, TsigSecret: tsigMap, DecorateReader: decorate})
 	go func() {
 		s.log.Info("TCP listener starting", "addr", tcpAddr)
 		errCh <- s.tcp.ListenAndServe()
@@ -418,11 +441,13 @@ func (s *Server) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var err error
+	s.lnMu.Lock()
 	shutdownDNS := append([]*dns.Server{}, s.udps...)
 	shutdownDNS = append(shutdownDNS, s.tcp)
 	if len(s.udps) == 0 && s.udp != nil {
 		shutdownDNS = append([]*dns.Server{s.udp}, s.tcp)
 	}
+	s.lnMu.Unlock()
 	for _, srv := range shutdownDNS {
 		if srv == nil {
 			continue

@@ -97,6 +97,9 @@ func (s *Signer) EnsureWithOptions(zone string, opts SignOptions) error {
 	if zk, err := s.load(zone); err == nil {
 		if opts.NSEC3 != zk.Policy.NSEC3 || opts.Algorithm == zk.Policy.Algorithm {
 			zk.Policy.NSEC3 = opts.NSEC3
+			if zk.Policy.NSEC3 && opts.Salt != "" {
+				zk.Policy.Salt = opts.Salt
+			}
 			if zk.Policy.NSEC3 && zk.Policy.Salt == "" {
 				zk.Policy.Salt = randomSaltHex(8)
 			}

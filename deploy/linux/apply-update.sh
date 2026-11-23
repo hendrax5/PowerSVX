@@ -55,7 +55,10 @@ export POWERSVX_DNS_DATAPLANE="${POWERSVX_DNS_DATAPLANE:-dnsdist}"
 bash "$ROOT/deploy/linux/gen-unbound-conf.sh" "$ROOT/configs/unbound/unbound.conf"
 if [ "$POWERSVX_DNS_DATAPLANE" = "dnsdist" ] || [ "$POWERSVX_DNS_DATAPLANE" = "cdb" ]; then
   chmod +x "$ROOT/deploy/linux/gen-dnsdist-conf.sh" || true
-  bash "$ROOT/deploy/linux/gen-dnsdist-conf.sh" "$ROOT/configs/dnsdist/dnsdist.conf"
+  # Written beside the live file and moved into place only after the new Control Plane is up
+  # (see below): a dnsdist that sends PROXY headers must never meet a Control Plane that
+  # does not understand them.
+  bash "$ROOT/deploy/linux/gen-dnsdist-conf.sh" "$ROOT/configs/dnsdist/dnsdist.conf.new"
 fi
 
 echo "==> check the Unbound configuration (before Unbound is recreated)"
@@ -101,7 +104,23 @@ else
   "${COMPOSE[@]}" build powersvx
 fi
 if [ "$POWERSVX_DNS_DATAPLANE" = "dnsdist" ] || [ "$POWERSVX_DNS_DATAPLANE" = "cdb" ]; then
-  "${COMPOSE[@]}" up -d --no-deps --force-recreate unbound dnsdist powersvx
+  # 1. The new Control Plane first: with [server] proxy_protocol = "optional" it answers both the
+  #    old dnsdist (plain queries) and the new one (PROXY headers).
+  "${COMPOSE[@]}" up -d --no-deps --force-recreate powersvx
+  echo "==> waiting for the new Control Plane before the dnsdist configuration changes"
+  cp_up=0
+  for _ in $(seq 1 60); do
+    if curl -fsS -m 3 "http://127.0.0.1:${POWERSVX_API_PORT:-5380}/api/v1/health" >/dev/null 2>&1; then cp_up=1; break; fi
+    sleep 2
+  done
+  if [ "$cp_up" != 1 ]; then
+    echo "WARNING: the Control Plane did not answer /api/v1/health within 120 s; the dnsdist configuration was NOT replaced." >&2
+    echo "The new configuration is configs/dnsdist/dnsdist.conf.new. Move it into place and recreate dnsdist once the Control Plane is healthy." >&2
+    exit 1
+  fi
+  # 2. Then the dnsdist configuration and the Dataplane containers.
+  mv -f "$ROOT/configs/dnsdist/dnsdist.conf.new" "$ROOT/configs/dnsdist/dnsdist.conf"
+  "${COMPOSE[@]}" up -d --no-deps --force-recreate unbound dnsdist
 else
   "${COMPOSE[@]}" stop dnsdist 2>/dev/null || true
   "${COMPOSE[@]}" rm -f dnsdist 2>/dev/null || true

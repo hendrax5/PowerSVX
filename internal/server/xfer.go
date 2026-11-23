@@ -67,13 +67,16 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 	}
 
 	soa := findOrSynthSOA(zone, recs)
+	// NSEC3PARAM is published from the signing policy, not stored; a zone that has
+	// one is always sent in full so a secondary never misses a parameter change.
+	np := s.nsec3param(zone, zone, 0, "", "")
 	var rrs []dns.RR
 	if q.Qtype == dns.TypeIXFR && len(req.Ns) > 0 {
 		if clientSOA, isSOA := req.Ns[0].(*dns.SOA); isSOA {
 			if deltas, curSerial, ok := s.auth.IXFRDeltas(zone, clientSOA.Serial); ok {
 				if curSerial == clientSOA.Serial || int32(curSerial-clientSOA.Serial) <= 0 {
 					rrs = []dns.RR{soa}
-				} else {
+				} else if np == nil {
 					rrs = make([]dns.RR, 0, 16)
 					rrs = append(rrs, soa)
 					for _, d := range deltas {
@@ -115,6 +118,9 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 			if rr := authoritative.RecordToRR(rec); rr != nil {
 				rrs = append(rrs, rr)
 			}
+		}
+		if np != nil {
+			rrs = append(rrs, np)
 		}
 		rrs = append(rrs, soa)
 	}
@@ -210,4 +216,28 @@ func (s *Server) NotifySecondaries(zone string) {
 			}
 		}(addr)
 	}
+}
+
+// nsec3param returns the NSEC3PARAM record that belongs at the apex of zone when
+// qname/qtype ask for it (qtype NSEC3PARAM at the apex; any qtype when qtype is
+// 0), and the zone is signed with NSEC3. Nil otherwise.
+func (s *Server) nsec3param(zone, qname string, qtype uint16, viewName, geoTag string) *dns.NSEC3PARAM {
+	if s.signer == nil || qtype != dns.TypeNSEC3PARAM && qtype != 0 || qname != zone {
+		return nil
+	}
+	return s.signer.NSEC3PARAM(zone, s.apexNegativeTTL(zone, viewName, geoTag))
+}
+
+// apexNegativeTTL is the zone's SOA minimum capped by the SOA TTL (RFC 2308
+// section 5), the TTL RFC 5155 section 4 gives NSEC3PARAM.
+func (s *Server) apexNegativeTTL(zone, viewName, geoTag string) uint32 {
+	if soaRRs, ok := s.auth.LookupScoped(zone, dns.TypeSOA, viewName, geoTag); ok && len(soaRRs) > 0 {
+		if soa, ok := soaRRs[0].(*dns.SOA); ok {
+			if soa.Minttl < soa.Hdr.Ttl {
+				return soa.Minttl
+			}
+			return soa.Hdr.Ttl
+		}
+	}
+	return 300
 }
