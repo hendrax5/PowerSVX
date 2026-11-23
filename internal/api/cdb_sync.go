@@ -109,6 +109,93 @@ func writeFeedFileAtomic(path string, names []string) error {
 	return os.Rename(tmp, path)
 }
 
+// mergeFeedFile applies an IXFR delta to a feed cache file by streaming it: lines in removed are
+// dropped, lines in added that the file lacks are appended, everything else stays in order.
+// Memory use is the size of the delta, not of the feed. An unreadable feed returns an error and
+// leaves the file as it was, so the caller can fall back to a full transfer.
+func mergeFeedFile(path string, removed, added []string) (int, error) {
+	norm := func(s string) string { return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s), ".")) }
+	rm := make(map[string]struct{}, len(removed))
+	for _, n := range removed {
+		rm[norm(n)] = struct{}{}
+	}
+	add := make(map[string]bool, len(added))
+	addOrder := make([]string, 0, len(added))
+	for _, n := range added {
+		if n = norm(n); n != "" {
+			if _, dup := add[n]; !dup {
+				add[n] = false
+				addOrder = append(addOrder, n)
+			}
+		}
+	}
+	in, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer in.Close()
+	tmp := path + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return 0, err
+	}
+	done := false
+	defer func() {
+		if !done {
+			_ = out.Close()
+			_ = os.Remove(tmp)
+		}
+	}()
+	w := bufio.NewWriterSize(out, 1<<20)
+	count := 0
+	put := func(n string) error {
+		count++
+		if _, err := w.WriteString(n); err != nil {
+			return err
+		}
+		return w.WriteByte('\n')
+	}
+	sc := bufio.NewScanner(in)
+	sc.Buffer(make([]byte, 0, 1024*1024), 8*1024*1024)
+	for sc.Scan() {
+		line := strings.ToLower(strings.TrimSpace(sc.Text()))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if _, drop := rm[line]; drop {
+			continue
+		}
+		if _, ok := add[line]; ok {
+			add[line] = true
+		}
+		if err := put(line); err != nil {
+			return 0, err
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return 0, err
+	}
+	for _, n := range addOrder {
+		if !add[n] {
+			if err := put(n); err != nil {
+				return 0, err
+			}
+		}
+	}
+	if err := w.Flush(); err != nil {
+		return 0, err
+	}
+	if err := out.Close(); err != nil {
+		return 0, err
+	}
+	done = true
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return 0, err
+	}
+	return count, nil
+}
+
 func streamAXFRToFeedFile(ctx context.Context, zone string, masters []string, auth rpz.TSIGAuth, path string) (serial uint32, master string, count int, err error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return 0, "", 0, err
@@ -256,7 +343,7 @@ func (a *API) pullAndWriteBlockCDB(parent context.Context, policies []rpz.Policy
 					}
 					a.log.Info("axfr pull ok", "policy", p.Name, "mode", mode, "names", len(res.Names), "serial", res.Serial, "master", master)
 				} else {
-					base, rerr := readDomainsTxt(feedPath)
+					_, rerr := mergeFeedFile(feedPath, res.Removed, res.Added)
 					if rerr != nil {
 						ser, m, cnt, serr := streamAXFRToFeedFile(ctx, zone, p.Masters, auth, feedPath)
 						if serr != nil {
@@ -273,26 +360,6 @@ func (a *API) pullAndWriteBlockCDB(parent context.Context, policies []rpz.Policy
 						}
 						a.log.Info("axfr pull ok", "policy", p.Name, "mode", mode, "names", cnt, "serial", ser, "master", master)
 					} else {
-						set := make(map[string]struct{}, len(base)+len(res.Added))
-						for _, n := range base {
-							set[n] = struct{}{}
-						}
-						for _, n := range res.Removed {
-							delete(set, strings.ToLower(strings.TrimSuffix(strings.TrimSpace(n), ".")))
-						}
-						for _, n := range res.Added {
-							n = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(n), "."))
-							if n != "" {
-								set[n] = struct{}{}
-							}
-						}
-						merged := make([]string, 0, len(set))
-						for n := range set {
-							merged = append(merged, n)
-						}
-						if werr := writeFeedFileAtomic(feedPath, merged); werr != nil {
-							return 0, werr
-						}
 						mode = "ixfr"
 						a.log.Info("ixfr pull ok", "policy", p.Name, "added", len(res.Added), "removed", len(res.Removed), "serial", res.Serial, "master", master)
 					}
@@ -355,17 +422,8 @@ func (a *API) pullAndWriteBlockCDB(parent context.Context, policies []rpz.Policy
 		return 0, nil
 	}
 
-	var all []string
-	for _, fp := range feedFiles {
-		names, err := readDomainsTxt(fp)
-		if err != nil {
-			return 0, fmt.Errorf("read feed cache %s: %w", filepath.Base(fp), err)
-		}
-		all = append(all, names...)
-	}
-
-	filtered := blockcdb.FilterBlockNames(all)
-	_, cdbN, err := blockcdb.SyncNamesGuardedContext(ctx, a.dataDir, filtered)
+	// The feed caches stream through the rebuild; their names are never all in memory at once.
+	_, cdbN, err := blockcdb.SyncFeedFilesGuardedContext(ctx, a.dataDir, feedFiles)
 	if err != nil {
 		return 0, err
 	}

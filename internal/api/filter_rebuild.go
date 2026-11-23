@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"runtime/debug"
 	"time"
 
 	"github.com/powersvx/powersvx/internal/blockcdb"
@@ -108,6 +109,9 @@ func (a *API) runFilterRebuild(ctx context.Context, policies []rpz.PolicyConfig,
 	_ = blockcdb.WriteSyncStatus(a.dataDir, status)
 
 	n, err := a.pullAndWriteBlockCDB(ctx, policies)
+	// A rebuild is the one place the process holds tens of MB beyond its idle footprint: hand the
+	// pages back now rather than whenever the runtime scavenger gets to them.
+	debug.FreeOSMemory()
 
 	finished := time.Now().UTC()
 	status.FinishedAt = finished

@@ -109,12 +109,12 @@ type StaleTmp struct {
 func CleanStaleTmp(dataDir string) []StaleTmp { return cleanTmp(dataDir, nil) }
 
 // CleanRebuildTmp is the narrow variant run at the start of each rebuild: it removes only
-// the temporary files the rebuild itself writes (domains.txt.tmp, domains.cdb.tmp and feed
+// the temporary files the rebuild itself writes (domains.txt.tmp, domains.cdb.tmp, domains.names.tmp and feed
 // cache temp files), leaving temp files of unrelated writers that may be in flight.
 func CleanRebuildTmp(dataDir string) []StaleTmp {
 	return cleanTmp(dataDir, func(rel string) bool {
 		switch rel {
-		case DomainsFile + tmpSuffix, CDBFile + tmpSuffix:
+		case DomainsFile + tmpSuffix, CDBFile + tmpSuffix, NamesScratchFile:
 			return true
 		}
 		return strings.HasPrefix(rel, "feeds/") && strings.HasSuffix(rel, ".txt"+tmpSuffix)
