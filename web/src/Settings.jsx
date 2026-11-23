@@ -9,7 +9,6 @@ import {
   GlobeSimple,
   HardDrives,
   LockSimple,
-  Network,
   ShieldCheck,
   Stack,
 } from '@phosphor-icons/react'
@@ -82,7 +81,6 @@ function parseHash() {
   if (raw === 'tools') return { section: 'tools', tool: 'axfr' }
   if (raw === 'features' || raw === 'engines') return { section: 'engines', tool: 'axfr' }
   if (raw === 'rate_limit' || raw === 'ratelimit') return { section: 'rate-limit', tool: 'axfr' }
-  if (raw === 'transparent' || raw === 'intercept') return { section: 'tproxy', tool: 'axfr' }
   if (raw === 'os' || raw === 'kernel' || raw === 'conntrack') return { section: 'conntrack', tool: 'axfr' }
   if (raw === 'network' || raw === 'nic' || raw === 'hostnet') return { section: 'network', tool: 'axfr' }
   return { section: raw, tool: 'axfr' }
@@ -113,9 +111,6 @@ export default function Settings({ tools = {} }) {
   const [fzEditIdx, setFzEditIdx] = useState(-1)
   const [rlWlInput, setRlWlInput] = useState('')
   const [rlWlEditIdx, setRlWlEditIdx] = useState(-1)
-  const [tproxy, setTproxy] = useState(null)
-  const [tpDraft, setTpDraft] = useState(null)
-  const [tpBusy, setTpBusy] = useState(false)
   const [conntrack, setConntrack] = useState(null)
   const [ctDraft, setCtDraft] = useState(null)
   const [ctBusy, setCtBusy] = useState(false)
@@ -177,14 +172,6 @@ export default function Settings({ tools = {} }) {
     )
   }
 
-  const toTpDraft = (t) => ({
-    tproxy_listen: !!t.tproxy_listen,
-    tproxy_intercept: !!t.tproxy_intercept,
-    tproxy_iface: t.tproxy_iface || '',
-    tproxy_mode: t.tproxy_mode === 'all' || t.tproxy_mode === 'custom' ? t.tproxy_mode : 'public',
-    tproxy_resolvers: Array.isArray(t.tproxy_resolvers) ? t.tproxy_resolvers.join('\n') : '',
-  })
-
   const toCtDraft = (c) => ({
     conntrack_managed: !!c.conntrack_managed,
     conntrack_max: Number(c.conntrack_max) || Number(c.default_max) || 2097152,
@@ -196,18 +183,13 @@ export default function Settings({ tools = {} }) {
     Promise.all([
       api.settings(),
       api.rpz(),
-      typeof api.tproxy === 'function' ? api.tproxy().catch(() => null) : Promise.resolve(null),
       typeof api.conntrack === 'function' ? api.conntrack().catch(() => null) : Promise.resolve(null),
       typeof api.hostNetwork === 'function' ? api.hostNetwork().catch(() => null) : Promise.resolve(null),
     ])
-      .then(([s, r, t, ct, hn]) => {
+      .then(([s, r, ct, hn]) => {
         setSaved(s)
         setDraft(toDraft(s))
         setRpz(r)
-        if (t) {
-          setTproxy(t)
-          setTpDraft(toTpDraft(t))
-        }
         if (ct) {
           setConntrack(ct)
           setCtDraft(toCtDraft(ct))
@@ -497,98 +479,6 @@ export default function Settings({ tools = {} }) {
     }
   }
 
-  const tpDirty =
-    tproxy &&
-    tpDraft &&
-    (!!tpDraft.tproxy_listen !== !!tproxy.tproxy_listen ||
-      !!tpDraft.tproxy_intercept !== !!tproxy.tproxy_intercept ||
-      (tpDraft.tproxy_iface || '') !== (tproxy.tproxy_iface || '') ||
-      (tpDraft.tproxy_mode || 'public') !== (tproxy.tproxy_mode || 'public') ||
-      !sameList(tpDraft.tproxy_resolvers, tproxy.tproxy_resolvers || []))
-
-  const saveTProxy = async (extra = {}) => {
-    if (!tpDraft) return
-    setTpBusy(true)
-    setErr('')
-    setOk('')
-    try {
-      const body = {
-        tproxy_listen: !!tpDraft.tproxy_listen,
-        tproxy_intercept: !!tpDraft.tproxy_intercept,
-        tproxy_iface: (tpDraft.tproxy_iface || '').trim(),
-        tproxy_mode: tpDraft.tproxy_mode || 'public',
-        tproxy_resolvers: linesToList(tpDraft.tproxy_resolvers),
-        apply_now: true,
-        ...extra,
-      }
-      const t = await api.updateTProxy(body)
-      setTproxy(t)
-      setTpDraft(toTpDraft(t))
-      if (t.apply_error) {
-        setErr(t.apply_error)
-        setOk('Saved settings, but intercept apply failed')
-      } else {
-        setOk(
-          t.tproxy_listen_needs_restart
-            ? 'Saved — restart service to apply transparent sockets'
-            : 'Saved — intercept applied live',
-        )
-      }
-    } catch (ex) {
-      setErr(ex.message)
-    } finally {
-      setTpBusy(false)
-    }
-  }
-
-  const applyTProxyNow = async () => {
-    setTpBusy(true)
-    setErr('')
-    setOk('')
-    try {
-      const t = await api.applyTProxy()
-      setTproxy(t)
-      setTpDraft(toTpDraft(t))
-      if (t.apply_error) setErr(t.apply_error)
-      else setOk('Intercept applied')
-    } catch (ex) {
-      setErr(ex.message)
-    } finally {
-      setTpBusy(false)
-    }
-  }
-
-  const disableTProxyNow = async () => {
-    setTpBusy(true)
-    setErr('')
-    setOk('')
-    try {
-      const t = await api.disableTProxy()
-      setTproxy(t)
-      setTpDraft(toTpDraft(t))
-      if (t.apply_error) setErr(t.apply_error)
-      else setOk('Intercept disabled')
-    } catch (ex) {
-      setErr(ex.message)
-    } finally {
-      setTpBusy(false)
-    }
-  }
-
-  const restartForTProxy = async () => {
-    if (!window.confirm('Restart PowerSVX to apply transparent socket (tproxy_listen)?')) return
-    setTpBusy(true)
-    setErr('')
-    setOk('')
-    try {
-      await api.restartTProxy()
-      setOk('Restarting… reload this page in a few seconds')
-    } catch (ex) {
-      setErr(ex.message)
-      setTpBusy(false)
-    }
-  }
-
   const ctDirty =
     conntrack &&
     ctDraft &&
@@ -725,8 +615,7 @@ export default function Settings({ tools = {} }) {
   if (!saved || !draft) return <LoadingBlock label="Loading settings" />
 
   const allowEmpty = linesToList(draft.allow_query).length === 0
-  const needsForwarders =
-    draft.resolver_mode === 'forward' || (draft.resolver_mode === 'recursive' && draft.forward_on_fail)
+  const needsForwarders = draft.resolver_mode === 'forward'
   const noForwarders = (draft.forwarders || []).length === 0
   // Unbound recurses by itself behind dnsdist. Never save its own address as a forwarder:
   // that makes Unbound forward to itself, and the API refuses it.
@@ -744,7 +633,7 @@ export default function Settings({ tools = {} }) {
           hint: 'Lookup path & upstreams',
           Icon: Stack,
           dirty: dirtyFlags.dns,
-          pill: isUnboundBackend ? '127.0.0.1:5353' : draft.resolver_mode === 'forward' ? 'Forward' : 'Recursive',
+          pill: isUnboundBackend ? '127.0.0.1:5353' : 'Forward',
         },
         {
           id: 'access',
@@ -790,16 +679,8 @@ export default function Settings({ tools = {} }) {
     {
       id: 'system',
       group: 'System & Dataplane',
-      desc: 'Kernel TPROXY, Conntrack & Host Network',
+      desc: 'Kernel Conntrack & Host Network',
       items: [
-        {
-          id: 'tproxy',
-          label: 'TPROXY Intercept',
-          hint: 'Transparent DNS routing',
-          Icon: Network,
-          dirty: !!tpDirty,
-          pill: tproxy?.status?.applied ? 'active' : 'idle',
-        },
         {
           id: 'conntrack',
           label: 'Kernel Conntrack',
@@ -900,14 +781,14 @@ export default function Settings({ tools = {} }) {
         actions={
           editableSection && isAdmin
             ? saveBar
-            : section === 'tproxy' && isAdmin
+            : section === 'conntrack' && isAdmin
               ? (
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      disabled={!tpDirty || tpBusy}
+                      disabled={!ctDirty || ctBusy}
                       onClick={() => {
-                        if (tproxy) setTpDraft(toTpDraft(tproxy))
+                        if (conntrack) setCtDraft(toCtDraft(conntrack))
                         setOk('')
                         setErr('')
                       }}
@@ -917,40 +798,15 @@ export default function Settings({ tools = {} }) {
                     </button>
                     <button
                       type="button"
-                      disabled={!tpDirty || tpBusy}
-                      onClick={() => saveTProxy()}
+                      disabled={!ctDirty || ctBusy}
+                      onClick={saveConntrack}
                       className="btn btn-primary min-h-[44px] disabled:opacity-40"
                     >
-                      {tpBusy ? 'Saving…' : 'Save & apply'}
+                      {ctBusy ? 'Saving…' : 'Save & apply'}
                     </button>
                   </div>
                 )
-              : section === 'conntrack' && isAdmin
-                ? (
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        disabled={!ctDirty || ctBusy}
-                        onClick={() => {
-                          if (conntrack) setCtDraft(toCtDraft(conntrack))
-                          setOk('')
-                          setErr('')
-                        }}
-                        className="btn btn-secondary min-h-[44px] disabled:opacity-40"
-                      >
-                        Discard
-                      </button>
-                      <button
-                        type="button"
-                        disabled={!ctDirty || ctBusy}
-                        onClick={saveConntrack}
-                        className="btn btn-primary min-h-[44px] disabled:opacity-40"
-                      >
-                        {ctBusy ? 'Saving…' : 'Save & apply'}
-                      </button>
-                    </div>
-                  )
-                : null
+              : null
         }
       />
 
@@ -1023,7 +879,7 @@ export default function Settings({ tools = {} }) {
                 <div className="routing-flow-step">
                   <span className="routing-flow-title">1. Client Ingress</span>
                   <span className="routing-flow-val">0.0.0.0:53</span>
-                  <span className="routing-flow-sub">UDP · TCP · DoH Sockets</span>
+                  <span className="routing-flow-sub">dnsdist listeners</span>
                 </div>
                 <span className="routing-flow-arrow">➔</span>
                 <div className="routing-flow-step">
@@ -1046,14 +902,14 @@ export default function Settings({ tools = {} }) {
                 <span className="routing-flow-arrow">➔</span>
                 <div className="routing-flow-step">
                   <span className="routing-flow-title">4. Resolver Target</span>
-                  <span className="routing-flow-val">{isUnboundBackend ? 'Unbound :5353' : draft.resolver_mode}</span>
-                  <span className="routing-flow-sub">{isUnboundBackend ? 'Local Root Recurse' : `${(draft.forwarders || []).length} Upstreams`}</span>
+                  <span className="routing-flow-val">Unbound :5353</span>
+                  <span className="routing-flow-sub">{isUnboundBackend ? 'Local Root Recurse' : `Forwards to ${(draft.forwarders || []).length} Upstreams`}</span>
                 </div>
               </div>
 
               {needsForwarders && noForwarders ? (
                 <SettingCallout tone="warn">
-                  No forwarders configured — add at least one for forward mode, Unbound backend, or recursive fallback.
+                  No forwarders configured — add at least one for Forward mode.
                 </SettingCallout>
               ) : null}
               {isUnboundBackend ? (
@@ -1066,16 +922,14 @@ export default function Settings({ tools = {} }) {
               <SettingSection
                 id="settings-dns-heading"
                 title="Lookup Mode & Engine Strategy"
-                hint="Pick how PowerSVX resolves cache misses. Conditional forward zones always override this for matching domains."
+                hint="Pick how Unbound resolves cache misses. Conditional forward zones always override this for matching domains."
               >
                 <div className="settings-mode-grid">
                   {[
                     ['unbound', 'Unbound backend', 'Default ISP — Unbound behind dnsdist resolves cache misses by itself, no forwarders', '< 1ms local'],
                     ['forward', 'Forward Proxy', 'Send all misses to the forwarders list (Cloudflare, Google, or any upstream)', '~15-30ms'],
-                    ['recursive', 'Recursive (Go Native)', 'Lab only — ask the DNS root nameservers directly from PowerSVX', '~80-150ms'],
                   ].map(([mode, title, desc, lat]) => {
-                    const selected =
-                      mode === 'unbound' ? isUnboundBackend : draft.resolver_mode === mode && !isUnboundBackend
+                    const selected = mode === 'unbound' ? isUnboundBackend : !isUnboundBackend
                     return (
                       <button
                         key={mode}
@@ -1093,7 +947,7 @@ export default function Settings({ tools = {} }) {
                             }))
                             return
                           }
-                          setDraft((d) => ({ ...d, resolver_mode: mode }))
+                          setDraft((d) => ({ ...d, resolver_mode: 'forward' }))
                         }}
                         className={`settings-mode-card ${selected ? 'is-selected' : ''}`}
                         aria-pressed={selected}
@@ -1116,14 +970,10 @@ export default function Settings({ tools = {} }) {
                   })}
                 </div>
                 <SettingToggle
-                  label="Fallback to forwarders"
-                  hint={
-                    draft.resolver_mode !== 'recursive'
-                      ? 'Only available in recursive (Go) mode'
-                      : 'If recursive fails, try configured forwarders'
-                  }
+                  label="Fall back to recursion"
+                  hint="Forward-first: if the upstreams of a forward zone (or, in Forward mode, every upstream) do not answer, Unbound resolves the name itself"
                   pressed={!!draft.forward_on_fail}
-                  disabled={busy || !isAdmin || draft.resolver_mode !== 'recursive'}
+                  disabled={busy || !isAdmin}
                   dirty={!!draft.forward_on_fail !== (saved.forward_on_fail !== false)}
                   onToggle={() => toggle('forward_on_fail')}
                 />
@@ -1135,7 +985,7 @@ export default function Settings({ tools = {} }) {
                 hint={
                   isUnboundBackend
                     ? 'Unbound backend recurses by itself: leave this list empty. Do not list 127.0.0.1:5353 (Unbound) or :53 (dnsdist): the API refuses it.'
-                    : 'Upstream for forward mode and recursive fallback. UDP 1.1.1.1:53, DoT tls://…, or DoH https://…'
+                    : 'Upstream for Forward mode. UDP 1.1.1.1:53, DoT tls://…, or DoH https://…'
                 }
               >
                 {/* Route 53 Quick Presets */}
@@ -1707,188 +1557,6 @@ export default function Settings({ tools = {} }) {
             </SettingSection>
           ) : null}
 
-          {section === 'tproxy' ? (
-            !tproxy || !tpDraft ? (
-              <SettingCallout tone="warn">TPROXY status unavailable (API not ready or not Linux).</SettingCallout>
-            ) : (
-              <>
-                {!tproxy.supported ? (
-                  <SettingCallout tone="warn">
-                    OS intercept control requires Linux (nftables + iproute2). Socket listen flag can still be saved for Linux hosts.
-                  </SettingCallout>
-                ) : null}
-                {tproxy.status?.warning ? <SettingCallout tone="warn">{tproxy.status.warning}</SettingCallout> : null}
-                {tpDraft.tproxy_mode === 'all' ? (
-                  <SettingCallout tone="warn">
-                    Mode <span className="mono">all</span> intercepts every DNS packet on the interface — dangerous on BGP/transit. Prefer{' '}
-                    <span className="mono">public</span>.
-                  </SettingCallout>
-                ) : null}
-                {tproxy.tproxy_listen_needs_restart ? (
-                  <SettingCallout tone="warn">
-                    Transparent socket setting differs from the running process — click Restart service after save.
-                  </SettingCallout>
-                ) : null}
-
-                <SettingSection
-                  id="settings-tproxy-socket-heading"
-                  title="Transparent sockets"
-                  hint="IP_TRANSPARENT + SO_REUSEPORT. Needs process restart (compose unless-stopped)."
-                >
-                  <SettingToggle
-                    label="tproxy_listen"
-                    hint={
-                      tproxy.tproxy_listen_active
-                        ? 'Active in this process'
-                        : 'Not active until restart'
-                    }
-                    pressed={!!tpDraft.tproxy_listen}
-                    disabled={tpBusy || !isAdmin}
-                    dirty={!!tpDraft.tproxy_listen !== !!tproxy.tproxy_listen}
-                    onToggle={() => {
-                      setOk('')
-                      setErr('')
-                      setTpDraft((d) => ({ ...d, tproxy_listen: !d.tproxy_listen }))
-                    }}
-                  />
-                  <div className="flex flex-wrap gap-2 mt-3">
-                    <button
-                      type="button"
-                      disabled={tpBusy || !isAdmin || !tproxy.tproxy_listen_needs_restart}
-                      onClick={restartForTProxy}
-                      className="btn btn-secondary min-h-[40px] disabled:opacity-40"
-                    >
-                      Restart service
-                    </button>
-                  </div>
-                </SettingSection>
-
-                <SettingSection
-                  id="settings-tproxy-intercept-heading"
-                  title="Packet intercept"
-                  hint="nftables TPROXY + ip rule (live). Does not flush the host ruleset."
-                >
-                  <SettingToggle
-                    label="Intercept DNS"
-                    hint="Install/remove powersvx_tproxy nft table and fwmark routing"
-                    pressed={!!tpDraft.tproxy_intercept}
-                    disabled={tpBusy || !isAdmin}
-                    dirty={!!tpDraft.tproxy_intercept !== !!tproxy.tproxy_intercept}
-                    onToggle={() => {
-                      setOk('')
-                      setErr('')
-                      setTpDraft((d) => ({ ...d, tproxy_intercept: !d.tproxy_intercept }))
-                    }}
-                  />
-
-                  <div className="grid gap-3 sm:grid-cols-2 mt-4">
-                    <label className="block text-xs space-y-1">
-                      <span className="text-[var(--muted)]">Interface</span>
-                      <select
-                        className="input w-full"
-                        disabled={tpBusy || !isAdmin}
-                        value={tpDraft.tproxy_iface || ''}
-                        onChange={(e) => {
-                          setOk('')
-                          setErr('')
-                          setTpDraft((d) => ({ ...d, tproxy_iface: e.target.value }))
-                        }}
-                      >
-                        <option value="">Auto ({tproxy.tproxy_iface || 'detect'})</option>
-                        {(tproxy.ifaces || []).map((i) => (
-                          <option key={i.name} value={i.name}>
-                            {i.name}
-                            {i.up ? '' : ' (down)'}
-                            {i.addrs?.length ? ` · ${i.addrs[0]}` : ''}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="block text-xs space-y-1">
-                      <span className="text-[var(--muted)]">Mode</span>
-                      <select
-                        className="input w-full"
-                        disabled={tpBusy || !isAdmin}
-                        value={tpDraft.tproxy_mode || 'public'}
-                        onChange={(e) => {
-                          setOk('')
-                          setErr('')
-                          setTpDraft((d) => ({ ...d, tproxy_mode: e.target.value }))
-                        }}
-                      >
-                        <option value="public">public — known resolvers only</option>
-                        <option value="custom">custom — your resolver list</option>
-                        <option value="all">all — every DNS on iface (danger)</option>
-                      </select>
-                    </label>
-                  </div>
-
-                  {tpDraft.tproxy_mode === 'custom' || tpDraft.tproxy_mode === 'public' ? (
-                    <label className="block text-xs space-y-1 mt-3">
-                      <span className="text-[var(--muted)]">
-                        Resolver IPs {tpDraft.tproxy_mode === 'public' ? '(optional override)' : '(required)'}
-                      </span>
-                      <textarea
-                        className="input mono w-full min-h-[96px]"
-                        disabled={tpBusy || !isAdmin}
-                        placeholder={(tproxy.default_resolvers || []).join('\n')}
-                        value={tpDraft.tproxy_resolvers}
-                        onChange={(e) => {
-                          setOk('')
-                          setErr('')
-                          setTpDraft((d) => ({ ...d, tproxy_resolvers: e.target.value }))
-                        }}
-                      />
-                    </label>
-                  ) : null}
-
-                  <div className="flex flex-wrap gap-2 mt-4">
-                    <button
-                      type="button"
-                      disabled={tpBusy || !isAdmin}
-                      onClick={applyTProxyNow}
-                      className="btn btn-primary min-h-[40px] disabled:opacity-40"
-                    >
-                      Apply intercept
-                    </button>
-                    <button
-                      type="button"
-                      disabled={tpBusy || !isAdmin}
-                      onClick={disableTProxyNow}
-                      className="btn btn-secondary min-h-[40px] disabled:opacity-40"
-                    >
-                      Disable intercept
-                    </button>
-                  </div>
-                </SettingSection>
-
-                <SettingSection id="settings-tproxy-status-heading" title="Live counters" hint="From nftables table inet powersvx_tproxy.">
-                  <dl className="settings-status-dl">
-                    {[
-                      ['Applied', tproxy.status?.applied ? 'yes' : 'no'],
-                      ['Route (fwmark→100)', tproxy.status?.route_ok ? 'yes' : 'no'],
-                      ['Iface', tproxy.status?.iface || '—'],
-                      ['Mode', tproxy.status?.mode || '—'],
-                      ['UDP packets', tproxy.status?.udp_packets ?? 0],
-                      ['TCP packets', tproxy.status?.tcp_packets ?? 0],
-                      ['UDP bytes', tproxy.status?.udp_bytes ?? 0],
-                      ['TCP bytes', tproxy.status?.tcp_bytes ?? 0],
-                      ['Last error', tproxy.status?.last_error || '—'],
-                    ].map(([k, v]) => (
-                      <div key={k} className="settings-status-row">
-                        <dt>{k}</dt>
-                        <dd className="mono">{String(v)}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                  <p className="text-[11px] text-[var(--muted)] mt-3 leading-relaxed">
-                    {tproxy.note}
-                  </p>
-                </SettingSection>
-              </>
-            )
-          ) : null}
-
           {section === 'conntrack' ? (
             !conntrack || !ctDraft ? (
               <SettingCallout tone="warn">Conntrack status unavailable.</SettingCallout>
@@ -1909,7 +1577,7 @@ export default function Settings({ tools = {} }) {
                 <SettingSection
                   id="settings-ct-live-heading"
                   title="Live status"
-                  hint="Kernel nf_conntrack table — fills under high DNS/TPROXY churn."
+                  hint="Kernel nf_conntrack table — fills under high DNS connection churn."
                 >
                   <dl className="settings-status-dl">
                     {[
@@ -2347,7 +2015,6 @@ export default function Settings({ tools = {} }) {
                   ['API auth', saved.auth_type],
                   ['Auth required', saved.auth_required ? 'yes' : 'no'],
                   ['Auth configured', saved.auth_configured ? 'yes' : 'no'],
-                  ['TLS min', saved.tls_min_version],
                   ['Mask query IPs', saved.query_log_mask_ip ? 'yes' : 'no'],
                   ['Log retention (days)', saved.query_log_retention_days],
                   ['Log max size (MB)', saved.query_log_max_size_mb],
@@ -2394,40 +2061,14 @@ export default function Settings({ tools = {} }) {
         </div>
 
       {((dirty && isAdmin) ||
-        (tpDirty && isAdmin && section === 'tproxy') ||
         (ctDirty && isAdmin && section === 'conntrack')) ? (
         <div className="settings-sticky-bar panel">
           <span className="text-sm text-[var(--warn)]">
-            {section === 'tproxy' && tpDirty
-              ? 'Unsaved TPROXY changes'
-              : section === 'conntrack' && ctDirty
-                ? 'Unsaved OS / conntrack changes'
-                : `Unsaved · ${dirtyCount} section${dirtyCount === 1 ? '' : 's'}`}
+            {section === 'conntrack' && ctDirty
+              ? 'Unsaved OS / conntrack changes'
+              : `Unsaved · ${dirtyCount} section${dirtyCount === 1 ? '' : 's'}`}
           </span>
-          {section === 'tproxy' ? (
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={!tpDirty || tpBusy}
-                onClick={() => {
-                  if (tproxy) setTpDraft(toTpDraft(tproxy))
-                  setOk('')
-                  setErr('')
-                }}
-                className="btn btn-secondary min-h-[44px] disabled:opacity-40"
-              >
-                Discard
-              </button>
-              <button
-                type="button"
-                disabled={!tpDirty || tpBusy}
-                onClick={() => saveTProxy()}
-                className="btn btn-primary min-h-[44px] disabled:opacity-40"
-              >
-                {tpBusy ? 'Saving…' : 'Save & apply'}
-              </button>
-            </div>
-          ) : section === 'conntrack' ? (
+          {section === 'conntrack' ? (
             <div className="flex gap-2">
               <button
                 type="button"

@@ -147,7 +147,7 @@ Order in `apply-update.sh`: it generates the dnsdist configuration into `configs
   - Authoritative zone changes invalidate affected names in `dnsdist` packet cache and trigger `NOTIFY` to secondaries.
 
 ## Technitium-Parity Console & APIs
-- **3-Tier Cache Explorer & Purge:** `GET /api/v1/cache/stats`, `GET /api/v1/cache/inspect`, `POST /api/v1/cache/flush` (`scope`: `all|dnsdist|unbound|go`, optional `domain` flush).
+- **Cache Explorer & Purge (dnsdist, Unbound):** `GET /api/v1/cache/stats`, `GET /api/v1/cache/inspect`, `POST /api/v1/cache/flush` (`scope`: `all|domain|zone|type|negative`, optional `domain` flush).
 - **RRL / Auto-Ban / DynBlock Manager:** `GET /api/v1/security/blocks`, `POST /api/v1/security/ban`, `DELETE /api/v1/security/ban?prefix=...`, `POST /api/v1/security/dynblocks/clear`.
 - **Live Query Stream (20k In-Memory Ring Buffer):** `GET /api/v1/queries/live` and `GET /api/v1/queries/stream` (SSE; samples `dnsdist` top-responses/live Go queries into RAM with zero Postgres write amplification).
 - **DNS Client & Root Trace:** `POST /api/v1/tools/lookup` (UDP/TCP/DoT/DoH with custom server target + DO/CD/RD flags) & `POST /api/v1/tools/trace` (iterative root-to-authoritative hop trace).

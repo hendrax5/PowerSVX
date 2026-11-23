@@ -12,7 +12,7 @@ export default function Lookup() {
   const [mode, setMode] = useState('lookup') // 'lookup' | 'trace'
   const [name, setName] = useState('example.com')
   const [type, setType] = useState('A')
-  const [target, setTarget] = useState('local')
+  const [target, setTarget] = useState('dnsdist')
   const [customTarget, setCustomTarget] = useState('')
   const [protocol, setProtocol] = useState('udp')
   const [doFlag, setDoFlag] = useState(true)
@@ -111,7 +111,6 @@ export default function Lookup() {
             <label className="flex items-center gap-1.5">
               <span className="text-[var(--muted)]">Server:</span>
               <select className="input py-1 text-xs mono" value={target} onChange={(e) => setTarget(e.target.value)}>
-                <option value="local">Go Pipeline (Internal)</option>
                 <option value="dnsdist">dnsdist Edge (127.0.0.1:53)</option>
                 <option value="unbound">Unbound (127.0.0.1:5353)</option>
                 <option value="auth">Authoritative (127.0.0.1:5354)</option>
