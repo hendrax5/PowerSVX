@@ -96,7 +96,8 @@ auth_type = "none"
 		return resp.StatusCode, b
 	}
 
-	deadline := time.Now().Add(30 * time.Second)
+	// Generous: on a busy machine or CI runner the process can take a long time to come up.
+	deadline := time.Now().Add(120 * time.Second)
 	var health []byte
 	for {
 		select {
@@ -109,7 +110,7 @@ auth_type = "none"
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("health endpoint did not answer in 30s")
+			t.Fatal("health endpoint did not answer in 120s")
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

@@ -67,7 +67,11 @@ func TestValidatorAuthenticatesNSEC3DenialForRandomSaltsAndEveryHashEnding(t *te
 				check(t, tcp, "www.example.com.", "AAAA", "; negative response, fully validated", "nxrrset")
 				check(t, tcp, "example.com.", "TXT", "; negative response, fully validated", "nxrrset")
 				check(t, tcp, "z.example.com.", "A", "; negative response, fully validated", "nxrrset")
+				check(t, tcp, "example.com.", "NSEC3PARAM", "; fully validated", "NSEC3PARAM 1 0 1 "+salt)
 				check(t, tcp, "foo.w.example.com.", "AAAA", "; negative response, fully validated", "nxrrset")
+				check(t, tcp, "foo.w.example.com.", "A", "; fully validated", "192.0.2.77", "RRSIG A 13 3 ")
+				check(t, tcp, "a.b.w.example.com.", "A", "; fully validated", "192.0.2.77", "RRSIG A 13 3 ")
+				check(t, tcp, "x.c.example.com.", "A", "; fully validated", "192.0.2.10")
 			}
 			for _, c := range []byte(base32hex) {
 				name := nameWithHashEndingIn(t, salt, c)

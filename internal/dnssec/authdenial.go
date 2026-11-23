@@ -24,6 +24,11 @@ const denialTTLFallback = 300
 // signValidity is how long the signatures made on the fly are valid.
 const signValidity = 30 * 24 * time.Hour
 
+// signInceptionSkew backdates the inception of signatures so a validator whose
+// clock runs a little behind does not see them as not yet valid (RFC 6781
+// section 4.4.2.1).
+const signInceptionSkew = time.Hour
+
 // canonicalLabels returns the labels of name as unescaped, lower-cased octets,
 // leftmost first, without the root label.
 func canonicalLabels(name string) [][]byte {
@@ -233,7 +238,7 @@ func signRRset(zone string, rrs []dns.RR, key *dns.DNSKEY, priv crypto.Signer, n
 		Labels:      rrsigLabels(h.Name),
 		OrigTtl:     h.Ttl,
 		Expiration:  uint32(now.Add(signValidity).Unix()),
-		Inception:   uint32(now.Unix()),
+		Inception:   uint32(now.Add(-signInceptionSkew).Unix()),
 		KeyTag:      key.KeyTag(),
 		SignerName:  zone,
 	}
@@ -320,6 +325,9 @@ func (z *denialZone) nsec3Chain(salt string) *nsec3Chain {
 		if owned, ok := z.types[name]; ok {
 			types = append(types, owned...)
 			types = append(types, dns.TypeRRSIG)
+			if name == z.apex {
+				types = append(types, dns.TypeNSEC3PARAM) // served from the signer, see Signer.NSEC3PARAM
+			}
 		}
 		c.entries = append(c.entries, nsec3Entry{hash: nsec3Hash(name, salt), types: sortUniqueTypes(types)})
 	}
@@ -408,14 +416,92 @@ func nextCloser(qname, ce string) string {
 
 // signNSEC3Denial adds the signed NSEC3 proof for an NSEC3-signed zone.
 func (s *Signer) signNSEC3Denial(zone, qname string, zk *zoneKeys, names map[string][]uint16, now time.Time, resp *dns.Msg) error {
-	salt := zk.Policy.Salt
-	if salt == "" {
-		salt = nsec3DefaultSalt
-	}
+	salt := zk.Policy.nsec3Salt()
 	z := newDenialZone(zone, names)
 	var proof []dns.RR
 	for _, n := range z.nsec3Proof(qname, salt, resp.Rcode == dns.RcodeNameError, negativeTTL(resp)) {
 		proof = append(proof, n)
 	}
 	return signNegative(zone, zk, now, resp, proof)
+}
+
+// SignWildcardExpansion adds the proof that qname does not exist to an answer
+// that was synthesized from a wildcard, when the request has DO set: the NSEC
+// covering qname (RFC 4035 section 3.1.3.3), or for NSEC3 the closest encloser
+// proof, the record matching the closest encloser and the one covering the next
+// closer name (RFC 5155 section 7.2.6). Records already in the authority section
+// are not added twice.
+func (s *Signer) SignWildcardExpansion(zone, qname string, names map[string][]uint16, req, resp *dns.Msg) error {
+	if s == nil || resp == nil {
+		return nil
+	}
+	zone = dns.CanonicalName(zone)
+	zk, err := s.load(zone)
+	if err != nil {
+		return nil
+	}
+	if req == nil {
+		return nil
+	}
+	if opt := req.IsEdns0(); opt == nil || !opt.Do() {
+		return nil
+	}
+	qname = dns.CanonicalName(qname)
+	z := newDenialZone(zone, names)
+	ttl := negativeTTL(resp)
+	var proof []dns.RR
+	if zk.Policy.NSEC3 {
+		salt := zk.Policy.nsec3Salt()
+		c := z.nsec3Chain(salt)
+		ce := z.closestEncloser(qname)
+		for _, h := range []string{ce, nextCloser(qname, ce)} {
+			proof = append(proof, c.record(c.matchOrCover(nsec3Hash(h, salt)), ttl))
+		}
+	} else {
+		proof = append(proof, z.nsecAt(z.coverIndex(qname), ttl))
+	}
+	have := map[string]bool{}
+	for _, rr := range resp.Ns {
+		have[dns.CanonicalName(rr.Header().Name)+"/"+dns.TypeToString[rr.Header().Rrtype]] = true
+	}
+	var fresh []dns.RR
+	for _, rr := range proof {
+		k := dns.CanonicalName(rr.Header().Name) + "/" + dns.TypeToString[rr.Header().Rrtype]
+		if !have[k] {
+			have[k] = true
+			fresh = append(fresh, rr)
+		}
+	}
+	return signNegative(zone, zk, time.Now().UTC(), resp, fresh)
+}
+
+// nsec3Salt is the salt the zone's NSEC3 chain and its NSEC3PARAM record use.
+func (o SignOptions) nsec3Salt() string {
+	if o.Salt == "" {
+		return nsec3DefaultSalt
+	}
+	return o.Salt
+}
+
+// NSEC3PARAM returns the NSEC3PARAM record for the apex of an NSEC3-signed zone,
+// with the parameters the chain is built with (RFC 5155 section 4: flags are 0
+// in NSEC3PARAM), or nil when the zone is unsigned or signed with NSEC.
+func (s *Signer) NSEC3PARAM(zone string, ttl uint32) *dns.NSEC3PARAM {
+	if s == nil {
+		return nil
+	}
+	zone = dns.CanonicalName(zone)
+	zk, err := s.load(zone)
+	if err != nil || !zk.Policy.NSEC3 {
+		return nil
+	}
+	salt := zk.Policy.nsec3Salt()
+	return &dns.NSEC3PARAM{
+		Hdr:        dns.RR_Header{Name: zone, Rrtype: dns.TypeNSEC3PARAM, Class: dns.ClassINET, Ttl: ttl},
+		Hash:       dns.SHA1,
+		Flags:      0,
+		Iterations: nsec3Iterations,
+		SaltLength: uint8(len(salt) / 2),
+		Salt:       salt,
+	}
 }

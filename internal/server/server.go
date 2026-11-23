@@ -298,12 +298,25 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 				m.Answer = s.signer.DNSKEYs(zone)
 				m.Rcode = dns.RcodeSuccess
 				s.signer.SignResponse(zone, req, m)
+			} else if np := s.nsec3param(zone, qname, qtype, viewName, geoTag); np != nil {
+				// The apex of an NSEC3-signed zone publishes the parameters of its chain.
+				m.Answer = []dns.RR{np}
+				m.Rcode = dns.RcodeSuccess
+				s.signer.SignResponse(zone, req, m)
 			} else {
 				// Each zone's part of the answer is signed with that zone's key.
 				for _, seg := range res.Segments {
 					part := &dns.Msg{Answer: seg.RRs}
 					if qtype != dns.TypeDNSKEY && s.signer != nil && s.signer.Enabled(seg.Zone) {
-						s.signer.SignResponse(seg.Zone, req, part)
+						if seg.Wildcard != "" {
+							// Synthesized from a wildcard: sign the wildcard's RRset and prove the name does not exist.
+							s.signer.SignWildcardResponse(seg.Zone, seg.Wildcard, req, part)
+							if err := s.signer.SignWildcardExpansion(seg.Zone, seg.Name, s.auth.ZoneNameTypes(seg.Zone, viewName, geoTag), req, m); err != nil && s.log != nil {
+								s.log.Warn("dnssec wildcard proof incomplete", "zone", seg.Zone, "qname", seg.Name, "err", err)
+							}
+						} else {
+							s.signer.SignResponse(seg.Zone, req, part)
+						}
 					}
 					m.Answer = append(m.Answer, part.Answer...)
 				}
