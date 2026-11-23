@@ -72,7 +72,7 @@ func xferReq(qtype uint16) *dns.Msg {
 	return m
 }
 
-func updateReq() *dns.Msg {
+func unitTestUpdateReq() *dns.Msg {
 	m := new(dns.Msg)
 	m.SetUpdate("example.com.")
 	rr, _ := dns.NewRR("evil.example.com. 300 IN A 192.0.2.66")
@@ -124,7 +124,7 @@ func TestUpdateRequireTSIG(t *testing.T) {
 	t.Run("unsigned refused and not applied", func(t *testing.T) {
 		s := tsigTestServer(t, true, true)
 		w := &tsigWriter{}
-		s.handleUpdate(w, updateReq(), "192.0.2.10")
+		s.handleUpdate(w, unitTestUpdateReq(), "192.0.2.10")
 		if w.rcode() != dns.RcodeRefused {
 			t.Fatalf("rcode=%d want REFUSED", w.rcode())
 		}
@@ -135,7 +135,7 @@ func TestUpdateRequireTSIG(t *testing.T) {
 	t.Run("bad signature notauth", func(t *testing.T) {
 		s := tsigTestServer(t, true, true)
 		w := &tsigWriter{tsigErr: dns.ErrSig}
-		s.handleUpdate(w, signed(updateReq()), "192.0.2.10")
+		s.handleUpdate(w, signed(unitTestUpdateReq()), "192.0.2.10")
 		if w.rcode() != dns.RcodeNotAuth {
 			t.Fatalf("rcode=%d want NOTAUTH", w.rcode())
 		}
@@ -146,7 +146,7 @@ func TestUpdateRequireTSIG(t *testing.T) {
 	t.Run("valid signature applied", func(t *testing.T) {
 		s := tsigTestServer(t, true, true)
 		w := &tsigWriter{}
-		s.handleUpdate(w, signed(updateReq()), "192.0.2.10")
+		s.handleUpdate(w, signed(unitTestUpdateReq()), "192.0.2.10")
 		if w.rcode() != dns.RcodeSuccess || !s.auth.RRSetExists("example.com.", "evil.example.com.", dns.TypeA) {
 			t.Fatalf("valid update not applied (rcode=%d)", w.rcode())
 		}
@@ -154,7 +154,7 @@ func TestUpdateRequireTSIG(t *testing.T) {
 	t.Run("requirement off unchanged", func(t *testing.T) {
 		s := tsigTestServer(t, false, false)
 		w := &tsigWriter{}
-		s.handleUpdate(w, updateReq(), "192.0.2.10")
+		s.handleUpdate(w, unitTestUpdateReq(), "192.0.2.10")
 		if w.rcode() != dns.RcodeSuccess || !s.auth.RRSetExists("example.com.", "evil.example.com.", dns.TypeA) {
 			t.Fatalf("off: unsigned update not applied (rcode=%d)", w.rcode())
 		}

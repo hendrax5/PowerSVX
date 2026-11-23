@@ -78,7 +78,7 @@ export default function SecurityPage() {
     setOk('')
     try {
       const res = await api.securityClearDynBlocks()
-      setOk(res?.ok ? 'Cleared dynamic blocks & RRL table' : res?.dnsdist_error || 'Cleared Go RRL table')
+      setOk(res?.ok ? 'Cleared dnsdist dynamic blocks' : res?.dnsdist_error || 'Clear failed')
       await load()
     } catch (ex) {
       setErr(ex.message)
@@ -93,8 +93,8 @@ export default function SecurityPage() {
 
   const manualBans = data?.manual_bans || []
   const dynBlocks = data?.dnsdist_dynblocks || []
-  const aclBans = data?.acl_bans || []
-  const rlBlocked = data?.ratelimit_blocked || []
+  const counters = data?.dnsdist_counters
+  const fmt = (n) => Number(n || 0).toLocaleString()
   const rlCfg = data?.ratelimit_config || {}
 
   return (
@@ -105,7 +105,7 @@ export default function SecurityPage() {
         sub={
           isID
             ? 'Kelola daftar pemblokiran dinamis dnsdist, Rate-Limit IP, dan pemblokiran CIDR permanen pada edge.'
-            : 'Manage dnsdist dynamic abuse blocks, Go ACL autobans, per-IP rate limits, and persistent edge bans.'
+            : 'Manage dnsdist dynamic abuse blocks, per-IP rate limits, and persistent edge bans.'
         }
         actions={
           <div className="flex gap-2">
@@ -138,12 +138,16 @@ export default function SecurityPage() {
         <Stat
           label="Manual Persistent Bans"
           value={manualBans.length}
-          sub="Synced to bans.txt + Go guard"
+          sub={isID ? 'Ditulis ke daftar yang dibaca dnsdist' : 'Written to the ban list dnsdist loads'}
         />
         <Stat
-          label="RRL / ACL Autobans"
-          value={aclBans.length + rlBlocked.length}
-          sub="Go dataplane throttled clients"
+          label={isID ? 'Query dibuang dnsdist' : 'Queries dropped by dnsdist'}
+          value={counters ? fmt(counters.dyn_blocked) : 'N/A'}
+          sub={
+            counters
+              ? `Dynamic blocks · rule drops ${fmt(counters.rule_drop)} · refused ${fmt(counters.rule_refused)}`
+              : 'dnsdist statistics unavailable'
+          }
         />
         <Stat
           label="Edge RRL Policy"

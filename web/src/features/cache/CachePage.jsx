@@ -60,7 +60,7 @@ export default function CachePage() {
   }, [loadStats, runInspect])
 
   const handleFlush = async (scope, domain = '', type = '') => {
-    if (scope === 'all' && !window.confirm(isID ? 'Hapus seluruh cache di 3 tier?' : 'Flush all caches across dnsdist, Unbound, and Go?')) {
+    if (scope === 'all' && !window.confirm(isID ? 'Hapus seluruh cache di dnsdist dan Unbound?' : 'Flush all caches across dnsdist and Unbound?')) {
       return
     }
     setBusy(true)
@@ -84,24 +84,22 @@ export default function CachePage() {
   }
 
   if (!stats && !err) {
-    return <LoadingBlock label="Loading 3-tier cache metrics" />
+    return <LoadingBlock label="Loading cache metrics" />
   }
 
   const dd = stats?.dnsdist || {}
   const ub = stats?.unbound || {}
-  const go = stats?.go || {}
   const ddTot = (Number(dd.cache_hits) || 0) + (Number(dd.cache_misses) || 0)
-  const goTot = (Number(go.l1_hits) || 0) + (Number(go.l1_misses) || 0)
 
   return (
     <div className="space-y-6 max-w-[1360px]">
       <PageHeader
-        eyebrow={isID ? '3-TIER DATAPLANE' : '3-TIER DATAPLANE'}
+        eyebrow="DATAPLANE CACHES"
         title={isID ? 'Cache Explorer & Selective Purge' : 'Cache Explorer & Selective Purge'}
         sub={
           isID
-            ? 'Pantau dan bersihkan cache Edge packet cache (dnsdist), Resolver RRset cache (Unbound), dan Go L1/L2.'
-            : 'Inspect and selectively purge dnsdist packet cache, Unbound RRset/message cache, and Go L1/L2.'
+            ? 'Pantau dan bersihkan packet cache Edge (dnsdist) dan cache RRset Resolver (Unbound).'
+            : 'Inspect and selectively purge the dnsdist packet cache and the Unbound RRset/message cache.'
         }
         actions={
           <button
@@ -125,9 +123,9 @@ export default function CachePage() {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 reveal">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 reveal">
         <Stat
-          label="Tier 1 · dnsdist Edge Cache"
+          label="dnsdist Edge Cache"
           value={dd.status === 'ok' ? Number(dd.entries || 0).toLocaleString() : 'N/A'}
           sub={
             dd.status === 'ok'
@@ -136,7 +134,7 @@ export default function CachePage() {
           }
         />
         <Stat
-          label="Tier 2 · Unbound RRset Cache"
+          label="Unbound RRset Cache"
           value={ub.status === 'ok' ? fmtBytes(ub.mem_rrset) : 'N/A'}
           sub={
             ub.status === 'ok'
@@ -144,22 +142,17 @@ export default function CachePage() {
               : ub.err || 'Unbound control unavailable'
           }
         />
-        <Stat
-          label="Tier 3 · Go L1 Authoritative"
-          value={Number(go.l1_size || 0).toLocaleString()}
-          sub={`Hit ratio ${fmtRatio(Number(go.l1_hits), goTot)} · Dataplane: ${stats?.dataplane || 'go'}`}
-        />
       </div>
 
       {canWrite && (
         <section className="panel p-5 space-y-4 reveal">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)] pb-3">
             <div>
-              <h2 className="text-sm font-semibold">{isID ? 'Pembersihan Cache Selektif' : 'Selective 3-Tier Purge'}</h2>
+              <h2 className="text-sm font-semibold">{isID ? 'Pembersihan Cache Selektif' : 'Selective Purge'}</h2>
               <p className="text-xs text-[var(--muted)] mt-0.5">
                 {isID
-                  ? 'Sinkron menghapus cache pada dnsdist, Unbound, dan Go Control Plane sekaligus.'
-                  : 'Atomically purges matching entries across dnsdist packet cache, Unbound, and Go.'}
+                  ? 'Sinkron menghapus cache pada dnsdist dan Unbound sekaligus.'
+                  : 'Purges matching entries across the dnsdist packet cache and Unbound together.'}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">

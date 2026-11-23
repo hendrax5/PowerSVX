@@ -26,7 +26,11 @@ if [ "$PERCENT" -lt 1 ] || [ "$PERCENT" -gt 95 ]; then
   exit 1
 fi
 
-MEM_KB=$(awk '/MemTotal:/ {print $2}' /proc/meminfo)
+case "${POWERSVX_HOST_MEM_MB:-}" in
+  '') MEM_KB=$(awk '/MemTotal:/ {print $2}' /proc/meminfo) ;;
+  *[!0-9]*) echo "POWERSVX_HOST_MEM_MB must be a whole number of MB" >&2; exit 1 ;;
+  *) MEM_KB=$((POWERSVX_HOST_MEM_MB * 1024)) ;;
+esac
 if [ -z "$MEM_KB" ] || [ "$MEM_KB" -lt 65536 ]; then
   echo "cannot read MemTotal" >&2
   exit 1

@@ -17,6 +17,45 @@ cd /home/hendra/powersvx
 sudo bash deploy/linux/bootstrap-node.sh
 ```
 
+
+### Core Profile and Observability Profile
+
+| Profile | Services |
+|---|---|
+| Core | `dnsdist`, `unbound`, `powersvx` (Control Plane), `watchtower` |
+| Observability | `postgres` (query-log history), `prometheus`, `grafana`, `node-exporter` |
+
+In Core the Control Plane runs with the database disabled (`POWERSVX_DATABASE_ENABLED=0`, set by the Core overlay) and does not wait for Postgres; zones, Filter feeds, tokens and users are files. Query history is unavailable until the Observability Profile is added, and the console says so. `watchtower` is Core because it keeps the `powersvx` image current; it is operations, not observability.
+
+One setting, `POWERSVX_PROFILE`, selects the profile. Put it in `.env` or pass it with `sudo -E`:
+
+| Value | Effect |
+|---|---|
+| unset | Bootstrap: `full`, or `core` when the host has under 4 GB of memory. Update: `full`. |
+| `full` | Everything, as before. Wins over the memory rule. |
+| `core` | Core only. Bootstrap and `apply-update.sh` stop and remove the Prometheus, Grafana and node-exporter containers. |
+
+```bash
+echo POWERSVX_PROFILE=core | sudo tee -a .env
+sudo bash deploy/linux/bootstrap-node.sh      # or: sudo bash deploy/linux/apply-update.sh
+```
+
+When bootstrap picks `core` itself it says so, and saves `POWERSVX_PROFILE=core` to `.env` so later updates keep it. It never removes existing Observability containers after an automatic choice; only an explicit `core` does. `deploy/linux/select-profile.sh` holds the rule; `POWERSVX_HOST_MEM_MB` overrides the memory it reads from `/proc/meminfo`.
+
+The plain command is unchanged and starts everything:
+
+```bash
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d
+```
+
+Core only means adding `deploy/linux/docker-compose.core.yml`, which moves the Observability services into the compose profile `observability`:
+
+```bash
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \
+  -f deploy/linux/docker-compose.core.yml up -d
+```
+
+A Core node passes `deploy/linux/dns-ready.sh`; the Control Plane does not need Prometheus or Grafana. The console's Analytics page shows its Grafana tab as offline.
 ---
 
 ## B. Standalone Systemd (Bare-metal Binary Only)
@@ -92,7 +131,7 @@ Point nginx/Caddy to `http://127.0.0.1:5380` (or the host IP) with TLS. Keep `au
 ### 8. Reload runtime settings
 
 ```bash
-sudo systemctl reload powersvx   # SIGHUP: runtime-settings.json + plugins
+sudo systemctl reload powersvx   # SIGHUP: runtime-settings.json
 ```
 
 ### Layout
@@ -105,10 +144,6 @@ sudo systemctl reload powersvx   # SIGHUP: runtime-settings.json + plugins
 | `/etc/powersvx/certs/` | TLS for DoT/DoH |
 | `/var/lib/powersvx/` | `--data-dir` (cache, DNSSEC, RPZ, runtime-settings) |
 | `/usr/share/PowerSVX/web` | Built UI |
-
-### TPROXY note
-
-If using kernel TPROXY, set `tproxy = true`, add `CAP_NET_ADMIN` to the unit’s `AmbientCapabilities` / `CapabilityBoundingSet`, and use host routing/nftables. See root `README.md`.
 
 ---
 
@@ -126,13 +161,13 @@ docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up 
 
 This override sets `network_mode: host` and mounts `configs/powersvx.docker.host.toml` (Postgres via `127.0.0.1:5433`). Prometheus is on host **9091** (container 9090). Restrict `[acl] allow_query` and firewall unused ports.
 
-It also starts **Unbound on `127.0.0.1:5353`** as the default recursive backend (`mode=forward` in the host TOML). Conditional forward zones still override per domain. Details: [docs/UNBOUND-HYBRID.md](../../docs/UNBOUND-HYBRID.md).
+It also starts **Unbound on `127.0.0.1:5353`** as the recursive backend (`mode=recursive`, no forwarders, in the host TOML; never list `127.0.0.1:5353` as a forwarder, see [docs/PRODUCTION.md](../../docs/PRODUCTION.md), "Unbound forwards to itself"). Conditional forward zones still override per domain. Details: [docs/PRODUCTION.md](../../docs/PRODUCTION.md).
 
 | Host port | Service |
 |-----------|---------|
 | 53 | DNS (PowerSVX) |
 | 127.0.0.1:5353 | Unbound recursive (loopback only) |
-| 853 / 443 / 784 | DoT / DoH / DoQ |
+| 853 / 443 / 784 | DoT / DoH / DoQ (TCP, TCP, UDP; served by dnsdist when certs are mounted in `./certs`) |
 | 5380 | API + UI |
 | 9100 | App metrics |
 | 9091 | Prometheus UI |
@@ -255,3 +290,42 @@ Fallback without Docker image builds: use the **systemd** path in section A (com
 - [ ] UI/API protected (`API_TOKEN` / admin password)
 - [ ] `systemctl status powersvx` or `docker ps` healthy; `dig @127.0.0.1 example.com` works
 - [ ] Query logs show real client IPs (not `172.18.0.1`)
+
+### Client address for the Auth Backend (PROXY protocol)
+
+dnsdist sends the real client address to the Auth Backend in a PROXY protocol v2 header (`docs/adr/0003-proxy-protocol-for-the-client-address.md`), so views, GeoDNS, the NOTIFY master check and the transfer and update allow lists judge the client, not `127.0.0.1`. `gen-dnsdist-conf.sh` does this by default; `POWERSVX_AUTH_PROXY_PROTOCOL=0` regenerates the earlier entry (ECS from dnsdist, a packet cache for the `auth` pool). The Control Plane side is `[server] proxy_protocol` in its TOML: `optional` (default: accepts a header or a plain query, both only from loopback), `required` or `off`. Update a node by regenerating the dnsdist configuration; `optional` keeps it working in either order. Do not set `required` until the dnsdist configuration has been regenerated, and set `POWERSVX_AUTH_PROXY_PROTOCOL=0` before rolling the Control Plane back to an older image.
+
+### Pinned dnsdist version
+
+The host override pins `powerdns/dnsdist-19:1.9.16` (the version running nodes report; its build includes DNS over QUIC). Never use `:latest`: a silent upgrade changes the Dataplane without a measurement. To bump it, change the tag in `deploy/linux/docker-compose.host.yml` and the `dnsdistImage` constant in `test/dataplane/blackbox_test.go`, run the Dataplane black-box test (`POWERSVX_DOCKER_TESTS=1 go test -count=1 ./test/dataplane/`) and a fresh Reference Load benchmark, and ship it as its own change.
+
+DoT, DoH and DoQ are enabled in the generated dnsdist config only when `fullchain.pem` and `privkey.pem` are mounted at `/etc/dnsdist/certs/`; open `853/tcp`, `443/tcp` and `784/udp` in the firewall. The Go listeners still serve the same ports until they are removed.
+
+### Sampled query log
+
+The console's live query stream, and query history when Postgres is present, come from a sampled record of the queries dnsdist answers. It is off by default, and a default node's `dnsdist.conf` is exactly what it was before this feature: no rule, no logger and no Lua for it.
+
+To use it, generate the dnsdist configuration with the sampled query log enabled, then recreate dnsdist:
+
+```bash
+POWERSVX_QUERY_LOG_DNSTAP=1 bash deploy/linux/gen-dnsdist-conf.sh
+docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d dnsdist
+```
+
+The generator needs `POWERSVX_DNSDIST_WEB_PASSWORD` and `POWERSVX_DNSDIST_API_KEY` in its environment (the values in `.env`; `apply-update.sh` exports them for you) and refuses to run without them. On a throwaway benchmark or development machine you can set `POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1` instead. See `docs/PRODUCTION.md`, "dnsdist web password and API key".
+
+`apply-update.sh` and `bootstrap-node.sh` regenerate the file, so export `POWERSVX_QUERY_LOG_DNSTAP=1` in the environment they run in to keep it on.
+
+Then turn it on in the console: **Settings → Query log**, enable it and set the sample rate (0–1). `query_log_enabled` off, or a sample rate of 0, means no sampling. The Control Plane writes the rate to `data/dnstap/rate`, and dnsdist picks it up within about a second, with no restart. At rate 0 dnsdist has no sampling rule installed, so nothing is added to the query path; the generated configuration only holds an idle connection to the Control Plane and reads the rate file once a second.
+
+How it works:
+
+- The Control Plane listens on `data/dnstap/query.sock` (dnsdist sees the directory as `/etc/dnsdist/dnstap`). The socket is mode 0660, so only the Control Plane's user and root, which dnsdist runs as, can write to it.
+- dnsdist sends one dnstap message per sampled answer, whether it came from Unbound, the packet cache or dnsdist itself. The message carries the Filter action actually taken: `allowed`, `blocked-filter`, `blocked-custom`, `auth`, `recursed` or `refused`. The action is worked out for sampled queries only, in the Lua block `qlClassify`, which follows the rule order of the Filter above it. Change both together.
+- The live stream always gets the entries. With Postgres they are also stored, with the client address truncated (/24, /48) when `query_log_mask_ip` is on, and subject to the existing retention and size limits. Without Postgres the console says history is unavailable and the live stream still works.
+- Entries hold client addresses. The live stream keeps them in memory only, and the unmasked address is never written to disk by the Control Plane.
+- Cost: each sampled answer runs a small Lua function in dnsdist and writes one dnstap message, so the cost grows with the rate. In a laptop test (Docker Desktop, loopback load, one UDP listener) sampling every query cut throughput to roughly 40% of what it was with the rate at 0, while 1% was within the noise of that test. Use a low rate (1–5%) for normal operation and 1.0 only briefly while diagnosing. Query logging must be off during a Baseline run.
+
+### NOTRACK scope
+
+`os-hardening.sh` (through `notrack-dns.sh`) untracks UDP/53 only for packets addressed to the node (`-m addrtype --dst-type LOCAL`), so containers on the default Docker bridge can still resolve through an outside resolver. Nodes installed earlier are migrated on the next update. Check with `deploy/linux/check-notrack.sh`; see `docs/PRODUCTION.md`, "Containers on the default Docker bridge cannot resolve names".

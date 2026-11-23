@@ -8,7 +8,7 @@ services:
       # make Alpine/Debian package mirrors look "temporarily" unavailable.
       network: host
       args:
-        VERSION: ${POWERSVX_VERSION:-1.7.2}
+        VERSION: ${POWERSVX_VERSION:-2.0.0}
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
         BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: powersvx
@@ -23,7 +23,6 @@ services:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
       - TZ=Asia/Jakarta
       - GOGC=${GOGC:-50}
-      - POWERSVX_DISABLE_QUERY_LOG=${POWERSVX_DISABLE_QUERY_LOG:-1}
       # 55% host RAM soft budget (scales on upgrade; leave room for Unbound/Postgres/OS).
       - POWERSVX_MEM_PERCENT=${POWERSVX_MEM_PERCENT:-55}
     logging: &powersvx-log
@@ -46,13 +45,13 @@ services:
       - "0.0.0.0:9100:9100"
     cap_add:
       - NET_BIND_SERVICE
-      # For [server] tproxy = true (Linux IP_TRANSPARENT), also add NET_ADMIN
-      # and prefer network_mode: host — published ports are not enough for TPROXY.
-      # - NET_ADMIN
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    # SIGTERM cancels a running filter rebuild, which removes its temp file and records
+    # "interrupted" within seconds; 20s matches TimeoutStopSec in powersvx.service.
+    stop_grace_period: 20s
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:5380/api/v1/health"]
       interval: 30s
@@ -150,6 +149,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # Supports private GHCR via `sudo docker login ghcr.io` (reads config.json inside dir).
+      # If the directory is missing Docker creates it empty and Watchtower has no login, silently:
+      # deploy/linux/registry-preflight.sh (run by bootstrap and apply-update) warns about that.
       - ${DOCKER_CONFIG_DIR:-/root/.docker}:/config:ro
     restart: unless-stopped
 

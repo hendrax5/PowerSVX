@@ -3,6 +3,7 @@ package metrics
 import (
 	"net/http"
 
+	"github.com/powersvx/powersvx/internal/proxyproto"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -108,10 +109,6 @@ var (
 		Name: "powersvx_unbound_cache_misses",
 		Help: "Unbound total.num.cachemiss (dataplane cumulative)",
 	})
-	UnboundRPZActions = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "powersvx_unbound_rpz_actions",
-		Help: "Sum of Unbound num.rpz.action.* excluding passthru",
-	})
 	UnboundRecursionAvg = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "powersvx_unbound_recursion_time_avg_seconds",
 		Help: "Unbound total.recursion.time.avg",
@@ -183,3 +180,16 @@ var (
 func Handler() http.Handler {
 	return promhttp.Handler()
 }
+
+// PROXY protocol v2 headers from the Dataplane that the Auth Backend accepted, and the
+// connections and datagrams it dropped because of the header rules.
+var (
+	_ = promauto.NewCounterFunc(prometheus.CounterOpts{
+		Name: "powersvx_proxy_protocol_accepted_total",
+		Help: "PROXY protocol v2 headers accepted from the Dataplane",
+	}, func() float64 { return float64(proxyproto.Accepted.Load()) })
+	_ = promauto.NewCounterFunc(prometheus.CounterOpts{
+		Name: "powersvx_proxy_protocol_refused_total",
+		Help: "Connections and datagrams dropped for a malformed, unexpected or missing PROXY protocol header",
+	}, func() float64 { return float64(proxyproto.Refused.Load()) })
+)

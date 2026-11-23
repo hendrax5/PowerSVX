@@ -8,8 +8,20 @@ OUT="${1:-$ROOT/configs/dnsdist/dnsdist.conf}"
 mkdir -p "$(dirname "$OUT")" "$ROOT/data/blocklist"
 
 MEM_KB=$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 8388608)
-MEM_MB=$((MEM_KB / 1024))
 NPROC=$(nproc 2>/dev/null || echo 4)
+# POWERSVX_HOST_CPUS / POWERSVX_HOST_MEM_MB size the config for a smaller node than
+# the machine it is generated on (benchmarks at a fixed size).
+case "${POWERSVX_HOST_MEM_MB:-}" in
+  '') ;;
+  *[!0-9]*) echo "POWERSVX_HOST_MEM_MB must be a whole number of MB" >&2; exit 1 ;;
+  *) MEM_KB=$((POWERSVX_HOST_MEM_MB * 1024)) ;;
+esac
+case "${POWERSVX_HOST_CPUS:-}" in
+  '') ;;
+  *[!0-9]*|0) echo "POWERSVX_HOST_CPUS must be a positive whole number" >&2; exit 1 ;;
+  *) NPROC=$POWERSVX_HOST_CPUS ;;
+esac
+MEM_MB=$((MEM_KB / 1024))
 
 PACKET_CACHE=500000
 if [ "$MEM_MB" -lt 4096 ]; then PACKET_CACHE=200000
@@ -23,6 +35,27 @@ BACKEND_SOCKETS="${POWERSVX_DNSDIST_BACKEND_SOCKETS:-$((NPROC * 2))}"
 if [ "$BACKEND_SOCKETS" -lt 8 ]; then BACKEND_SOCKETS=8; fi
 if [ "$BACKEND_SOCKETS" -gt 64 ]; then BACKEND_SOCKETS=64; fi
 
+# Tuning knobs (ticket #18). Each is off by default, which keeps today's configuration.
+# POWERSVX_DNSDIST_UDP_LISTENERS: UDP listeners per address. 1 (default) = one thread receives
+# every UDP query; N > 1 = N listeners with reusePort=true, one receive thread each; auto = CPUs.
+UDP_LISTENERS="${POWERSVX_DNSDIST_UDP_LISTENERS:-1}"
+case "$UDP_LISTENERS" in
+  auto) UDP_LISTENERS=$NPROC; if [ "$UDP_LISTENERS" -gt 64 ]; then UDP_LISTENERS=64; fi ;;
+  *[!0-9]*|0|0?*) echo "POWERSVX_DNSDIST_UDP_LISTENERS must be auto or a whole number from 1 to 64" >&2; exit 1 ;;
+  *) if [ "$UDP_LISTENERS" -gt 64 ]; then echo "POWERSVX_DNSDIST_UDP_LISTENERS must be auto or a whole number from 1 to 64" >&2; exit 1; fi ;;
+esac
+# POWERSVX_DNSDIST_CACHE_SHARDS: shards of the main packet cache. Unset (default) = dnsdist's
+# own default of one; auto = CPUs; or a whole number from 1 to 64.
+CACHE_SHARDS="${POWERSVX_DNSDIST_CACHE_SHARDS:-}"
+case "$CACHE_SHARDS" in
+  '') ;;
+  auto) CACHE_SHARDS=$NPROC; if [ "$CACHE_SHARDS" -gt 64 ]; then CACHE_SHARDS=64; fi ;;
+  *[!0-9]*|0|0?*) echo "POWERSVX_DNSDIST_CACHE_SHARDS must be auto or a whole number from 1 to 64" >&2; exit 1 ;;
+  *) if [ "$CACHE_SHARDS" -gt 64 ]; then echo "POWERSVX_DNSDIST_CACHE_SHARDS must be auto or a whole number from 1 to 64" >&2; exit 1; fi ;;
+esac
+CACHE_OPTS=""
+if [ -n "$CACHE_SHARDS" ]; then CACHE_OPTS=", numberOfShards=${CACHE_SHARDS}"; fi
+
 TCP_THREADS=$((NPROC * 2))
 if [ "$TCP_THREADS" -lt 4 ]; then TCP_THREADS=4; fi
 if [ "$TCP_THREADS" -gt 32 ]; then TCP_THREADS=32; fi
@@ -30,10 +63,38 @@ if [ "$TCP_THREADS" -gt 32 ]; then TCP_THREADS=32; fi
 SPOOF_V4="${POWERSVX_SPOOF_IPV4:-139.255.196.196}"
 SPOOF_V6="${POWERSVX_SPOOF_IPV6:-::}"
 DNSDIST_KEY="${POWERSVX_DNSDIST_KEY:-powersvx-dnsdist-console}"
-WEB_PASS="${POWERSVX_DNSDIST_WEB_PASSWORD:-powersvx}"
-API_KEY="${POWERSVX_DNSDIST_API_KEY:-powersvx-api}"
+# The dnsdist web server and API (loopback) need a password and an API key. There is no built-in
+# default: the values come from the environment (bootstrap-node.sh and apply-update.sh create them
+# in .env). POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1 opts in to fixed, publicly known values for
+# local development and tests only. The values are never printed.
+WEB_PASS="${POWERSVX_DNSDIST_WEB_PASSWORD:-}"
+API_KEY="${POWERSVX_DNSDIST_API_KEY:-}"
+if [ -z "$WEB_PASS" ] || [ -z "$API_KEY" ]; then
+  if [ "${POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS:-}" = "1" ]; then
+    if [ -z "$WEB_PASS" ]; then WEB_PASS="powersvx"; fi
+    if [ -z "$API_KEY" ]; then API_KEY="powersvx-api"; fi
+    echo "WARNING: using the built-in default dnsdist web credentials (POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1). Development only." >&2
+  else
+    echo "POWERSVX_DNSDIST_WEB_PASSWORD and POWERSVX_DNSDIST_API_KEY must both be set to non-empty values; refusing to write a dnsdist configuration with a built-in default. Create them with deploy/linux/ensure-dnsdist-credentials.sh (apply-update.sh does this), or set POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1 for local development only." >&2
+    exit 1
+  fi
+fi
+# Both values are written inside Lua double quotes.
+for v in "$WEB_PASS" "$API_KEY"; do
+  case "$v" in
+    *\"*|*\\*|*"
+"*) echo "POWERSVX_DNSDIST_WEB_PASSWORD and POWERSVX_DNSDIST_API_KEY must not contain a double quote, a backslash or a newline" >&2; exit 1 ;;
+  esac
+done
 RECURSIVE_PORT="${POWERSVX_UNBOUND_BACKEND_PORT:-5353}"
 AUTH_PORT="${POWERSVX_AUTH_BACKEND_PORT:-5354}"
+# 1 (default): dnsdist sends a PROXY protocol v2 header with the real client address to the Auth Backend
+# (docs/adr/0003). Then dnsdist adds no ECS option (it would sit behind a TSIG record and break the
+# signature) and the Auth Backend pool has no packet cache (the cache key cannot contain the PROXY address,
+# and the answer depends on the client). 0: the earlier behaviour, ECS from dnsdist and a packet cache.
+AUTH_PROXY="${POWERSVX_AUTH_PROXY_PROTOCOL:-1}"
+AUTH_OPTS=" useClientSubnet=true,"
+if [ "$AUTH_PROXY" = "1" ]; then AUTH_OPTS=" useProxyProtocol=true,"; fi
 CDB_REFRESH="${POWERSVX_CDB_REFRESH_SEC:-30}"
 PTR_QPS="${POWERSVX_PTR_QPS_PER_IP:-50}"
 
@@ -89,15 +150,31 @@ TMP="${OUT}.tmp.$$"
   echo "-- host Mem=${MEM_MB}MB packetCache=${PACKET_CACHE} authPort=${AUTH_PORT} recPort=${RECURSIVE_PORT}"
   echo ""
   echo "setACL({\"0.0.0.0/0\", \"::/0\"})"
-  echo "addLocal(\"0.0.0.0:53\")"
+  if [ "$UDP_LISTENERS" -gt 1 ]; then
+    i=0
+    while [ "$i" -lt "$UDP_LISTENERS" ]; do
+      echo "addLocal(\"0.0.0.0:53\", {reusePort=true})"
+      i=$((i + 1))
+    done
+  else
+    echo "addLocal(\"0.0.0.0:53\")"
+  fi
   if [ "$LISTEN_V6" = "1" ]; then
-    echo "addLocal(\"[::]:53\")"
+    if [ "$UDP_LISTENERS" -gt 1 ]; then
+      i=0
+      while [ "$i" -lt "$UDP_LISTENERS" ]; do
+        echo "addLocal(\"[::]:53\", {reusePort=true})"
+        i=$((i + 1))
+      done
+    else
+      echo "addLocal(\"[::]:53\")"
+    fi
   else
     echo "-- addLocal(\"[::]:53\") disabled (POWERSVX_DNSDIST_IPV6=0 or no global IPv6)"
   fi
   echo ""
   cat <<'TLSLUA'
--- Auto-enable DoT (:853) and DoH (:443) when TLS certificates are mounted at /etc/dnsdist/certs/
+-- Auto-enable DoT (:853), DoH (:443) and DoQ (UDP :784) when TLS certificates are mounted at /etc/dnsdist/certs/
 local function fileExists(p)
   local f = io.open(p, "r")
   if f ~= nil then f:close(); return true end
@@ -108,7 +185,8 @@ local tlsKey = "/etc/dnsdist/certs/privkey.pem"
 if fileExists(tlsCert) and fileExists(tlsKey) then
   addTLSLocal("0.0.0.0:853", tlsCert, tlsKey)
   addDOHLocal("0.0.0.0:443", tlsCert, tlsKey, "/dns-query")
-  infolog("powersvx DoT (:853) and DoH (:443) enabled with /etc/dnsdist/certs/")
+  addDOQLocal("0.0.0.0:784", tlsCert, tlsKey)
+  infolog("powersvx DoT (:853), DoH (:443) and DoQ (:784) enabled with /etc/dnsdist/certs/")
 end
 TLSLUA
   echo ""
@@ -201,13 +279,15 @@ LUA
   echo ""
   # Recursive backend pool (Unbound) and Authoritative backend pool (PowerSVX Go :5354)
   echo "newServer({address=\"127.0.0.1:${RECURSIVE_PORT}\", name=\"unbound\", sockets=${BACKEND_SOCKETS}, checkInterval=2, maxCheckFailures=5, checkTimeout=2000, rise=2})"
-  echo "newServer({address=\"127.0.0.1:${AUTH_PORT}\", name=\"powersvx-auth\", pool=\"auth\", useClientSubnet=true, checkInterval=5, maxCheckFailures=3, checkTimeout=2000, rise=2})"
+  echo "newServer({address=\"127.0.0.1:${AUTH_PORT}\", name=\"powersvx-auth\", pool=\"auth\",${AUTH_OPTS} checkInterval=5, maxCheckFailures=3, checkTimeout=2000, rise=2})"
   echo "setServerPolicy(leastOutstanding)"
   echo ""
-  echo "pc = newPacketCache(${PACKET_CACHE},{maxTTL=86400, minTTL=60, maxNegativeTTL=300})"
+  echo "pc = newPacketCache(${PACKET_CACHE},{maxTTL=86400, minTTL=60, maxNegativeTTL=300${CACHE_OPTS}})"
   echo "getPool(\"\"):setCache(pc)"
-  echo "pcAuth = newPacketCache(50000,{maxTTL=300, minTTL=0, maxNegativeTTL=60})"
-  echo "getPool(\"auth\"):setCache(pcAuth)"
+  if [ "$AUTH_PROXY" != "1" ]; then
+    echo "pcAuth = newPacketCache(50000,{maxTTL=300, minTTL=0, maxNegativeTTL=60})"
+    echo "getPool(\"auth\"):setCache(pcAuth)"
+  fi
   echo ""
   echo "local authzonesKVS = newCDBKVStore(\"/etc/dnsdist/blocklist/authzones.cdb\",${CDB_REFRESH})"
   echo "local whitelistKVS = newCDBKVStore(\"/etc/dnsdist/blocklist/whitelist.cdb\",${CDB_REFRESH})"
@@ -254,9 +334,106 @@ LUA
   echo "addAction(AllRule(), PoolAction(\"\"))"
   echo "setSecurityPollSuffix(\"\")"
   echo ""
+  # Sampled query log: opt in with POWERSVX_QUERY_LOG_DNSTAP=1. Off by default, and then
+  # nothing below is emitted, so the configuration is identical to one without this feature.
+  if [ "${POWERSVX_QUERY_LOG_DNSTAP:-0}" = "1" ]; then
+    mkdir -p "$ROOT/data/dnstap"
+    cat <<'QLLUA'
+-- Sampled query log (dnstap). The Control Plane listens on dnstap/query.sock and writes the
+-- sample rate (0..1) to dnstap/rate. maintenance() picks the rate up. While it is 0 or the
+-- file is missing, no rule is installed, so the query path is untouched. The logger only holds
+-- the connection to the Control Plane open, which lets the console see that the link is up.
+-- qlClassify names the Filter action for a sampled answer. It runs only for sampled
+-- queries and follows the rule order above: keep the two in step.
+local qlDir = "/etc/dnsdist/dnstap"
+local qlRuleName = "powersvx-querylog"
+local qlLogger = newFrameStreamUnixLogger(qlDir .. "/query.sock")
+local qlRate = 0
+local qlLast = nil
+
+local function qlSuffixHit(kvs, name)
+  local n = name
+  while n:find(".", 1, true) do
+    if kvs:lookup(n) ~= "" then return true end
+    n = n:sub(n:find(".", 1, true) + 1)
+  end
+  return false
+end
+
+local function qlClassify(dr)
+  local name = dr.qname:toStringNoDot():lower()
+  if dr.opcode == DNSOpcode.Notify or qlSuffixHit(authzonesKVS, name) then return "auth" end
+  if qlSuffixHit(whitelistKVS, name) or whitelistSMN:check(dr.qname) then return "allowed" end
+  if qlSuffixHit(customBlackKVS, name) then return "blocked-custom" end
+  if dr.qtype == DNSQType.PTR and dr.rcode == DNSRCode.REFUSED then return "refused" end
+  if qlSuffixHit(blocklistKVS, name) then return "blocked-filter" end
+  if dr.rcode == DNSRCode.REFUSED then return "refused" end
+  return "recursed"
+end
+
+local function qlAlter(dr, tap)
+  tap:setExtra("action=" .. qlClassify(dr))
+end
+
+local function qlRemove()
+  pcall(rmResponseRule, qlRuleName)
+  pcall(rmCacheHitResponseRule, qlRuleName)
+  pcall(rmSelfAnsweredResponseRule, qlRuleName)
+end
+
+local function qlInstall(rate)
+  local function rule()
+    if rate >= 1 then return AllRule() end
+    return ProbaRule(rate)
+  end
+  local function action() return DnstapLogResponseAction("powersvx", qlLogger, qlAlter) end
+  -- Answers come from a backend, the packet cache, or dnsdist itself: one rule for each.
+  addResponseAction(rule(), action(), {name=qlRuleName})
+  addCacheHitResponseAction(rule(), action(), {name=qlRuleName})
+  addSelfAnsweredResponseAction(rule(), action(), {name=qlRuleName})
+end
+
+local function qlReload()
+  local f = io.open(qlDir .. "/rate", "r")
+  local body = ""
+  if f ~= nil then
+    body = f:read("*a") or ""
+    f:close()
+  end
+  if body == qlLast then return end
+  qlLast = body
+  local rate = tonumber((body:gsub("%s+", ""))) or 0
+  if rate ~= rate or rate < 0 then rate = 0 end
+  if rate > 1 then rate = 1 end
+  if rate == qlRate then return end
+  qlRemove()
+  qlRate = 0
+  if rate > 0 then
+    local ok, err = pcall(qlInstall, rate)
+    if ok then
+      qlRate = rate
+      infolog("powersvx query log sampling at " .. rate)
+    else
+      qlRemove()
+      errlog("powersvx query log not started: " .. tostring(err))
+    end
+  else
+    infolog("powersvx query log sampling off")
+  end
+end
+
+qlReload()
+local qlPrevMaintenance = maintenance
+function maintenance()
+  qlPrevMaintenance()
+  qlReload()
+end
+QLLUA
+    echo ""
+  fi
   echo "webserver(\"127.0.0.1:8083\")"
   echo "setWebserverConfig({password=\"${WEB_PASS}\", apiKey=\"${API_KEY}\", acl=\"127.0.0.1\"})"
 } >"$TMP"
 
 mv -f "$TMP" "$OUT"
-echo "dnsdist-conf: wrote $OUT (cache=${PACKET_CACHE} spoof=${SPOOF_V4} rec=:${RECURSIVE_PORT} auth=:${AUTH_PORT} sockets=${BACKEND_SOCKETS} ipv6=${LISTEN_V6})" >&2
+echo "dnsdist-conf: wrote $OUT (cache=${PACKET_CACHE} spoof=${SPOOF_V4} rec=:${RECURSIVE_PORT} auth=:${AUTH_PORT} sockets=${BACKEND_SOCKETS} ipv6=${LISTEN_V6} udp-listeners=${UDP_LISTENERS} cache-shards=${CACHE_SHARDS:-default})" >&2

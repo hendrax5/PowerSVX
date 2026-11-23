@@ -32,13 +32,13 @@ git clone https://github.com/hendrax5/PowerSVX.git /home/hendra/powersvx && cd /
 | Area | Capabilities |
 |------|----------------|
 | DNS Dataplane | **Dnsdist (port 53, 1M packet cache, memory-mapped CDB)** + **Unbound (127.0.0.1:5353 multi-threaded recursive backend)** |
-| Performance | **>10k QPS**, kernel `NOTRACK` bypass conntrack, 3M conntrack table, 16MB socket buffers, 4096 NIC ring buffers |
+| Performance | **>10k QPS**, kernel `NOTRACK` bypass conntrack for DNS to the node itself, 3M conntrack table, 16MB socket buffers, 4096 NIC ring buffers |
 | Filter & Policy | Kominfo TrustPositif (seed bootstrap + SOA/IXFR/AXFR delta to per-policy CDB), banks whitelist bypass, RPZ, query ACL, rate-limiting |
 | Authoritative & Slave | Multi-algo DNSSEC (ECDSA/ED25519/RSA) + NSEC3, BIND import/export, Secondary (Slave) RFC 1995 IXFR + AXFR, RFC 2845 TSIG, SOA timers & disk cache |
 | Control & UI | PowerSVX Go `:5380`, scoped API tokens, live SSE query stream, Cache Explorer, Security & Bans, DNS Lookup/Root Trace, EN/ID switcher |
 | Observability | Auto-provisioned **Grafana (`:3000`)** embedded in `/analytics`, **Prometheus (`127.0.0.1:9091`)**, **Node-Exporter (`127.0.0.1:9101`)** |
-| Encrypted DNS | DoT (`:853`), DoH/DoH3 (`:443`), DoQ (`:784`), outbound forwarders, ACME DNS-01 |
-| Intercept | MikroTik / iptables DNAT; Linux kernel `tproxy` (`IP_TRANSPARENT`) |
+| Encrypted DNS | DoT (`:853`), DoH/DoH3 (`:443`), DoQ (`:784/udp`; terminated by dnsdist when certs are mounted), outbound forwarders, ACME DNS-01 |
+| Intercept | MikroTik / iptables DNAT |
 | Automation | **Hermes** ops engine (`ops/HERMES.md`), `ops/probe.py`, auto-disk hygiene |
 
 ---
@@ -99,9 +99,9 @@ Configure feeds in **Settings → RPZ** (or TOML/`data/rpz-policies.json`):
 
 HTTPS to blocked public sites often shows certificate errors; sinkhole landing pages work best on HTTP / captive-style internal networks.
 
-## DNS intercept (dstnat vs TPROXY)
+## DNS intercept (dstnat)
 
-### MikroTik / iptables DNAT (no `tproxy` needed)
+### MikroTik / iptables DNAT
 
 Destination is rewritten to PowerSVX — a normal listener is enough (`bind_address = "0.0.0.0"`, `udp_port`/`tcp_port` = `to-ports`).
 
@@ -111,25 +111,6 @@ MikroTik example (UDP; add a TCP twin if needed):
 /ip firewall nat add chain=dstnat protocol=udp dst-address=8.8.8.8 dst-port=53 \
   action=dst-nat to-addresses=<PowerSVX-IP> to-ports=53
 ```
-
-### Linux kernel TPROXY
-
-When the packet destination stays non-local (e.g. still `8.8.8.8:53`), enable:
-
-```toml
-[server]
-tproxy = true
-udp_port = 53
-tcp_port = 53
-```
-
-Requires Linux, `CAP_NET_ADMIN` (or root), and usually **host networking**. Example nftables sketch (adjust mark/table/if):
-
-```
-meta l4proto { udp, tcp } th dport 53 tproxy to :53 meta mark set 1 accept
-```
-
-Docker: set `tproxy = true`, add `cap_add: [NET_ADMIN]`, prefer `network_mode: host` (published `ports:` alone is not enough for real TPROXY).
 
 ## ACME
 

@@ -8,10 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/powersvx/powersvx/internal/apiauth"
 	"github.com/powersvx/powersvx/internal/audit"
-	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/dnsdistctl"
 	"github.com/powersvx/powersvx/internal/unboundrpz"
 )
@@ -21,23 +19,7 @@ func (a *API) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var l1Hits, l1Misses, l1Size uint64
-	if a.cache != nil && a.cache.L1 != nil {
-		l1Hits, l1Misses, l1Size = a.cache.L1.Stats()
-	}
-	var l1Ratio float64
-	if l1Hits+l1Misses > 0 {
-		l1Ratio = float64(l1Hits) / float64(l1Hits+l1Misses)
-	}
-	out := map[string]any{
-		"dataplane": config.DNSDataplane(),
-		"go": map[string]any{
-			"l1_hits":   l1Hits,
-			"l1_misses": l1Misses,
-			"l1_size":   l1Size,
-			"hit_ratio": l1Ratio,
-		},
-	}
+	out := map[string]any{}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	if st, err := dnsdistctl.DefaultClient().Stats(ctx); err == nil {
@@ -139,10 +121,6 @@ func (a *API) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 	results := map[string]any{}
 	switch scope {
 	case "all":
-		if a.cache != nil {
-			_ = a.cache.Clear()
-			results["go"] = "flushed"
-		}
 		if err := dnsdistctl.DefaultClient().FlushCache(ctx); err != nil {
 			results["dnsdist"] = "error: " + err.Error()
 		} else {
@@ -157,10 +135,6 @@ func (a *API) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 		if domain == "" {
 			http.Error(w, "domain required", http.StatusBadRequest)
 			return
-		}
-		if a.cache != nil {
-			a.cache.FlushName(config.NormalizeName(domain), 0)
-			results["go"] = "flushed " + domain
 		}
 		if err := dnsdistctl.DefaultClient().ExpungeByName(ctx, domain); err != nil {
 			results["dnsdist"] = "error: " + err.Error()
@@ -177,10 +151,6 @@ func (a *API) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "domain (zone) required", http.StatusBadRequest)
 			return
 		}
-		if a.cache != nil {
-			_ = a.cache.Clear()
-			results["go"] = "cleared L1/L2 for zone flush"
-		}
 		if err := dnsdistctl.DefaultClient().FlushCache(ctx); err != nil {
 			results["dnsdist"] = "error: " + err.Error()
 		} else {
@@ -196,11 +166,6 @@ func (a *API) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "domain and type required", http.StatusBadRequest)
 			return
 		}
-		if a.cache != nil {
-			qt := dns.StringToType[qtype]
-			a.cache.FlushName(config.NormalizeName(domain), qt)
-			results["go"] = "flushed " + domain + " " + qtype
-		}
 		if err := dnsdistctl.DefaultClient().ExpungeByName(ctx, domain); err != nil {
 			results["dnsdist"] = "error: " + err.Error()
 		} else {
@@ -212,10 +177,6 @@ func (a *API) handleCacheFlush(w http.ResponseWriter, r *http.Request) {
 			results["unbound"] = out
 		}
 	case "negative":
-		if a.cache != nil {
-			_ = a.cache.Clear()
-			results["go"] = "cleared negative+positive entries"
-		}
 		if err := dnsdistctl.DefaultClient().FlushCache(ctx); err != nil {
 			results["dnsdist"] = "error: " + err.Error()
 		} else {

@@ -2,7 +2,6 @@
 #
 # Dataplane options:
 #   POWERSVX_DNS_DATAPLANE=dnsdist  — dnsdist :53 + CDB blocklist; Unbound 127.0.0.1:5353 (recommended)
-#   POWERSVX_DNS_DATAPLANE=unbound  — Unbound :53 + RPZ zonefiles (legacy heavy)
 #   POWERSVX_DNS_DATAPLANE=powersvx — Go edge :53 (lab)
 #
 # Usage:
@@ -22,20 +21,19 @@ services:
       - POWERSVX_GOMEMLIMIT_FIXED=${POWERSVX_GOMEMLIMIT_FIXED:-0}
       - GOMEMLIMIT=${GOMEMLIMIT:-}
       - GOGC=${GOGC:-50}
-      - POWERSVX_DISABLE_QUERY_LOG=${POWERSVX_DISABLE_QUERY_LOG:-1}
       - POWERSVX_DNS_DATAPLANE=${POWERSVX_DNS_DATAPLANE:-dnsdist}
+      - POWERSVX_HOST_DEPLOYMENT=1
       - POWERSVX_UNBOUND_RPZ_DIR=/data/unbound-rpz
       - POWERSVX_BLOCKLIST_DIR=/data/blocklist
+      - POWERSVX_DNSTAP_DIR=/data/dnstap
       - POWERSVX_UNBOUND_CONTAINER=powersvx-unbound-1
       - POWERSVX_DNSDIST_KEY=${POWERSVX_DNSDIST_KEY:-powersvx-dnsdist-console}
       - POWERSVX_DNSDIST_CONTROL=127.0.0.1:5199
       - POWERSVX_DNSDIST_WEB=http://127.0.0.1:8083
-      - POWERSVX_DNSDIST_WEB_PASSWORD=${POWERSVX_DNSDIST_WEB_PASSWORD:-powersvx}
-      - POWERSVX_DNSDIST_API_KEY=${POWERSVX_DNSDIST_API_KEY:-powersvx-api}
+      # No fixed fallback: an unset value is empty and the dnsdist web calls fail with 401, they never fall back to a public default. deploy/linux/ensure-dnsdist-credentials.sh creates the values in .env.
+      - POWERSVX_DNSDIST_WEB_PASSWORD=${POWERSVX_DNSDIST_WEB_PASSWORD:-}
+      - POWERSVX_DNSDIST_API_KEY=${POWERSVX_DNSDIST_API_KEY:-}
       - POWERSVX_UNBOUND_CONTROL=127.0.0.1:8953
-      - POWERSVX_UNBOUND_QUERYLOG=${POWERSVX_UNBOUND_QUERYLOG:-0}
-      - POWERSVX_UNBOUND_QUERYLOG_PATH=/data/unbound-logs/unbound.log
-      - POWERSVX_RPZ_MAX_ENTRIES=${POWERSVX_RPZ_MAX_ENTRIES:-}
       - POWERSVX_CONNTRACK_SYS_DIR=/powersvx-sys
     depends_on:
       postgres:
@@ -52,6 +50,7 @@ services:
       - powersvx-data:/data
       - ./data/unbound-rpz:/data/unbound-rpz
       - ./data/blocklist:/data/blocklist
+      - ./data/dnstap:/data/dnstap
       - ./data/unbound-logs:/data/unbound-logs
       - ./configs/powersvx.docker.host.toml:/etc/PowerSVX/powersvx.toml:ro
       - ./configs/sample-blocklist.txt:/etc/PowerSVX/sample-blocklist.txt:ro
@@ -75,9 +74,10 @@ services:
       retries: 5
       start_period: 60s
 
-  # Public :53 — CDB blocklist + bank whitelist → Unbound backend
+  # Public :53 — CDB blocklist + bank whitelist → Unbound backend; DoT/DoH/DoQ when certs are mounted.
+  # The image tag is pinned on purpose: see "Pinned dnsdist version" in deploy/linux/README.md.
   dnsdist:
-    image: powerdns/dnsdist-19:latest
+    image: powerdns/dnsdist-19:1.9.16
     network_mode: host
     restart: unless-stopped
     depends_on:
@@ -93,14 +93,22 @@ services:
     volumes:
       - ./configs/dnsdist/dnsdist.conf:/etc/dnsdist/dnsdist.conf:ro
       - ./data/blocklist:/etc/dnsdist/blocklist:ro
+      - ./data/dnstap:/etc/dnsdist/dnstap
       - ./certs:/etc/dnsdist/certs:ro
+      - ./deploy/linux/dns-ready.sh:/usr/local/bin/dns-ready.sh:ro
     # Image ENTRYPOINT is already dnsdist — do NOT prefix "dnsdist" again
     # (that is parsed as a listen address → Fatal: Unable to convert ... 'dnsdist').
     command: ["--supervised", "--disable-syslog", "-C", "/etc/dnsdist/dnsdist.conf"]
     healthcheck:
-      test: ["CMD-SHELL", "dnsdist -e 'print(getStatisticsCounters())' >/dev/null 2>&1 || exit 0"]
+      # One fresh name under a real domain per interval: only recursion can answer it, so this
+      # fails when dnsdist or Unbound stops answering and when recursion is broken (a forward
+      # loop answers SERVFAIL). It also fails while the node cannot reach the Internet.
+      # Exactly one probe (one real recursive lookup) per interval: no -w, so a failure is not
+      # retried inside the check. Docker's retries do the smoothing: the container only turns
+      # unhealthy after 3 failed intervals in a row (90 s), so one transient hiccup does not flip it.
+      test: ["CMD", "bash", "/usr/local/bin/dns-ready.sh", "-r", "-t", "4"]
       interval: 30s
-      timeout: 5s
+      timeout: 8s
       retries: 3
       start_period: 20s
 

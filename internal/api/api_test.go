@@ -7,19 +7,19 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/powersvx/powersvx/internal/allowlist"
 	"github.com/powersvx/powersvx/internal/api"
 	"github.com/powersvx/powersvx/internal/authoritative"
-	"github.com/powersvx/powersvx/internal/cache"
+	"github.com/powersvx/powersvx/internal/blockcdb"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/denylist"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
-	"github.com/powersvx/powersvx/internal/resolver"
-	"github.com/powersvx/powersvx/internal/rpz"
 	"github.com/powersvx/powersvx/internal/server"
 )
 
@@ -31,10 +31,9 @@ func TestZonesCRUDAndAuth(t *testing.T) {
 	cfg.Resolver.Mode = "forward"
 	cfg.Resolver.DNSSECMode = "off"
 	auth := authoritative.NewStore()
-	tier := cache.NewTier(cache.NewL1(1000), nil, time.Minute, time.Minute)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth}, log)
-	a := api.New(cfg, srv, nil, tier, auth, log)
+	srv := server.New(cfg, server.Deps{Auth: auth}, log)
+	a := api.New(cfg, srv, nil, auth, log)
 	h := a.Handler()
 
 	rr := httptest.NewRecorder()
@@ -93,12 +92,11 @@ func TestEventsRecent(t *testing.T) {
 	cfg.API.RESTEnabled = true
 	cfg.Resolver.Mode = "forward"
 	auth := authoritative.NewStore()
-	tier := cache.NewTier(cache.NewL1(100), nil, time.Minute, time.Minute)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth}, log)
+	srv := server.New(cfg, server.Deps{Auth: auth}, log)
 	bus := eventlog.New(10)
 	bus.Emit("warn", "test", "hello", map[string]string{"k": "v"})
-	a := api.New(cfg, srv, nil, tier, auth, log)
+	a := api.New(cfg, srv, nil, auth, log)
 	a.SetEvents(bus)
 	h := a.Handler()
 
@@ -125,12 +123,10 @@ func TestSettingsToggle(t *testing.T) {
 	cfg.Resolver.Mode = "forward"
 	cfg.Resolver.ForwardOnFail = true
 	auth := authoritative.NewStore()
-	tier := cache.NewTier(cache.NewL1(100), nil, time.Minute, time.Minute)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	geoRes, _ := geo.New(true, "", "default")
-	res := resolver.New(cfg.Resolver)
-	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth, Geo: geoRes, Res: res}, log)
-	a := api.New(cfg, srv, nil, tier, auth, log)
+	srv := server.New(cfg, server.Deps{Auth: auth, Geo: geoRes}, log)
+	a := api.New(cfg, srv, nil, auth, log)
 	h := a.Handler()
 
 	body := bytes.NewBufferString(`{"geodns":false}`)
@@ -164,8 +160,8 @@ func TestSettingsToggle(t *testing.T) {
 	if len(fw) != 2 || fw[0] != "1.0.0.1:53" || fw[1] != "8.8.4.4:53" {
 		t.Fatalf("forwarders=%v", out["forwarders"])
 	}
-	if len(res.Forwarders) != 2 || res.Forwarders[0] != "1.0.0.1:53" {
-		t.Fatalf("live forwarders=%v", res.Forwarders)
+	if len(cfg.Resolver.Forwarders) != 2 || cfg.Resolver.Forwarders[0] != "1.0.0.1:53" {
+		t.Fatalf("stored forwarders=%v", cfg.Resolver.Forwarders)
 	}
 }
 
@@ -175,14 +171,16 @@ func TestWhitelistAndDomainLookup(t *testing.T) {
 	cfg.API.AuthType = "token"
 	cfg.API.APIToken = "secret"
 	auth := authoritative.NewStore()
-	tier := cache.NewTier(cache.NewL1(1000), nil, time.Minute, time.Minute)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	wl := allowlist.New("")
 	bl := denylist.New("")
-	eng := rpz.New(true)
-	eng.Replace(map[string]rpz.Action{"bad.example.com.": rpz.ActionNXDOMAIN})
-	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth, Allow: wl, Deny: bl, RPZ: eng}, log)
-	a := api.New(cfg, srv, nil, tier, auth, log)
+	dataDir := t.TempDir()
+	if _, _, err := blockcdb.SyncNames(dataDir, []string{"bad.example.com."}); err != nil {
+		t.Fatal(err)
+	}
+	srv := server.New(cfg, server.Deps{Auth: auth, Allow: wl, Deny: bl}, log)
+	a := api.New(cfg, srv, nil, auth, log)
+	a.SetDataDir(dataDir)
 	h := a.Handler()
 	authH := func(method, url string, body io.Reader) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, url, body)
@@ -233,5 +231,75 @@ func TestWhitelistAndDomainLookup(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &out)
 	if out["whitelisted"] != true || out["blocked"] != false {
 		t.Fatalf("whitelist should win: %v", out)
+	}
+}
+
+func TestSettingsRefuseAForwarderToUnboundItself(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.API.RESTEnabled = true
+	cfg.Resolver.Mode = "recursive"
+	auth := authoritative.NewStore()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := server.New(cfg, server.Deps{Auth: auth}, log)
+	a := api.New(cfg, srv, nil, auth, log)
+	dir := t.TempDir()
+	a.SetDataDir(dir)
+	h := a.Handler()
+
+	put := func(body string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v1/settings", bytes.NewBufferString(body)))
+		return rr
+	}
+	for _, body := range []string{
+		// the "Unbound backend" preset the console used to offer
+		`{"resolver_mode":"forward","forward_on_fail":false,"forwarders":["127.0.0.1:5353"]}`,
+		`{"forwarders":["::1"]}`,
+		`{"forwarders":["1.1.1.1","127.0.0.1"]}`,
+		`{"forward_zones":[{"zone":"corp.local","forwarders":["127.0.0.1:5353"]}]}`,
+	} {
+		rr := put(body)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("%s: want 400, got %d %s", body, rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "Unbound would forward to itself") {
+			t.Fatalf("%s: the message must say why: %s", body, rr.Body.String())
+		}
+	}
+	if len(cfg.Resolver.Forwarders) != 0 || cfg.Resolver.Mode != "recursive" {
+		t.Fatalf("a refused request must not change anything: %s %v", cfg.Resolver.Mode, cfg.Resolver.Forwarders)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "runtime-settings.json")); err == nil {
+		t.Fatal("a refused request must not write the settings file")
+	}
+
+	if rr := put(`{"resolver_mode":"forward","forwarders":["9.9.9.9","127.0.0.1:5399"]}`); rr.Code != http.StatusOK {
+		t.Fatalf("a real forwarder and a loopback address on another port are fine: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSavingOtherSettingsDoesNotWriteAnOldLoopBack(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.API.RESTEnabled = true
+	cfg.Resolver.Mode = "forward"
+	cfg.Resolver.Forwarders = []string{"127.0.0.1:5353"} // an old TOML
+	auth := authoritative.NewStore()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := server.New(cfg, server.Deps{Auth: auth}, log)
+	a := api.New(cfg, srv, nil, auth, log)
+	dir := t.TempDir()
+	a.SetDataDir(dir)
+
+	rr := httptest.NewRecorder()
+	a.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/v1/settings", bytes.NewBufferString(`{"ecs_enabled":true}`)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	saved, err := os.ReadFile(filepath.Join(dir, "runtime-settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), "127.0.0.1") {
+		t.Fatalf("saving another setting persisted the loop:\n%s", saved)
 	}
 }

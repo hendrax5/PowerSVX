@@ -135,39 +135,6 @@ func QuerySOASerialWithTSIG(ctx context.Context, zone string, masters []string, 
 	return 0, "", fmt.Errorf("all masters failed SOA for zone %s%s: %s", zone, hint, strings.Join(errs, "; "))
 }
 
-// streamAXFR pulls a zone from masters and inserts zone-relative owner names into the trie.
-func streamAXFR(zone string, masters []string, hit Hit, timeout time.Duration, t *trie) (names []string, serial uint32, err error) {
-	return streamAXFRWithTSIG(zone, masters, hit, timeout, t, TSIGAuth{})
-}
-
-func streamAXFRWithTSIG(zone string, masters []string, hit Hit, timeout time.Duration, t *trie, auth TSIGAuth) (names []string, serial uint32, err error) {
-	zone = config.NormalizeName(zone)
-	if zone == "" || zone == "." {
-		return nil, 0, fmt.Errorf("axfr zone required")
-	}
-	if len(masters) == 0 {
-		return nil, 0, fmt.Errorf("axfr masters required")
-	}
-	if timeout <= 0 {
-		timeout = defaultAXFRTimeout
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	res, err := PullZoneWithTSIG(ctx, zone, masters, 0, auth)
-	if err != nil {
-		return nil, 0, err
-	}
-	if hit.Action == "" {
-		hit.Action = ActionNXDOMAIN
-	}
-	hit.Target = strings.TrimSpace(hit.Target)
-	for _, n := range res.Names {
-		t.insertHit(n, hit)
-	}
-	return res.Names, res.Serial, nil
-}
-
 // PullZone transfers the zone. serial==0 forces AXFR; otherwise tries IXFR first and
 // falls back to AXFR on failure or when the master returns a full zone.
 func PullZone(ctx context.Context, zone string, masters []string, serial uint32) (TransferResult, error) {
@@ -329,87 +296,6 @@ func StreamAXFRNames(ctx context.Context, zone string, masters []string, auth TS
 		lastErr = fmt.Errorf("all masters failed")
 	}
 	return 0, "", 0, lastErr
-}
-
-// streamAXFRToSink transfers the zone and writes each relative owner into sink (no giant names slice retained by caller).
-func streamAXFRToSink(ctx context.Context, zone string, masters []string, hit Hit, sink domainSink) (serial uint32, count int, err error) {
-	return streamAXFRToSinkWithTSIG(ctx, zone, masters, hit, sink, TSIGAuth{})
-}
-
-func streamAXFRToSinkWithTSIG(ctx context.Context, zone string, masters []string, hit Hit, sink domainSink, auth TSIGAuth) (serial uint32, count int, err error) {
-	zone = config.NormalizeName(zone)
-	if zone == "" || zone == "." {
-		return 0, 0, fmt.Errorf("axfr zone required")
-	}
-	if len(masters) == 0 {
-		return 0, 0, fmt.Errorf("axfr masters required")
-	}
-	if hit.Action == "" {
-		hit.Action = ActionNXDOMAIN
-	}
-	hit.Target = strings.TrimSpace(hit.Target)
-	var lastErr error
-	for _, master := range masters {
-		ser, n, err := axfrStreamToSink(ctx, zone, master, hit, sink, auth)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		return ser, n, nil
-	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("all masters failed")
-	}
-	return 0, 0, lastErr
-}
-
-func axfrStreamToSink(ctx context.Context, zone, master string, hit Hit, sink domainSink, auth TSIGAuth) (uint32, int, error) {
-	addr := masterAddr(master)
-	m := new(dns.Msg)
-	m.SetAxfr(zone)
-	tsigSecret := applyTSIG(m, auth)
-	tr := &dns.Transfer{DialTimeout: xferDialTimeout, ReadTimeout: xferReadTimeout, TsigSecret: tsigSecret}
-	env, err := tr.In(m, addr)
-	if err != nil {
-		return 0, 0, err
-	}
-	var serial uint32
-	seenSOA := 0
-	n := 0
-	for e := range env {
-		if e.Error != nil {
-			return 0, 0, e.Error
-		}
-		select {
-		case <-ctx.Done():
-			return 0, 0, ctx.Err()
-		default:
-		}
-		for _, rr := range e.RR {
-			if soa, ok := rr.(*dns.SOA); ok {
-				seenSOA++
-				serial = soa.Serial
-				continue
-			}
-			switch rr.(type) {
-			case *dns.A, *dns.AAAA, *dns.CNAME, *dns.NS, *dns.TXT:
-			default:
-				continue
-			}
-			rel, ok := relativeOwner(rr.Header().Name, zone)
-			if !ok {
-				continue
-			}
-			if err := sink.Put(rel, hit); err != nil {
-				return 0, 0, err
-			}
-			n++
-		}
-	}
-	if seenSOA < 2 {
-		return 0, 0, fmt.Errorf("incomplete AXFR from %s", addr)
-	}
-	return serial, n, nil
 }
 
 func ixfrPull(ctx context.Context, zone, master string, serial uint32, auth TSIGAuth) (TransferResult, error) {

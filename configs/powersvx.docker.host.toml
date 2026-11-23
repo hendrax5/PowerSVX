@@ -1,20 +1,24 @@
-# PowerSVX — host-network CONTROL PLANE (dnsdist or Unbound owns public :53)
+# PowerSVX — host-network CONTROL PLANE (dnsdist owns public :53)
 #
-# DNS dataplane: POWERSVX_DNS_DATAPLANE=dnsdist (recommended) or unbound.
-# This process serves UI/API :5380 + side DNS on :5354 (AXFR/NOTIFY only).
+# DNS dataplane: dnsdist (the only one; POWERSVX_DNS_DATAPLANE=dnsdist or unset).
+# This process serves UI/API :5380 + the Auth Backend on 127.0.0.1:5354 (zones, AXFR, NOTIFY via dnsdist).
 # Recurse backend is always Unbound on 127.0.0.1:5353 — never point forwarders at :53
 # (that is dnsdist/public listen and would loop).
 
 [server]
-bind_address = "0.0.0.0"
-# Customer DNS is dnsdist/Unbound :53. Keep a side port for AXFR/NOTIFY only.
+# The Auth Backend answers only the local Dataplane (dnsdist -> 127.0.0.1:5354).
+bind_address = "127.0.0.1"
+# Customer DNS is dnsdist :53. This port is the Auth Backend, reached only by dnsdist.
 udp_port = 5354
 tcp_port = 5354
 dot_port = 0
 doh_port = 0
 doq_port = 0
 workers = 2
-tproxy = false
+# "optional": a PROXY protocol v2 header from the Dataplane gives the real client address, a plain query
+# (a node whose dnsdist is not updated yet) is still answered. "required" refuses plain queries,
+# "off" ignores headers. Match POWERSVX_AUTH_PROXY_PROTOCOL of gen-dnsdist-conf.sh.
+proxy_protocol = "optional"
 
 [server.tls]
 enabled = false
@@ -43,8 +47,12 @@ stale_ttl = 0
 prefetch_pct = 0
 
 [resolver]
-mode = "forward"
-forwarders = ["127.0.0.1:5353"]
+# Unbound recurses by itself. Do NOT list 127.0.0.1:5353 (Unbound) or :53 (dnsdist) as a
+# forwarder: Unbound would forward to itself and answer SERVFAIL for every name outside
+# the hosted zones. The Control Plane refuses to write such a forwarder to Unbound.
+# To use an upstream resolver instead, set mode = "forward" and list that resolver.
+mode = "recursive"
+forwarders = []
 forward_on_fail = false
 dnssec_mode = "off"
 edns_buffer_size = 1232
@@ -113,7 +121,6 @@ api_token = "${API_TOKEN}"
 [logging]
 level = "warn"
 format = "json"
-# Unbound dataplane: UI toggle enables logfile sampler → Postgres (not Go :53).
 query_log_enabled = true
 query_log_destination = "postgresql"
 query_log_retention_days = 3

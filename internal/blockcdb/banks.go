@@ -52,16 +52,23 @@ func WriteBanksWhitelist(dataDir string) (int, error) {
 func FilterBlockNames(names []string) []string {
 	out := make([]string, 0, len(names))
 	for _, name := range names {
-		name = strings.ToLower(strings.TrimSpace(name))
-		name = strings.TrimPrefix(name, "*.")
-		name = strings.TrimSuffix(name, ".")
-		if name == "" || name == "localhost" {
-			continue
+		if name, ok := filterBlockName(name); ok {
+			out = append(out, name)
 		}
-		if allowlist.OfficialBankName(name) {
-			continue
-		}
-		out = append(out, name)
 	}
 	return out
+}
+
+// filterBlockName is FilterBlockNames for one name; ok is false when the name is dropped.
+func filterBlockName(name string) (string, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.TrimPrefix(name, "*.")
+	name = strings.TrimSuffix(name, ".")
+	if name == "" || name == "localhost" {
+		return "", false
+	}
+	if allowlist.OfficialBankName(name) {
+		return "", false
+	}
+	return name, true
 }

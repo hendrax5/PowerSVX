@@ -8,8 +8,6 @@ dot_port = 8853
 doh_port = 8443
 doq_port = 784
 workers = 0
-# Linux only: IP_TRANSPARENT for nftables/iptables TPROXY (not needed for MikroTik dstnat)
-tproxy = false
 
 [server.tls]
 enabled = false

@@ -40,13 +40,7 @@ func DefaultClient() *Client {
 		user = "dontcare"
 	}
 	pass := strings.TrimSpace(os.Getenv("POWERSVX_DNSDIST_WEB_PASSWORD"))
-	if pass == "" {
-		pass = "powersvx"
-	}
 	key := strings.TrimSpace(os.Getenv("POWERSVX_DNSDIST_API_KEY"))
-	if key == "" {
-		key = "powersvx-api"
-	}
 	container := strings.TrimSpace(os.Getenv("POWERSVX_DNSDIST_CONTAINER"))
 	if container == "" {
 		container = "powersvx-dnsdist-1"
@@ -244,61 +238,6 @@ func ParseShowDynBlocks(raw string) []DynBlockEntry {
 func (c *Client) ClearDynBlocks(ctx context.Context) error {
 	_, err := c.Exec(ctx, "clearDynBlocks()")
 	return err
-}
-
-// QuerySample represents a recent DNS query observed in dnsdist ring buffers.
-type QuerySample struct {
-	Timestamp string `json:"timestamp"`
-	Client    string `json:"client"`
-	ID        string `json:"id,omitempty"`
-	QName     string `json:"qname"`
-	QType     string `json:"qtype"`
-	RCode     string `json:"rcode,omitempty"`
-	LatencyMS string `json:"latency_ms,omitempty"`
-}
-
-// GrepQueries samples recent queries from dnsdist in-memory ring buffer via grepq("", limit).
-func (c *Client) GrepQueries(ctx context.Context, limit int, filter string) ([]QuerySample, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	cleanFilter := sanitizeDNSLabel(filter)
-	out, err := c.Exec(ctx, fmt.Sprintf(`grepq(%q, %d)`, cleanFilter, limit))
-	if err != nil {
-		return nil, err
-	}
-	return ParseGrepQ(out), nil
-}
-
-// ParseGrepQ parses tabular lines returned by dnsdist grepq().
-func ParseGrepQ(raw string) []QuerySample {
-	var out []QuerySample
-	sc := bufio.NewScanner(strings.NewReader(raw))
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "Time") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 5 {
-			continue
-		}
-		s := QuerySample{
-			Timestamp: fields[0],
-			Client:    fields[1],
-			ID:        fields[2],
-			QName:     strings.TrimSuffix(fields[3], "."),
-			QType:     fields[4],
-		}
-		if len(fields) >= 6 {
-			s.LatencyMS = fields[5]
-		}
-		if len(fields) >= 7 {
-			s.RCode = strings.Join(fields[6:], " ")
-		}
-		out = append(out, s)
-	}
-	return out
 }
 
 // WriteManualBans writes persistent blocked CIDRs/IPs for dnsdist maintenance() NMG sync.

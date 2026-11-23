@@ -9,12 +9,10 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/powersvx/powersvx/internal/api"
 	"github.com/powersvx/powersvx/internal/apiauth"
 	"github.com/powersvx/powersvx/internal/authoritative"
-	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/server"
 )
@@ -43,10 +41,9 @@ func TestLocalLoginSessionAndRBAC(t *testing.T) {
 	sess := apiauth.NewSessionStore(filepath.Join(dir, "sess"), apiauth.DefaultTTL, false)
 
 	auth := authoritative.NewStore()
-	tier := cache.NewTier(cache.NewL1(100), nil, time.Minute, time.Minute)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := server.New(cfg, server.Deps{Cache: tier, Auth: auth}, log)
-	a := api.New(cfg, srv, nil, tier, auth, log)
+	srv := server.New(cfg, server.Deps{Auth: auth}, log)
+	a := api.New(cfg, srv, nil, auth, log)
 	a.SetUserStore(users)
 	a.SetSessionStore(sess)
 	h := a.Handler()

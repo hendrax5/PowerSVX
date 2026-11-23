@@ -6,15 +6,19 @@
 #   1. dnsdist (Port 53 public front-end + CDB blocklist mmap)
 #   2. unbound (Port 5353 loopback recursive resolver)
 #   3. powersvx (Port 5380 Web UI + REST API control-plane)
-#   4. postgres (Port 5433 persistent storage for query logs & auth)
-#   5. prometheus (Port 9091 metrics aggregator)
-#   6. grafana (Port 3000 auto-provisioned dashboards embedded in UI)
-#   7. node-exporter (Port 9101 host telemetry)
+#   4. postgres (Port 5433 query-log history)   [Observability Profile]
+#   5. prometheus (Port 9091 metrics aggregator)   [Observability Profile]
+#   6. grafana (Port 3000 auto-provisioned dashboards embedded in UI)   [Observability Profile]
+#   7. node-exporter (Port 9101 host telemetry)   [Observability Profile]
+#
+# POWERSVX_PROFILE=core starts only the Core Profile; hosts under 4 GB of memory
+# select it automatically. See deploy/linux/select-profile.sh.
 # ==============================================================================
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+sh "$ROOT/deploy/linux/dataplane-guard.sh" "$ROOT" || exit 1
 cd "$ROOT"
 
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -69,7 +73,7 @@ fi
 
 # 4. Initialize Data Directories & Permissions
 echo "==> [4/7] Preparing directories & permissions..."
-mkdir -p data/postgres data/blocklist data/unbound-rpz data/unbound-logs configs/unbound configs/dnsdist
+mkdir -p data/postgres data/blocklist data/dnstap data/unbound-rpz data/unbound-logs configs/unbound configs/dnsdist
 # PostgreSQL alpine uses UID 70
 chown -R 70:70 data/postgres 2>/dev/null || true
 
@@ -79,18 +83,22 @@ if [[ ! -f ".env" ]]; then
   PG_PASS=$(openssl rand -hex 16 2>/dev/null || echo "psvx_pg_$(date +%s)")
   API_TOK=$(openssl rand -hex 24 2>/dev/null || echo "psvx_api_$(date +%s)")
   GRAF_PASS=$(openssl rand -hex 16 2>/dev/null || echo "psvx_graf_$(date +%s)")
-  DIST_PASS=$(openssl rand -hex 16 2>/dev/null || echo "psvx_dist_$(date +%s)")
-  DIST_KEY=$(openssl rand -hex 24 2>/dev/null || echo "psvx_key_$(date +%s)")
   cat > .env <<EOF
 PG_PASSWORD=${PG_PASS}
 API_TOKEN=${API_TOK}
 GRAFANA_USER=admin
 GRAFANA_PASSWORD=${GRAF_PASS}
-POWERSVX_DNSDIST_WEB_PASSWORD=${DIST_PASS}
-POWERSVX_DNSDIST_API_KEY=${DIST_KEY}
 EOF
   chmod 600 .env
 fi
+
+# dnsdist web password and API key: created here for a new .env, and for an existing one that lacks them.
+sh "$ROOT/deploy/linux/ensure-dnsdist-credentials.sh" "$ROOT/.env"
+for k in POWERSVX_DNSDIST_WEB_PASSWORD POWERSVX_DNSDIST_API_KEY; do
+  if [[ -z "${!k:-}" ]]; then
+    export "$k=$(grep -E "^$k=" "$ROOT/.env" | tail -n1 | cut -d= -f2- | tr -d "\"'")"
+  fi
+done
 
 # Seed bank whitelist if missing
 if [[ ! -f "data/blocklist/banks.lua" ]]; then
@@ -131,6 +139,9 @@ export POWERSVX_DNS_DATAPLANE=dnsdist
 bash "$ROOT/deploy/linux/gen-unbound-conf.sh" "$ROOT/configs/unbound/unbound.conf"
 bash "$ROOT/deploy/linux/gen-dnsdist-conf.sh" "$ROOT/configs/dnsdist/dnsdist.conf"
 
+# Refuse to start Unbound on a configuration it would reject or that makes it forward to itself.
+bash "$ROOT/deploy/linux/check-unbound-conf.sh" "$ROOT" || exit 1
+
 if [[ -f "$ROOT/deploy/linux/calc-mem-env.sh" ]]; then
   # shellcheck disable=SC1091
   eval "$("$ROOT/deploy/linux/calc-mem-env.sh")"
@@ -141,7 +152,7 @@ fi
 echo "==> [6/7] Starting Docker Compose stack (Host Networking)..."
 export GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-export POWERSVX_VERSION="${POWERSVX_VERSION:-1.7.2}"
+export POWERSVX_VERSION="${POWERSVX_VERSION:-2.0.0}"
 export GOGC=50
 
 GHCR_USER_VAL="${GHCR_USER:-}"
@@ -154,28 +165,68 @@ if [[ -n "$GHCR_TOKEN_VAL" ]]; then
   echo "    Logging in to ghcr.io for private image pull..."
   printf '%s\n' "$GHCR_TOKEN_VAL" | docker login ghcr.io -u "${GHCR_USER_VAL:-hendrax5}" --password-stdin >/dev/null
 fi
+# Only warns; a node without registry credentials still installs, it just cannot auto-update.
+sh "$ROOT/deploy/linux/registry-preflight.sh" "$ROOT" || true
+
+PROFILE="$(sh "$ROOT/deploy/linux/select-profile.sh")" || exit 1
+PROFILE_EXPLICIT=0
+sh "$ROOT/deploy/linux/select-profile.sh" -x && PROFILE_EXPLICIT=1 || true
+COMPOSE=(docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml)
+if [[ "$PROFILE" == "core" ]]; then
+  echo "    Core Profile: starting dnsdist, unbound, powersvx, watchtower only (no Postgres: query history needs the Observability Profile)."
+  COMPOSE+=(-f deploy/linux/docker-compose.core.yml)
+  # Persist an automatic choice so apply-update.sh keeps the same profile.
+  if [[ "$PROFILE_EXPLICIT" == "0" ]]; then
+    echo "POWERSVX_PROFILE=core" >> .env
+    echo "    Saved POWERSVX_PROFILE=core to .env (remove it to return to full)."
+  fi
+fi
 
 if [[ "${POWERSVX_BUILD_LOCAL:-0}" == "1" ]]; then
-  docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml build powersvx
+  "${COMPOSE[@]}" build powersvx
 else
-  docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml pull powersvx \
-    || docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml build powersvx
+  "${COMPOSE[@]}" pull powersvx \
+    || "${COMPOSE[@]}" build powersvx
 fi
-docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d
+"${COMPOSE[@]}" up -d
+# Only an explicit POWERSVX_PROFILE=core removes Observability containers; an automatic
+# choice never touches containers that are already there.
+if [[ "$PROFILE" == "core" && "$PROFILE_EXPLICIT" == "1" ]]; then
+  "${COMPOSE[@]}" rm -sf node-exporter prometheus grafana
+fi
 
 # 7. Verification & Health Summary
 echo "==> [7/7] Verifying services..."
-sleep 5
+READY_WAIT="${POWERSVX_READY_WAIT:-90}"
+READY_NAME="${POWERSVX_READY_NAME:-example.com}"
+ready_rc=0
+# First the local path (dnsdist -> Unbound), then a fresh label under a real name, which
+# only recursion can answer.
+bash "$ROOT/deploy/linux/dns-ready.sh" -w "$READY_WAIT" -u invalid || ready_rc=$?
+if [[ "$ready_rc" -eq 0 ]]; then
+  bash "$ROOT/deploy/linux/dns-ready.sh" -w "$READY_WAIT" -r "$READY_NAME" || ready_rc=$?
+fi
 
 echo "------------------------------------------------------------"
 docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 echo "------------------------------------------------------------"
+
+if [[ "$ready_rc" -ne 0 ]]; then
+  echo "" >&2
+  echo "[-] Node is NOT ready: port 53 did not answer within ${READY_WAIT}s." >&2
+  echo "    Check: docker logs powersvx-dnsdist-1 ; docker logs powersvx-unbound-1" >&2
+  exit 1
+fi
 
 echo ""
 echo "[✓] Deployment Complete! Services are now live:"
 echo "    - Public DNS (dnsdist):       Port 53 (UDP/TCP)"
 echo "    - Backend Recursive (Unbound): Port 5353 (127.0.0.1)"
 echo "    - PowerSVX Web UI & REST API: http://$(hostname -I | awk '{print $1}'):5380"
+if [[ "$PROFILE" != "core" ]]; then
 echo "    - Grafana Analytics:          http://$(hostname -I | awk '{print $1}'):3000 (auto-embedded)"
 echo "    - Prometheus Metrics:         http://$(hostname -I | awk '{print $1}'):9091"
+else
+  echo "    - Profile: core (no Grafana, Prometheus or node-exporter)"
+fi
 echo ""

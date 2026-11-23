@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.0.0] - 2026-11-24
+
+PowerSVX 2.0 serves DNS with dnsdist and Unbound only. The Go process is the Control Plane and the Auth Backend (zones, transfer, update, NOTIFY on loopback); it no longer answers, caches or filters customer queries. Read `docs/UPGRADE-2.0.md` before upgrading a node: a node still running a removed Dataplane mode must be moved first, and the image tag `latest` is deliberately not moved to 2.0.0.
+
+### Breaking changes
+- **Removed Dataplane modes** (ADR-0001, `docs/adr/0001-dnsdist-is-the-only-dataplane.md`): the Go query path and the mode that put Unbound on the public port are gone. `deploy/linux/dataplane-guard.sh` makes `apply-update.sh` stop before changing anything on a node that still uses one. A Control Plane started on such a node would not answer customer queries.
+- **Removed configuration keys**: see `docs/CONFIG-REMOVED.md`. A file that still sets them loads; each key is ignored with one warning.
+- **Removed features**: Go DoT/DoH/DoQ listeners (dnsdist terminates encrypted transports), TPROXY, Lua and WASM query plugins, the gRPC API, OpenTelemetry export, the Go rate limiter and its console panels.
+- **TSIG is enforced** for zone transfer and dynamic update when `require_tsig` is set (the default): a request with no TSIG record is refused (also shipped as 1.7.2, advisory GHSA-56hq-r6vw-qv9w).
+- **dnsdist web password and API key are never defaulted**: the generator refuses the built-in values unless `POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1`; `apply-update.sh` creates random values for a node whose `.env` lacks them.
+- **Transfers carry one view**: see Changed below.
+
+### Added
+- Postgres is optional: zones live in per-zone files (ADR-0002); the Core Profile runs dnsdist, Unbound and the Control Plane, the Observability Profile adds Postgres, Prometheus, Grafana and node-exporter. dnsdist is pinned (1.9.16) and serves DoT, DoH and DoQ.
+- Authoritative correctness: CNAME for other types, wildcard synthesis, authenticated denial of existence for NSEC- and NSEC3-signed zones, signed NSEC3PARAM, validated with an independent validator (`delv`) in the Docker tests.
+- A sampled query log from dnsdist (dnstap, opt-in with `POWERSVX_QUERY_LOG_DNSTAP=1`) and Dataplane tuning knobs (UDP listeners, cache shards, Unbound prefetch and threads; off by default, output unchanged).
+- Honest readiness: `dns-ready.sh` and the dnsdist healthcheck answer a real query, with a recursion check on a fresh name; Unbound configuration is validated before it is recreated.
+- Operations: a registry preflight and a Watchtower health check (a node that cannot pull its image says so), a visible filter-sync status and a stale-temp-file cleanup, and a filter rebuild that streams instead of holding every name in memory (about 185 MB heap for 10 million names).
+- A reproducible Reference Load benchmark harness (`scripts/bench/`); preliminary lab numbers are in `docs/bench/preliminary/` and are not a Baseline.
+- Zone transfers of a DNSSEC-signed zone carry the DNSKEY RRset, an RRSIG over every RRset, the NSEC or NSEC3 chain with its RRSIGs and the signed NSEC3PARAM (ticket #51), so a BIND, Knot or PowerDNS secondary serves a zone that validates against the same DS. An IXFR of a signed zone is answered with the whole zone. The SOA serial of a signed zone moves once per signature refresh interval (and when a key is rolled or the NSEC/NSEC3 policy changes) and secondaries are notified; `[transfer] signature_validity_days` (default 30) and `signature_refresh_days` (default 7) set the timing. Secondary Zones store and serve the signatures they receive and never sign. See `docs/adr/0004-primary-signs-secondaries-serve-what-they-receive.md`.
+
+
+### Changed
+- A zone transfer (AXFR, and the whole-zone answer to IXFR) of any zone, signed or not, now carries only what the primary would answer to the requesting address: its split-horizon view (the default records when it is in none) and its GeoDNS answer (ticket #67). **Behaviour change:** a secondary that used to receive every view of an unsigned zone now receives one; pull each view from an address in that view, or use file export. IXFR of an unsigned zone no longer sends deltas, only the whole zone or the current SOA.
+- The Auth Backend takes the client address from a PROXY protocol v2 header sent by dnsdist (loopback peers only): views, GeoDNS, NOTIFY master check and the transfer and update allow lists judge the real client. The EDNS client subnet steers GeoDNS for queries from the Dataplane. The generated dnsdist configuration no longer adds ECS to, or caches, Auth Backend traffic (`POWERSVX_AUTH_PROXY_PROTOCOL=0` restores both). See `docs/adr/0003-proxy-protocol-for-the-client-address.md`.
+
+### Fixed
+- Containers on the default Docker bridge can resolve names again on a bootstrapped node (ticket #23): the raw-table `NOTRACK` rule for UDP/53 now matches only packets addressed to the node (`-m addrtype --dst-type LOCAL`). `os-hardening.sh` migrates the old broad rule, live and in a saved `/etc/iptables/rules.v4`; `deploy/linux/check-notrack.sh` reports it. See docs/PRODUCTION.md.
+- The default host configuration no longer makes Unbound forward every query to itself (ticket #40): `[resolver] mode = "recursive"`, no forwarders. The Control Plane never writes a forwarder that points at Unbound's own listener or at dnsdist, logs a warning and reports it in the health output. `bootstrap-node.sh` and `apply-update.sh` validate the Unbound configuration (`deploy/linux/check-unbound-conf.sh`) before touching Unbound. `dns-ready.sh -r` checks recursion with a real name and is used by the dnsdist healthcheck, `bootstrap-node.sh` and `apply-update.sh`. A failed Unbound reload is logged as an error and shown in the health output. The sample `configs/unbound/unbound.conf` enables the control interface like the generator. Operators of existing nodes: see docs/PRODUCTION.md, "Unbound forwards to itself".
+
+---
+
 ## [1.7.2] - 2026-11-23
 
 ### Security

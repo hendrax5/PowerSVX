@@ -3,7 +3,6 @@ package authoritative
 import (
 	"fmt"
 	"net"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,11 +32,14 @@ type IXFRDelta struct {
 
 const maxIXFRHistory = 64
 
-// Store holds authoritative zones loaded from PostgreSQL (or empty).
+// Store holds authoritative and secondary zones in memory. Authoritative Zones
+// are also written to one file each once EnablePersistence has been called.
 type Store struct {
 	mu    sync.RWMutex
 	zones map[string][]Record
 	ixfr  map[string][]IXFRDelta
+	meta  map[string]ZoneMeta
+	files *zoneFiles
 }
 
 func NewStore() *Store {
@@ -98,20 +100,28 @@ func (s *Store) UpsertZone(name string) {
 }
 
 func (s *Store) DeleteZone(name string) bool {
+	var job *persistJob
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.flush(job) }()
 	name = config.NormalizeName(name)
 	if _, ok := s.zones[name]; !ok {
 		return false
 	}
 	delete(s.zones, name)
+	job = s.captureLocked(name)
 	return true
 }
 
 func (s *Store) AddRecord(zone string, rec Record) {
+	var job *persistJob
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.flush(job) }()
 	zone = config.NormalizeName(zone)
+	s.addRecordLocked(zone, rec)
+	job = s.captureLocked(zone)
+}
+
+func (s *Store) addRecordLocked(zone string, rec Record) {
 	rec.Name = config.NormalizeName(rec.Name)
 	oldSer := s.currentSOASerialLocked(zone)
 	s.zones[zone] = append(s.zones[zone], rec)
@@ -124,8 +134,9 @@ func (s *Store) AddRecord(zone string, rec Record) {
 }
 
 func (s *Store) UpdateRecord(zone, oldName string, oldType uint16, rec Record) bool {
+	var job *persistJob
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.flush(job) }()
 	zone = config.NormalizeName(zone)
 	oldName = config.NormalizeName(oldName)
 	rec.Name = config.NormalizeName(rec.Name)
@@ -140,6 +151,7 @@ func (s *Store) UpdateRecord(zone, oldName string, oldType uint16, rec Record) b
 			if oldSer > 0 && newSer > oldSer {
 				s.appendIXFRLocked(zone, IXFRDelta{FromSerial: oldSer, ToSerial: newSer, Removed: []Record{oldRec}, Added: []Record{rec}})
 			}
+			job = s.captureLocked(zone)
 			return true
 		}
 	}
@@ -147,8 +159,9 @@ func (s *Store) UpdateRecord(zone, oldName string, oldType uint16, rec Record) b
 }
 
 func (s *Store) DeleteRecord(zone, name string, qtype uint16) int {
+	var job *persistJob
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.flush(job) }()
 	zone = config.NormalizeName(zone)
 	name = config.NormalizeName(name)
 	recs := s.zones[zone]
@@ -169,13 +182,15 @@ func (s *Store) DeleteRecord(zone, name string, qtype uint16) int {
 			s.appendIXFRLocked(zone, IXFRDelta{FromSerial: oldSer, ToSerial: newSer, Removed: removed})
 		}
 	}
+	job = s.captureLocked(zone)
 	return len(removed)
 }
 
 // DeleteRecordExact removes records matching name+type+content (+prio for MX).
 func (s *Store) DeleteRecordExact(zone string, want Record) int {
+	var job *persistJob
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.flush(job) }()
 	zone = config.NormalizeName(zone)
 	want.Name = config.NormalizeName(want.Name)
 	want.Content = strings.TrimSpace(want.Content)
@@ -200,6 +215,7 @@ func (s *Store) DeleteRecordExact(zone string, want Record) int {
 			s.appendIXFRLocked(zone, IXFRDelta{FromSerial: oldSer, ToSerial: newSer, Removed: removed})
 		}
 	}
+	job = s.captureLocked(zone)
 	return len(removed)
 }
 
@@ -318,8 +334,9 @@ func (s *Store) RRSetExists(zone, name string, qtype uint16) bool {
 
 // BumpSOASerial increments the zone SOA serial (creates none). Returns new serial.
 func (s *Store) BumpSOASerial(zone string) (uint32, bool) {
+	var job *persistJob
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.flush(job) }()
 	zone = config.NormalizeName(zone)
 	recs := s.zones[zone]
 	for i, r := range recs {
@@ -338,6 +355,7 @@ func (s *Store) BumpSOASerial(zone string) (uint32, bool) {
 		parts[2] = strconv.FormatUint(serial, 10)
 		recs[i].Content = strings.Join(parts, " ")
 		s.zones[zone] = recs
+		job = s.captureLocked(zone)
 		return uint32(serial), true
 	}
 	return 0, false
@@ -346,45 +364,6 @@ func (s *Store) BumpSOASerial(zone string) (uint32, bool) {
 // Lookup returns RRs for qname/qtype filtered by view and geo tag.
 func (s *Store) Lookup(qname string, qtype uint16) (rrs []dns.RR, foundZone bool) {
 	return s.LookupScoped(qname, qtype, "", "")
-}
-
-func (s *Store) LookupScoped(qname string, qtype uint16, viewName, geoTag string) (rrs []dns.RR, foundZone bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	qname = config.NormalizeName(qname)
-	viewName = strings.ToLower(viewName)
-	geoTag = strings.ToUpper(geoTag)
-
-	zone := s.findZone(qname)
-	if zone == "" {
-		return nil, false
-	}
-	foundZone = true
-
-	var candidates []Record
-	for _, rec := range s.zones[zone] {
-		name := config.NormalizeName(rec.Name)
-		if name != qname && !wildcardMatch(rec.Name, qname) {
-			continue
-		}
-		if rec.Type != qtype && qtype != dns.TypeANY {
-			continue
-		}
-		if !viewOK(rec.View, viewName) {
-			continue
-		}
-		candidates = append(candidates, rec)
-	}
-
-	picked := pickGeo(candidates, geoTag)
-	for _, rec := range picked {
-		rr, err := buildRR(rec)
-		if err != nil || rr == nil {
-			continue
-		}
-		rrs = append(rrs, rr)
-	}
-	return rrs, foundZone
 }
 
 func viewOK(recView, clientView string) bool {
@@ -434,22 +413,15 @@ func (s *Store) FindZone(qname string) string {
 func (s *Store) findZone(qname string) string {
 	best := ""
 	for z := range s.zones {
-		if qname == z || strings.HasSuffix(qname, "."+z) || strings.HasSuffix(qname, z) {
+		// A zone covers its own name and names below it, split on a label
+		// boundary: "badexample.com." is not inside "example.com.".
+		if qname == z || z == "." || strings.HasSuffix(qname, "."+z) {
 			if len(z) > len(best) {
 				best = z
 			}
 		}
 	}
 	return best
-}
-
-func wildcardMatch(pattern, qname string) bool {
-	pattern = config.NormalizeName(pattern)
-	if !strings.HasPrefix(pattern, "*.") {
-		return false
-	}
-	suffix := pattern[1:]
-	return strings.HasSuffix(qname, suffix)
 }
 
 // RecordToRR converts a store record to a wire RR (nil if unsupported/invalid).
@@ -585,26 +557,6 @@ func (s *Store) ExportBINDZone(zone string) (string, bool) {
 	return b.String(), true
 }
 
-// ZoneNames returns sorted FQDN names for all unique owners in zone (used by DNSSEC NSEC chain).
-func (s *Store) ZoneNames(zone string) []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	zone = config.NormalizeName(zone)
-	seen := map[string]struct{}{zone: {}}
-	for _, r := range s.zones[zone] {
-		n := config.NormalizeName(r.Name)
-		if !strings.HasPrefix(n, "*.") {
-			seen[n] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(seen))
-	for k := range seen {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
 func TypeFromString(s string) uint16 {
 	if t, ok := dns.StringToType[strings.ToUpper(s)]; ok {
 		return t
@@ -614,8 +566,9 @@ func TypeFromString(s string) uint16 {
 
 // ReplaceZoneRecords replaces all records for one zone (creates the zone if missing).
 func (s *Store) ReplaceZoneRecords(zone string, recs []Record) {
+	var job *persistJob
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); s.flush(job) }()
 	zone = config.NormalizeName(zone)
 	cp := make([]Record, len(recs))
 	copy(cp, recs)
@@ -623,6 +576,7 @@ func (s *Store) ReplaceZoneRecords(zone string, recs []Record) {
 		cp[i].Name = config.NormalizeName(cp[i].Name)
 	}
 	s.zones[zone] = cp
+	job = s.captureLocked(zone)
 }
 
 // RecordFromRR converts a wire RR into a store record (skips OPT).

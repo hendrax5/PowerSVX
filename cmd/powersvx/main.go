@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,29 +22,21 @@ import (
 	"github.com/powersvx/powersvx/internal/audit"
 	"github.com/powersvx/powersvx/internal/authoritative"
 	"github.com/powersvx/powersvx/internal/blockcdb"
-	"github.com/powersvx/powersvx/internal/cache"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/database"
 	"github.com/powersvx/powersvx/internal/denylist"
 	"github.com/powersvx/powersvx/internal/dnssec"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/geo"
-	"github.com/powersvx/powersvx/internal/grpcapi"
 	"github.com/powersvx/powersvx/internal/kominfo"
 	"github.com/powersvx/powersvx/internal/metrics"
 	"github.com/powersvx/powersvx/internal/monitor"
-	"github.com/powersvx/powersvx/internal/otelx"
-	"github.com/powersvx/powersvx/internal/plugin"
 	"github.com/powersvx/powersvx/internal/queryring"
 	"github.com/powersvx/powersvx/internal/ratelimit"
-	"github.com/powersvx/powersvx/internal/resolver"
 	"github.com/powersvx/powersvx/internal/rpz"
 	"github.com/powersvx/powersvx/internal/secondary"
 	"github.com/powersvx/powersvx/internal/server"
-	"github.com/powersvx/powersvx/internal/tlsutil"
 	"github.com/powersvx/powersvx/internal/tsig"
-	"github.com/powersvx/powersvx/internal/unboundlog"
-	"github.com/powersvx/powersvx/internal/unboundrpz"
 	"github.com/powersvx/powersvx/internal/view"
 	"github.com/powersvx/powersvx/internal/watchdog"
 )
@@ -56,11 +48,19 @@ func main() {
 
 	bus := eventlog.New(200)
 	log := slog.New(eventlog.NewHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}), bus))
+	if err := config.CheckDataplane(); err != nil {
+		log.Error("dataplane mode refused", "err", err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		log.Error("config load failed", "err", err)
 		os.Exit(1)
+	}
+	for _, key := range cfg.RemovedKeys {
+		log.Warn("config key ignored since version 2", "key", key, "see", "docs/CONFIG-REMOVED.md")
 	}
 	if err := os.MkdirAll(*dataDir, 0o755); err != nil {
 		log.Error("data-dir create failed", "dir", *dataDir, "err", err)
@@ -68,61 +68,15 @@ func main() {
 	}
 	rsPath := config.RuntimeSettingsPath(*dataDir)
 	if rs, err := config.LoadRuntimeSettings(rsPath); err == nil {
+		rs = api.NormalizeSavedResolver(rsPath, rs, log)
 		cfg.ApplyRuntimeSettings(rs)
 		log.Info("runtime settings loaded", "path", rsPath)
 	}
-	config.ApplyQueryLogGuard(cfg)
 	watchdog.Start(log)
-	if config.UnboundDataplane() {
-		cfg.Server.TProxy = false
-		dir := unboundrpz.Dir(*dataDir)
-		_ = unboundrpz.EnsureEmptyZones(dir)
-		_ = unboundrpz.WriteBankPassthru(filepath.Join(dir, unboundrpz.BankFile))
-		_ = unboundrpz.WriteAccessControl(filepath.Join(dir, "access-control.conf"), cfg.ACL.AllowQuery)
-		log.Info("dns dataplane unbound — PowerSVX is control-plane",
-			"auth_udp", cfg.Server.UDPPort, "api", cfg.API.RESTBind)
-	}
-	if config.DNSDistDataplane() {
-		cfg.Server.TProxy = false
-		_ = blockcdb.EnsureEmpty(*dataDir)
-		_, _ = blockcdb.WriteBanksWhitelist(*dataDir)
-		_ = unboundrpz.EnsureEmptyZones(unboundrpz.Dir(*dataDir))
-		log.Info("dns dataplane dnsdist+CDB — PowerSVX is control-plane",
-			"auth_udp", cfg.Server.UDPPort, "api", cfg.API.RESTBind, "blocklist", blockcdb.Dir(*dataDir))
-	}
-	cacheMB, inflight, memMB, cpus := cfg.Autosize()
-	log.Info("autosize",
-		"cache_max_size_mb", cacheMB,
-		"max_inflight", inflight,
-		"host_mem_mb", memMB,
-		"cpus", cpus,
-	)
-
-	l1Max := cfg.Cache.MaxSizeMB * 1024
-	if l1Max <= 0 {
-		l1Max = 100_000
-	}
-	l1 := cache.NewL1(l1Max)
-	var l2 *cache.L2
-	l2, err = cache.NewL2(cfg.Cache.Path)
-	if err != nil {
-		log.Warn("L2 BadgerDB unavailable, continuing with L1 only", "err", err)
-	}
-	tier := cache.NewTier(l1, l2,
-		time.Duration(cfg.Cache.TTLSeconds)*time.Second,
-		time.Duration(cfg.Cache.NegativeTTL)*time.Second,
-	)
-	if cfg.Cache.MinTTL > 0 {
-		tier.MinTTL = time.Duration(cfg.Cache.MinTTL) * time.Second
-	}
-	tier.ServeStale = cfg.Cache.ServeStale
-	if cfg.Cache.StaleTTL > 0 {
-		tier.StaleTTL = time.Duration(cfg.Cache.StaleTTL) * time.Second
-	} else if tier.ServeStale {
-		tier.StaleTTL = time.Minute
-	}
-	tier.PrefetchPct = cfg.Cache.PrefetchPct
-	defer func() { _ = tier.Close() }()
+	_ = blockcdb.EnsureEmpty(*dataDir)
+	_, _ = blockcdb.WriteBanksWhitelist(*dataDir)
+	log.Info("dns dataplane dnsdist+CDB — PowerSVX is control-plane",
+		"auth_udp", cfg.Server.UDPPort, "api", cfg.API.RESTBind, "blocklist", blockcdb.Dir(*dataDir))
 
 	auth := authoritative.NewStore()
 	var db *database.DB
@@ -139,15 +93,22 @@ func main() {
 			log.Error("migrate failed", "err", err)
 			os.Exit(1)
 		}
-		zones, err := db.LoadZones(ctx)
+		// One-time export of the legacy zones/records tables to zone files.
+		n, ran, err := authoritative.ExportFromSource(ctx, db, authoritative.ZonesDir(*dataDir))
 		cancel()
 		if err != nil {
-			log.Warn("zone load failed", "err", err)
-		} else {
-			auth.Replace(zones)
-			log.Info("zones loaded", "count", len(zones))
+			log.Error("zone export from database failed", "err", err)
+			os.Exit(1)
+		}
+		if ran {
+			log.Info("exported zones from database to files", "count", n, "dir", authoritative.ZonesDir(*dataDir))
 		}
 	}
+	zoneCount, err := auth.EnablePersistence(authoritative.ZonesDir(*dataDir))
+	if err != nil {
+		log.Error("zone files", "err", err)
+	}
+	log.Info("zones loaded", "count", zoneCount, "dir", authoritative.ZonesDir(*dataDir))
 
 	sec := dnssec.New(dnssec.ParseMode(cfg.Resolver.DNSSECMode, cfg.Resolver.DNSSECValidation))
 	signer := dnssec.NewSigner(filepath.Join(*dataDir, "dnssec"))
@@ -217,14 +178,7 @@ func main() {
 	}
 
 	rpzEng := rpz.New(cfg.RPZ.Enabled)
-	if cfg.RPZ.HotCacheMax > 0 {
-		rpzEng.SetHotCacheSize(cfg.RPZ.HotCacheMax)
-	}
-	if err := rpzEng.OpenDisk(filepath.Join(*dataDir, "rpz-store")); err != nil {
-		log.Warn("rpz disk store unavailable", "err", err)
-	}
 	rpzEng.SetAxfrState(rpz.LoadAxfrState(rpz.AxfrStatePath(*dataDir)))
-	defer func() { _ = rpzEng.Close() }()
 
 	wl := allowlist.New(allowlist.DefaultPath(*dataDir))
 	if err := wl.Load(); err != nil {
@@ -248,69 +202,6 @@ func main() {
 		log.Info("tsig keys loaded", "count", tsigStore.Len())
 	}
 
-	var policies []rpz.PolicyConfig
-	for _, p := range cfg.RPZ.Policies {
-		pc := rpz.PolicyConfig{
-			Name: p.Name, Source: p.Source, Format: p.Format, Action: rpz.Action(p.Action), Target: p.Target,
-			Zone: p.Zone, Masters: append([]string(nil), p.Masters...), TSIGKey: p.TSIGKey, Enabled: p.Enabled,
-		}
-		if p.TSIGKey != "" {
-			if fqdn, sec, ok := tsigStore.Get(p.TSIGKey); ok {
-				pc.TSIGKey = fqdn
-				pc.TSIGSecret = sec
-			}
-		}
-		policies = append(policies, pc)
-	}
-	if len(policies) > 0 {
-		if config.UnboundDataplane() {
-			// Control-plane: do not load 9.5M into Go Badger — sync Unbound RPZ zonefiles.
-			go func() {
-				n, err := unboundrpz.SyncFromConfigPolicies(*dataDir, cfg.RPZ.Policies, 15*time.Minute)
-				if err != nil {
-					log.Warn("unbound rpz initial sync failed", "err", err)
-					return
-				}
-				if err := unboundrpz.TryReload(); err != nil {
-					log.Warn("unbound reload after initial rpz sync", "err", err, "entries", n)
-				} else {
-					log.Info("unbound rpz initial sync ok", "entries", n)
-				}
-			}()
-		} else if config.DNSDistDataplane() {
-			// CDB sync kicked after API starts (StartRPZAutoUpdate / explicit refresh).
-			log.Info("dnsdist dataplane: block CDB sync deferred to API start")
-		} else if rpzEng.TryBeginLoad() {
-			// Disk snapshots and large HTTP feeds must not block API/DNS bind.
-			go func() {
-				if ok, n, err := rpzEng.TryLoadDisk(policies); err != nil {
-					log.Warn("rpz disk load failed", "err", err)
-				} else if ok {
-					rpzEng.EndLoad(nil)
-					log.Info("rpz loaded from disk", "entries", n)
-					seedPath := filepath.Join(*dataDir, rpz.HotSeedPath)
-					if names, err := rpz.ReadHotSeed(seedPath); err == nil && len(names) > 0 {
-						s := rpzEng.SeedHot(names)
-						log.Info("rpz hot-seed from disk file", "names", len(names), "seeded", s)
-					}
-					return
-				}
-				n, err := rpzEng.LoadPolicies(policies, 15*time.Minute)
-				rpzEng.EndLoad(err)
-				if err != nil {
-					log.Warn("rpz load failed", "err", err)
-					return
-				}
-				log.Info("rpz loaded", "entries", n)
-				seedPath := filepath.Join(*dataDir, rpz.HotSeedPath)
-				if names, err := rpz.ReadHotSeed(seedPath); err == nil && len(names) > 0 {
-					s := rpzEng.SeedHot(names)
-					log.Info("rpz hot-seed from disk file", "names", len(names), "seeded", s)
-				}
-			}()
-		}
-	}
-
 	viewMap := map[string][]string{}
 	for _, v := range cfg.SplitHorizon.Views {
 		viewMap[v.Name] = v.Networks
@@ -328,19 +219,6 @@ func main() {
 		defer func() { _ = geoRes.Close() }()
 	}
 
-	var tlsCfg *tls.Config
-	if cfg.TLSEnabled() {
-		tlsCfg, err = tlsutil.LoadServerTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
-		if err != nil {
-			// Do not abort DNS UDP/TCP — empty ./certs bind-mounts are a common deploy footgun.
-			log.Error("tls load failed; continuing without DoT/DoH/DoQ", "err", err,
-				"cert", cfg.Server.TLS.CertFile, "key", cfg.Server.TLS.KeyFile)
-			tlsCfg = nil
-		} else {
-			log.Info("TLS enabled", "cert", cfg.Server.TLS.CertFile)
-		}
-	}
-
 	if cfg.Metrics.PrometheusEnabled {
 		bind := cfg.Metrics.PrometheusBind
 		if bind == "" {
@@ -356,48 +234,17 @@ func main() {
 		}()
 	}
 
-	otelShutdown, err := otelx.Init(context.Background(), "powersvx", cfg.Metrics.OTelEnabled)
-	if err != nil {
-		log.Warn("otel init failed", "err", err)
-		otelShutdown = func(context.Context) error { return nil }
-	} else if cfg.Metrics.OTelEnabled || os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" {
-		log.Info("OpenTelemetry tracing enabled")
-	}
-	defer func() { _ = otelShutdown(context.Background()) }()
-
-	res := resolver.New(cfg.Resolver)
 	acmeStore := acme.NewChallengeStore()
 	acmeMgr := acme.NewManager(cfg.ACME, acmeStore, log)
 	stats := analytics.New(200)
 	anom := anomaly.New(50)
 	mon := monitor.New()
 	qring := queryring.New(0)
-	res.OnForwarder = func(addr string, ok bool, latencyMS int64, errMsg string) {
-		mon.RecordForwarder(addr, ok, latencyMS, errMsg)
-		if ok {
-			metrics.ForwarderAttempts.WithLabelValues(addr, "ok").Inc()
-		} else {
-			metrics.ForwarderAttempts.WithLabelValues(addr, "fail").Inc()
-		}
-	}
-	qlog := database.NewQueryLogger(db, cfg.Logging.QueryLogEnabled, log)
-	defer qlog.Close()
-	var plugins *plugin.Registry
-	if cfg.Plugins.Enabled {
-		var err error
-		plugins, err = plugin.LoadDir(cfg.Plugins.Dir)
-		if err != nil {
-			log.Warn("plugins load failed", "err", err)
-			plugins = plugin.NewRegistry()
-		} else {
-			log.Info("plugins loaded", "dir", cfg.Plugins.Dir, "count", plugins.Len())
-		}
-	}
 	dnsSrv := server.New(cfg, server.Deps{
-		Cache: tier, Res: res, Auth: auth, DNSSEC: sec, Signer: signer,
+		Auth: auth, DNSSEC: sec, Signer: signer,
 		Limiter: limiter, RPZ: rpzEng, Allow: wl, Deny: bl, TSIG: tsigStore,
-		Views: views, Geo: geoRes, TLS: tlsCfg, Events: bus,
-		ACME: acmeStore, Stats: stats, Anomaly: anom, Monitor: mon, Ring: qring, Plugins: plugins, QLog: qlog,
+		Views: views, Geo: geoRes, Events: bus,
+		ACME: acmeStore, Stats: stats, Anomaly: anom, Monitor: mon, Ring: qring,
 	}, log)
 
 	secMgr := secondary.New(secondary.DefaultPath(*dataDir), auth, log)
@@ -414,9 +261,11 @@ func main() {
 	kominfoMgr.SetEnabled(cfg.KominfoSync.Enabled)
 	dnsSrv.SetKominfo(kominfoMgr)
 	log.Info("axfr sync ready", "enabled", kominfoMgr.Enabled(), "targets", kominfoMgr.Targets())
+	go dnsSrv.RunSignatureRefresh(context.Background()) // new transfer signatures bump the serial of signed zones
 
-	rest := api.New(cfg, dnsSrv, db, tier, auth, log)
+	rest := api.New(cfg, dnsSrv, db, auth, log)
 	rest.SetDataDir(*dataDir)
+	rest.CleanFilterTmp() // before any writer or sync runs: leftover *.tmp from a killed process
 	rest.SetEvents(bus)
 	rest.SetACME(acmeMgr)
 	dnsSrv.SetRPZNotifyHandler(rest.HandleRPZNotify)
@@ -440,58 +289,19 @@ func main() {
 		rest.SetSessionStore(sessStore)
 	}
 	rest.StartRPZAutoUpdate()
-	rest.StartLiveQuerySampler()
-	if config.FilterDataplane() {
-		rest.SyncAllDataplanes()
+	rest.StartQueryLog()
+	defer rest.StopQueryLog()
+	rest.SyncAllDataplanes()
+	rest.RefreshUnboundEntryCount()
+	rest.StartDNSDistStatsBridge()
+	rest.StartUnboundStatsBridge() // backend Unbound :5353 (Prometheus only; UI QPS from dnsdist)
+	if ok, err := rest.TryBootstrapFilterSeed(); err != nil {
+		log.Warn("filter seed bootstrap skipped", "err", err, "url", config.FilterSeedURL())
+	} else if ok {
+		log.Info("filter seed bootstrap ok; next refresh will IXFR if serial matches")
 	}
-	if config.DNSDistDataplane() {
-		rest.RefreshUnboundEntryCount()
-		rest.StartDNSDistStatsBridge()
-		rest.StartUnboundStatsBridge() // backend Unbound :5353 (Prometheus only; UI QPS from dnsdist)
-		if ok, err := rest.TryBootstrapFilterSeed(); err != nil {
-			log.Warn("filter seed bootstrap skipped", "err", err, "url", config.FilterSeedURL())
-		} else if ok {
-			log.Info("filter seed bootstrap ok; next refresh will IXFR if serial matches")
-		}
-		if err := rest.TriggerDNSDistCDBSync(); err != nil {
-			log.Warn("dnsdist cdb initial sync not started", "err", err)
-		}
-	}
-	if config.UnboundDataplane() {
-		rest.RefreshUnboundEntryCount()
-		rest.StartUnboundStatsBridge()
-		if config.UnboundQueryLogAllowed() && qlog != nil {
-			samp := unboundlog.NewSampler(unboundlog.DefaultPath(), qlog, cfg, log)
-			samp.Start()
-			defer samp.Stop()
-		}
-	}
-	if n := cfg.RPZ.HotSeedTopN; n > 0 && !config.UnboundDataplane() && !config.DNSDistDataplane() {
-		seedPath := filepath.Join(*dataDir, rpz.HotSeedPath)
-		go func() {
-			// Warm shortly after start, then refresh from live top-blocked.
-			t := time.NewTicker(5 * time.Minute)
-			defer t.Stop()
-			run := func() {
-				top := mon.TopBlockedNames(n)
-				if len(top) == 0 {
-					return
-				}
-				names := make([]string, 0, len(top))
-				for _, c := range top {
-					names = append(names, c.Key)
-				}
-				_ = rpz.WriteHotSeed(seedPath, names)
-				s := rpzEng.SeedHot(names)
-				log.Info("rpz hot-seed refreshed", "top_n", n, "names", len(names), "seeded", s)
-			}
-			time.Sleep(30 * time.Second)
-			run()
-			for range t.C {
-				run()
-			}
-		}()
-		log.Info("rpz hot-seed loop enabled", "top_n", n, "path", seedPath)
+	if err := rest.TriggerDNSDistCDBSync(); err != nil {
+		log.Warn("dnsdist cdb initial sync not started", "err", err)
 	}
 	if db != nil {
 		retCtx, retCancel := context.WithCancel(context.Background())
@@ -511,34 +321,9 @@ func main() {
 			break
 		}
 	}
-	if db != nil && cfg.Database.Enabled {
-		rest.SetReloadZones(func() error {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			zones, err := db.LoadZones(ctx)
-			if err != nil {
-				return err
-			}
-			auth.Replace(zones)
-			return nil
-		})
-	}
 	if err := rest.Start(); err != nil {
 		log.Error("api start failed", "err", err)
 		os.Exit(1)
-	}
-
-	var grpcSrv *grpcapi.Server
-	if cfg.API.GRPCEnabled {
-		tok := ""
-		if cfg.API.AuthType == "token" {
-			tok = cfg.API.APIToken
-		}
-		grpcSrv, err = grpcapi.Start(cfg.API.GRPCBind, dnsSrv, log, tok)
-		if err != nil {
-			log.Error("grpc start failed", "err", err)
-			os.Exit(1)
-		}
 	}
 
 	go func() {
@@ -548,11 +333,6 @@ func main() {
 		}
 	}()
 
-	if err := api.SyncTProxyOnStartup(*dataDir); err != nil {
-		log.Warn("tproxy intercept apply on startup failed", "err", err)
-	} else {
-		log.Info("tproxy listen", "enabled", cfg.Server.TProxy)
-	}
 	if err := api.SyncConntrackOnStartup(*dataDir); err != nil {
 		log.Warn("conntrack apply on startup failed", "err", err)
 	}
@@ -569,21 +349,18 @@ func main() {
 		"ecs", cfg.Resolver.ECSEnabled,
 		"geodns", cfg.GeoDNS.Enabled,
 		"split_horizon", cfg.SplitHorizon.Enabled,
-		"tls", cfg.TLSEnabled(),
 		"acme", cfg.ACME.Enabled,
 		"query_log", cfg.Logging.QueryLogEnabled,
 		"api", cfg.API.RESTBind,
-		"grpc", cfg.API.GRPCEnabled,
 	)
 
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	for sig := range ch {
 		if sig == syscall.SIGHUP {
-			log.Info("SIGHUP: reloading runtime settings and plugins")
+			log.Info("SIGHUP: reloading runtime settings")
 			if rs, err := config.LoadRuntimeSettings(config.RuntimeSettingsPath(*dataDir)); err == nil {
 				cfg.ApplyRuntimeSettings(rs)
-				config.ApplyQueryLogGuard(cfg)
 				dnsSrv.ApplyRuntimeFlags(server.RuntimeFlags{
 					GeoDNS: cfg.GeoDNS.Enabled, RPZ: cfg.RPZ.Enabled,
 					RateLimit: cfg.RateLimit.Enabled, ECS: cfg.Resolver.ECSEnabled,
@@ -602,13 +379,7 @@ func main() {
 				if db != nil {
 					db.SetQueryLogLimits(cfg.Logging.QueryLogRetentionDays, cfg.Logging.QueryLogMaxSizeMB)
 				}
-			}
-			if cfg.Plugins.Enabled && plugins != nil {
-				if err := plugins.Reload(cfg.Plugins.Dir); err != nil {
-					log.Warn("plugin reload failed", "err", err)
-				} else {
-					log.Info("plugins reloaded", "count", plugins.Len())
-				}
+				rest.SyncQueryLogRate()
 			}
 			continue
 		}
@@ -618,8 +389,5 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = rest.Shutdown(ctx)
-	if grpcSrv != nil {
-		grpcSrv.Stop()
-	}
 	_ = dnsSrv.Shutdown()
 }

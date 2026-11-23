@@ -1,6 +1,7 @@
 package server
 
 import (
+	"time"
 	"net"
 	"strings"
 
@@ -10,7 +11,9 @@ import (
 	"github.com/powersvx/powersvx/internal/metrics"
 )
 
-// handleTransfer serves AXFR. IXFR is answered as a full-zone AXFR (no journal).
+// handleTransfer serves AXFR and IXFR. Both carry the zone as the requesting
+// address would be answered (see transferScope); an IXFR is the whole zone, or the
+// lone SOA when the client is current.
 func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP string) bool {
 	if len(req.Question) == 0 {
 		return false
@@ -57,7 +60,12 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 	}
 
 	zone := config.NormalizeName(q.Name)
-	recs, ok := s.auth.GetRecords(zone)
+	signed := s.signsLocally(zone)
+	// A transfer carries what the primary would answer to the requesting address
+	// (its split-horizon view, its GeoDNS answer), for a signed and an unsigned
+	// zone alike, never the union of all views and geo tags.
+	view, geoTag := s.transferScope(clientIP)
+	recs, ok := s.auth.RecordsScoped(zone, view, geoTag)
 	if !ok {
 		m := new(dns.Msg)
 		m.SetRcode(req, dns.RcodeNameError)
@@ -69,69 +77,56 @@ func (s *Server) handleTransfer(w dns.ResponseWriter, req *dns.Msg, clientIP str
 	var rrs []dns.RR
 	if q.Qtype == dns.TypeIXFR && len(req.Ns) > 0 {
 		if clientSOA, isSOA := req.Ns[0].(*dns.SOA); isSOA {
-			if deltas, curSerial, ok := s.auth.IXFRDeltas(zone, clientSOA.Serial); ok {
-				if curSerial == clientSOA.Serial || int32(curSerial-clientSOA.Serial) <= 0 {
-					rrs = []dns.RR{soa}
-				} else {
-					rrs = make([]dns.RR, 0, 16)
-					rrs = append(rrs, soa)
-					for _, d := range deltas {
-						oldSOA := *soa.(*dns.SOA)
-						oldSOA.Serial = d.FromSerial
-						rrs = append(rrs, &oldSOA)
-						for _, rem := range d.Removed {
-							if rem.Type == dns.TypeSOA {
-								continue
-							}
-							if rr := authoritative.RecordToRR(rem); rr != nil {
-								rrs = append(rrs, rr)
-							}
-						}
-						newSOA := *soa.(*dns.SOA)
-						newSOA.Serial = d.ToSerial
-						rrs = append(rrs, &newSOA)
-						for _, add := range d.Added {
-							if add.Type == dns.TypeSOA {
-								continue
-							}
-							if rr := authoritative.RecordToRR(add); rr != nil {
-								rrs = append(rrs, rr)
-							}
-						}
-					}
-					rrs = append(rrs, soa)
+			// The stored deltas are not per view or geo tag, and a signed zone's
+			// signatures change without any record changing, so a delta could carry
+			// records the client may not see or leave it with stale ones. RFC 1995
+			// section 4 lets the server answer with the whole zone; only "you are
+			// current" is short.
+			if clientSOA.Serial != 0 && int32(soa.(*dns.SOA).Serial-clientSOA.Serial) <= 0 {
+				rrs = []dns.RR{soa}
+			}
+		}
+	}
+	var produce func(emit func(dns.RR) error) error
+	if len(rrs) == 0 {
+		if signed {
+			produce = s.signedZoneStream(zone, soa, recs, time.Now().UTC())
+		} else {
+			rrs = make([]dns.RR, 0, len(recs)+2)
+			rrs = append(rrs, soa)
+			for _, rec := range recs {
+				if rec.Type == dns.TypeSOA {
+					continue
+				}
+				if rr := authoritative.RecordToRR(rec); rr != nil {
+					rrs = append(rrs, rr)
 				}
 			}
+			rrs = append(rrs, soa)
 		}
-	}
-	if len(rrs) == 0 {
-		rrs = make([]dns.RR, 0, len(recs)+2)
-		rrs = append(rrs, soa)
-		for _, rec := range recs {
-			if rec.Type == dns.TypeSOA {
-				continue
-			}
-			if rr := authoritative.RecordToRR(rec); rr != nil {
-				rrs = append(rrs, rr)
-			}
-		}
-		rrs = append(rrs, soa)
 	}
 
-	// Multi-message AXFR/IXFR transfer stream over TCP.
-	ch := make(chan *dns.Envelope)
-	tr := new(dns.Transfer)
-	go func() {
-		ch <- &dns.Envelope{RR: rrs}
-		close(ch)
-	}()
-	if err := tr.Out(w, req, ch); err != nil {
+	if err := s.sendTransfer(w, req, rrs, produce); err != nil {
 		s.log.Warn("xfer failed", "zone", zone, "qtype", dns.TypeToString[q.Qtype], "err", err)
 	} else if s.kominfo != nil {
 		s.kominfo.RecordAXFRPull(zone, clientIP)
 	}
 	metrics.QueriesTotal.WithLabelValues(protocolFromWriter(w), dns.TypeToString[q.Qtype]).Inc()
 	return true
+}
+
+// transferScope is the view and GeoDNS tag a transfer to clientIP is made for:
+// the ones a query from that address is answered with. A transfer has no client
+// subnet option, so the geo tag follows the address itself.
+func (s *Server) transferScope(clientIP string) (view, geoTag string) {
+	view, geoTag = "default", "default"
+	if s.views != nil {
+		view = s.views.Match(clientIP)
+	}
+	if s.geo != nil && s.geo.Enabled() {
+		geoTag = s.geo.Lookup(clientIP).Tag
+	}
+	return view, geoTag
 }
 
 // tsigDenial decides whether a request fails a configured TSIG requirement.
@@ -192,6 +187,9 @@ func findOrSynthSOA(zone string, recs []authoritative.Record) dns.RR {
 }
 
 // NotifySecondaries sends DNS NOTIFY for zone to configured remotes (best-effort).
+// notifyTimeout bounds each outgoing NOTIFY exchange.
+const notifyTimeout = 2 * time.Second
+
 func (s *Server) NotifySecondaries(zone string) {
 	if s == nil {
 		return
@@ -205,7 +203,7 @@ func (s *Server) NotifySecondaries(zone string) {
 	}
 	m := new(dns.Msg)
 	m.SetNotify(zone)
-	c := &dns.Client{Net: "udp", Timeout: s.res.Timeout}
+	c := &dns.Client{Net: "udp", Timeout: notifyTimeout}
 	for _, addr := range s.cfg.Transfer.Notify {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
@@ -221,4 +219,28 @@ func (s *Server) NotifySecondaries(zone string) {
 			}
 		}(addr)
 	}
+}
+
+// nsec3param returns the NSEC3PARAM record that belongs at the apex of zone when
+// qname/qtype ask for it (qtype NSEC3PARAM at the apex; any qtype when qtype is
+// 0), and the zone is signed with NSEC3. Nil otherwise.
+func (s *Server) nsec3param(zone, qname string, qtype uint16, viewName, geoTag string) *dns.NSEC3PARAM {
+	if !s.signsLocally(zone) || qtype != dns.TypeNSEC3PARAM && qtype != 0 || qname != zone {
+		return nil
+	}
+	return s.signer.NSEC3PARAM(zone, s.apexNegativeTTL(zone, viewName, geoTag))
+}
+
+// apexNegativeTTL is the zone's SOA minimum capped by the SOA TTL (RFC 2308
+// section 5), the TTL RFC 5155 section 4 gives NSEC3PARAM.
+func (s *Server) apexNegativeTTL(zone, viewName, geoTag string) uint32 {
+	if soaRRs, ok := s.auth.LookupScoped(zone, dns.TypeSOA, viewName, geoTag); ok && len(soaRRs) > 0 {
+		if soa, ok := soaRRs[0].(*dns.SOA); ok {
+			if soa.Minttl < soa.Hdr.Ttl {
+				return soa.Minttl
+			}
+			return soa.Hdr.Ttl
+		}
+	}
+	return 300
 }

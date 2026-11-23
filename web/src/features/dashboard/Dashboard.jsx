@@ -22,6 +22,13 @@ import {
   Stat,
 } from '../../ui'
 
+// A failed or cut-off filter rebuild keeps the last good CDB serving; say so on the card.
+function lastSyncNote(s) {
+  if (!s || s.status === 'ok' || s.status === 'running') return ''
+  const when = s.finished_at ? new Date(s.finished_at).toLocaleString() : ''
+  return ` · last sync ${s.status}${when ? ` ${when}` : ''}${s.error ? `: ${s.error}` : ''}`
+}
+
 function formatEventTime(t) {
   try {
     return new Date(t).toLocaleTimeString()
@@ -227,10 +234,7 @@ export default function Dashboard() {
   const mon = data.monitor || {}
   const health = data.health || { checks: {}, status: '—' }
   const checks = health.checks || {}
-  const dataplane = data.dns_dataplane || s.dns_dataplane || 'powersvx'
-  const isDnsdist = dataplane === 'dnsdist'
-  const isUnboundDP = dataplane === 'unbound'
-  const planeLabel = isDnsdist ? 'dnsdist + CDB' : isUnboundDP ? 'Unbound RPZ' : 'PowerSVX Edge'
+  const planeLabel = 'dnsdist + CDB'
   
   const qpsChart = (mon.qps_series || []).map((p) => ({
     t: new Date((p.t || 0) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -243,15 +247,6 @@ export default function Dashboard() {
   const hostTotalGiB = Number(res.host_mem_total_mb || 0) / 1024
   const diskUsed = Number(res.disk_used_pct || 0)
   const memUsed = Number(res.host_mem_used_pct || 0)
-
-  const isUnboundBackend =
-    isDnsdist ||
-    isUnboundDP ||
-    (s.forwarders || []).some((f) => f.includes('5353')) ||
-    s.resolver_mode === 'unbound' ||
-    checks.unbound?.status === 'pass' ||
-    checks.unbound?.status === 'fail' ||
-    checks.unbound?.status === 'degraded'
 
   const cdbEntries = checks.rpz?.entries ?? s?.rpz_entries ?? 0
   const totalQueries = Number(mon.queries_total ?? s.queries_total ?? 0)
@@ -296,7 +291,7 @@ export default function Dashboard() {
       name: 'Unbound Recursive Core',
       target: '127.0.0.1:5353',
       role: 'Recursive DNS Resolver & DNSSEC',
-      status: checks.unbound?.status || (isUnboundBackend ? 'unknown' : 'disabled'),
+      status: checks.unbound?.status || 'unknown',
       latency: avgLatencyMs != null ? `${avgLatencyMs} ms` : '—',
       detail: `${cacheHits.toLocaleString()} cache hits · ${cacheHitRatio}% hit ratio`,
     },
@@ -314,12 +309,12 @@ export default function Dashboard() {
       role: 'Official National Blocklist & CDB Fast Spoofing',
       status: checks.rpz?.status || (cdbEntries > 0 ? 'pass' : 'disabled'),
       latency: cdbEntries > 0 ? 'Instant (CDB)' : '—',
-      detail: `${Number(cdbEntries).toLocaleString()} domains synced`,
+      detail: `${Number(cdbEntries).toLocaleString()} domains synced${lastSyncNote(checks.rpz?.last_sync)}`,
     },
     {
       name: 'PostgreSQL Relational DB',
       target: '127.0.0.1:5432',
-      role: 'Authoritative Zones & Config Storage',
+      role: 'Query-log history (Observability Profile)',
       status: checks.database?.status || 'disabled',
       latency: checks.database?.latency_ms != null ? `${checks.database.latency_ms} ms` : '—',
       detail: checks.database?.status === 'pass' ? 'Connection pool active' : checks.database?.status || 'not enabled',

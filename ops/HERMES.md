@@ -19,7 +19,7 @@ PowerSVX → AXFR/IXFR/hosts → data/blocklist/domains.cdb (+ banks.whitelist +
 
 Env: `POWERSVX_DNS_DATAPLANE=dnsdist` (compose host default).
 
-Legacy: `POWERSVX_DNS_DATAPLANE=unbound` puts Unbound on `:53` + RPZ (partial cap on ≤12 GiB). Stop dnsdist before that mode.
+`POWERSVX_DNS_DATAPLANE=unbound` (Unbound on `:53` + RPZ) was removed; a node still set to it is refused at update and at start. See `docs/PRODUCTION.md`.
 
 ## When the user says “install”, “bootstrap”, or “fresh deploy”
 
@@ -30,7 +30,7 @@ For a **brand-new host** (or fresh VPS):
    ```bash
    sudo bash deploy/linux/bootstrap-node.sh
    ```
-   *This automatically installs Docker, applies kernel `NOTRACK` + 3M conntrack hardening, creates random `.env` secrets, auto-sizes Unbound/Dnsdist configs, and spins up the full stack including Grafana on port 3000.*
+   *This automatically installs Docker, applies kernel `NOTRACK` (UDP/53 to the node only) + 3M conntrack hardening, creates random `.env` secrets, auto-sizes Unbound/Dnsdist configs, and spins up the full stack including Grafana on port 3000.*
 
 ## When the user says “deploy” or “update” (Existing Nodes)
 
@@ -49,7 +49,7 @@ Default target if unspecified: **isehat2 / 103.172.70.254**.
    eval "$(deploy/linux/calc-mem-env.sh)"
    export GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
    export BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-   export POWERSVX_VERSION=1.7.2 GOGC=50
+   export POWERSVX_VERSION=2.0.0 GOGC=50
    docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml build powersvx
    docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \
      up -d --no-deps --force-recreate unbound dnsdist powersvx node-exporter prometheus grafana
@@ -69,10 +69,8 @@ Default target if unspecified: **isehat2 / 103.172.70.254**.
 - Do **not** `chown -R` on `data/postgres` (uid **70**).
 - **Do not put Go PowerSVX back on public `:53`** in production.
 - CDB holds the **full** AXFR list (no 1.5M Unbound RPZ cap). Banks filtered from CDB + dnsdist SMN.
-- Keep Unbound RPZ zonefiles minimal when on dnsdist (API writes SOA stubs).
-- Keep `POWERSVX_UNBOUND_QUERYLOG=0`.
 - Dataplane: PowerSVX `POWERSVX_MEM_PERCENT` defaults to **30%**.
-- Query log (Go edge) stays off (`POWERSVX_DISABLE_QUERY_LOG=1`).
+- Query log sampling is off by default (see "Sampled query log" in `deploy/linux/README.md`).
 
 ## Host hygiene (fleet standard)
 
@@ -116,7 +114,7 @@ Phrase: **“hygiene semua” / “prune fleet”** → loop inventory hosts wit
 | Recreate Unbound “never finishes” | Loading 370 MB / 9.5M RPZ into ~11 GiB host → swap thrash |
 | Disk 100% | Unbound `log-queries` + Docker image buildup |
 
-**Recovery (legacy Unbound RPZ):** park huge zone → start empty → dig OK. **Preferred fix:** cut over to **dnsdist+CDB** (this architecture).
+**Recovery (a node still on the removed Unbound RPZ mode):** cut over to **dnsdist+CDB** (this architecture); see `docs/PRODUCTION.md`.
 
 ## Phrases → action
 

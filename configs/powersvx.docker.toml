@@ -8,8 +8,6 @@ dot_port = 853
 doh_port = 443
 doq_port = 784
 workers = 0
-# Linux TPROXY: set true + host network + CAP_NET_ADMIN (see README). Not needed for DNAT/dstnat.
-tproxy = false
 
 [server.tls]
 enabled = true
@@ -103,6 +101,10 @@ allow_axfr = false
 require_tsig = true
 # notify = ["192.0.2.10:53"]
 # allow_from = ["10.0.0.0/8"]
+# Signed zones: how long the RRSIGs in a transfer are valid, and how often the SOA
+# serial moves so secondaries pull renewed ones (refresh is held to half of validity).
+# signature_validity_days = 30
+# signature_refresh_days = 7
 
 # RFC 2136 dynamic updates (DDNS). Off by default.
 [update]

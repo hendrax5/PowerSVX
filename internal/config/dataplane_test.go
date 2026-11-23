@@ -5,21 +5,17 @@ import (
 	"testing"
 )
 
-func TestDNSDataplane(t *testing.T) {
-	t.Setenv("POWERSVX_DNS_DATAPLANE", "")
-	if DNSDataplane() != "powersvx" {
-		t.Fatal(DNSDataplane())
-	}
-	t.Setenv("POWERSVX_DNS_DATAPLANE", "unbound")
-	if !UnboundDataplane() || DNSDistDataplane() {
-		t.Fatal("expected unbound")
-	}
-	t.Setenv("POWERSVX_DNS_DATAPLANE", "dnsdist")
-	if !DNSDistDataplane() || UnboundDataplane() {
-		t.Fatal("expected dnsdist")
-	}
-	if !FilterDataplane() {
-		t.Fatal("filter dataplane")
+// The Dataplane is dnsdist whatever the environment says; CheckDataplane is what
+// refuses a node configured for anything else.
+func TestDNSDataplaneIsAlwaysDnsdist(t *testing.T) {
+	for _, v := range []string{"", "dnsdist", "cdb", "powersvx", "unbound", "external", "bogus"} {
+		t.Setenv("POWERSVX_DNS_DATAPLANE", v)
+		if DNSDataplane() != "dnsdist" || !DNSDistDataplane() {
+			t.Fatalf("%q: got %q", v, DNSDataplane())
+		}
 	}
 	os.Unsetenv("POWERSVX_DNS_DATAPLANE")
+	if DNSDataplane() != "dnsdist" {
+		t.Fatal("unset must mean dnsdist")
+	}
 }

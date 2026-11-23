@@ -1,79 +1,14 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/powersvx/powersvx/internal/config"
-	"github.com/powersvx/powersvx/internal/dnsdistctl"
 	"github.com/powersvx/powersvx/internal/queryring"
 )
-
-// StartLiveQuerySampler periodically polls dnsdist grepq ring buffer into Server.QueryRing()
-// so Live Query Stream shows real-time edge DNS traffic with zero Postgres disk writes.
-func (a *API) StartLiveQuerySampler() {
-	if a == nil || a.srv == nil || a.srv.QueryRing() == nil || !config.DNSDistDataplane() {
-		return
-	}
-	go func() {
-		var mu sync.Mutex
-		seen := make(map[string]time.Time)
-		t := time.NewTicker(2 * time.Second)
-		defer t.Stop()
-		for range t.C {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			samples, err := dnsdistctl.DefaultClient().GrepQueries(ctx, 100, "")
-			cancel()
-			if err != nil || len(samples) == 0 {
-				continue
-			}
-			now := time.Now().UTC()
-			mu.Lock()
-			for k, ts := range seen {
-				if now.Sub(ts) > 2*time.Minute {
-					delete(seen, k)
-				}
-			}
-			ring := a.srv.QueryRing()
-			for _, s := range samples {
-				key := s.Timestamp + "|" + s.Client + "|" + s.ID + "|" + s.QName + "|" + s.QType
-				if _, ok := seen[key]; ok {
-					continue
-				}
-				seen[key] = now
-				clientHost := s.Client
-				if h, _, err := net.SplitHostPort(clientHost); err == nil {
-					clientHost = h
-				}
-				lat, _ := strconv.ParseFloat(strings.TrimSuffix(s.LatencyMS, "ms"), 64)
-				rcode := s.RCode
-				if rcode == "" {
-					rcode = "NOERROR"
-				}
-				blocked := strings.Contains(strings.ToUpper(rcode), "NXDOMAIN") && strings.Contains(s.LatencyMS, "0.")
-				ring.Push(queryring.QueryEvent{
-					Time:      now,
-					ClientIP:  clientHost,
-					QName:     s.QName,
-					QType:     s.QType,
-					Protocol:  "dnsdist",
-					RCode:     rcode,
-					Path:      "dnsdist",
-					LatencyMS: lat,
-					Blocked:   blocked,
-					Source:    "dnsdist",
-				})
-			}
-			mu.Unlock()
-		}
-	}()
-}
 
 func parseQueryFilter(r *http.Request) queryring.QueryFilter {
 	q := r.URL.Query()

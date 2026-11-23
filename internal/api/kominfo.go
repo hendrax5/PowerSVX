@@ -72,6 +72,7 @@ func (a *API) saveRuntimeFromServer(cur server.RuntimeFlags) {
 	if fz == nil && a.cfg != nil {
 		fz = a.cfg.Resolver.ForwardZones
 	}
+	fwd, fz, _ = dropLoopForwarders(fwd, fz)
 	rlLive := a.srv.RateLimitConfig()
 	en := cur.KominfoSync
 	targets := []string(nil)
@@ -86,7 +87,7 @@ func (a *API) saveRuntimeFromServer(cur server.RuntimeFlags) {
 		maxMB = a.cfg.Logging.QueryLogMaxSizeMB
 		sampleRate = a.cfg.Logging.QueryLogSampleRate
 	}
-	_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), a.withPreservedTProxy(config.RuntimeSettings{
+	_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), a.withPreservedConntrack(config.RuntimeSettings{
 		GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 		RateLimitQPS: &rlLive.QPS, RateLimitBurst: &rlLive.Burst, RateLimitBlockDur: &rlLive.BlockDuration,
 		RateLimitWhitelist: rlLive.Whitelist,

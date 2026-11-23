@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,10 +22,11 @@ import (
 	"github.com/powersvx/powersvx/internal/apiauth"
 	"github.com/powersvx/powersvx/internal/audit"
 	"github.com/powersvx/powersvx/internal/authoritative"
-	"github.com/powersvx/powersvx/internal/cache"
+	"github.com/powersvx/powersvx/internal/blockcdb"
 	"github.com/powersvx/powersvx/internal/config"
 	"github.com/powersvx/powersvx/internal/database"
 	"github.com/powersvx/powersvx/internal/dnsdistctl"
+	"github.com/powersvx/powersvx/internal/dnstap"
 	"github.com/powersvx/powersvx/internal/dnssec"
 	"github.com/powersvx/powersvx/internal/eventlog"
 	"github.com/powersvx/powersvx/internal/monitor"
@@ -39,7 +39,6 @@ type API struct {
 	cfg      *config.Config
 	srv      *server.Server
 	db       *database.DB
-	cache    *cache.Tier
 	auth     *authoritative.Store
 	events   *eventlog.Bus
 	acmeMgr  *acme.Manager
@@ -52,21 +51,28 @@ type API struct {
 	http     *http.Server
 	start    time.Time
 	webFS    fs.FS
-	reloadFn func() error
 	dataDir  string
 
+	qlistener *dnstap.Listener
+	qlog      *database.QueryLogger
+
 	unboundRPZEntries atomic.Int64
+	unboundSync       unboundSyncState
 
 	rpzAutoMu   sync.Mutex
 	rpzAutoStop chan struct{}
+
+	syncMu     sync.Mutex
+	syncCtx    context.Context
+	syncCancel context.CancelFunc
+	syncWG     sync.WaitGroup
 }
 
-func New(cfg *config.Config, srv *server.Server, db *database.DB, tier *cache.Tier, auth *authoritative.Store, log *slog.Logger) *API {
-	return &API{cfg: cfg, srv: srv, db: db, cache: tier, auth: auth, log: log, start: time.Now(), dataDir: "./data", loginLim: newLoginLimiter()}
+func New(cfg *config.Config, srv *server.Server, db *database.DB, auth *authoritative.Store, log *slog.Logger) *API {
+	return &API{cfg: cfg, srv: srv, db: db, auth: auth, log: log, start: time.Now(), dataDir: "./data", loginLim: newLoginLimiter()}
 }
 
 func (a *API) SetWebFS(fsys fs.FS)                     { a.webFS = fsys }
-func (a *API) SetReloadZones(fn func() error)          { a.reloadFn = fn }
 func (a *API) SetEvents(bus *eventlog.Bus)             { a.events = bus }
 func (a *API) SetACME(m *acme.Manager)                 { a.acmeMgr = m }
 func (a *API) SetAudit(l *audit.Log)                   { a.audit = l }
@@ -112,10 +118,6 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/security/dynblocks/clear", a.withAuth(a.handleSecurityClearDynBlocks))
 	mux.HandleFunc("/api/v1/queries/live", a.withAuth(a.handleLiveQueries))
 	mux.HandleFunc("/api/v1/queries/stream", a.withAuth(a.handleQueryStream))
-	mux.HandleFunc("/api/v1/tproxy", a.withAuth(a.handleTProxy))
-	mux.HandleFunc("/api/v1/tproxy/apply", a.withAuth(a.handleTProxyApply))
-	mux.HandleFunc("/api/v1/tproxy/disable", a.withAuth(a.handleTProxyDisable))
-	mux.HandleFunc("/api/v1/tproxy/restart", a.withAuth(a.handleTProxyRestart))
 	mux.HandleFunc("/api/v1/conntrack", a.withAuth(a.handleConntrack))
 	mux.HandleFunc("/api/v1/conntrack/apply", a.withAuth(a.handleConntrackApply))
 	mux.HandleFunc("/api/v1/host/network", a.withAuth(a.handleHostNetwork))
@@ -147,6 +149,7 @@ func (a *API) Handler() http.Handler {
 }
 
 func (a *API) Shutdown(ctx context.Context) error {
+	a.StopFilterSync(ctx)
 	if a.http == nil {
 		return nil
 	}
@@ -301,25 +304,9 @@ func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (a *API) healthPayload(ctx context.Context) map[string]any {
 	checks := map[string]any{}
 	status := "healthy"
-	dataplane := config.DNSDataplane()
-	if dataplane == "unbound" {
-		checks["dns_dataplane"] = map[string]any{"status": "pass", "engine": "unbound", "public_dns": ":53"}
-		// Public DNS is Unbound — probe loopback :53.
-		udpOK := map[string]any{"status": "pass", "addr": "0.0.0.0:53", "engine": "unbound"}
-		if c, err := net.DialTimeout("udp", "127.0.0.1:53", 500*time.Millisecond); err != nil {
-			udpOK["status"] = "fail"
-			udpOK["err"] = err.Error()
-			status = "degraded"
-		} else {
-			_ = c.Close()
-		}
-		checks["dns_udp"] = udpOK
-		if st, err := unboundrpz.Stats(); err == nil {
-			checks["unbound"] = map[string]any{"status": "pass", "stats": st}
-		} else {
-			checks["unbound"] = map[string]any{"status": "degraded", "err": err.Error()}
-		}
-	} else if dataplane == "dnsdist" {
+	// A Dataplane is expected on a host deployment only; in development the process
+	// is a Control Plane with nothing to probe, and that is not a fault.
+	if os.Getenv("POWERSVX_HOST_DEPLOYMENT") == "1" {
 		checks["dns_dataplane"] = map[string]any{"status": "pass", "engine": "dnsdist-cdb", "public_dns": ":53", "backend": "127.0.0.1:5353"}
 		udpOK := map[string]any{"status": "pass", "addr": "0.0.0.0:53", "engine": "dnsdist"}
 		if c, err := net.DialTimeout("udp", "127.0.0.1:53", 500*time.Millisecond); err != nil {
@@ -338,8 +325,14 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 				status = "degraded"
 			}
 		}
+		if rt := a.unboundSync.health(); rt != nil {
+			checks["unbound_runtime"] = rt
+			if rt["status"] != "pass" && status == "healthy" {
+				status = "degraded"
+			}
+		}
 	} else {
-		checks["dns_dataplane"] = map[string]any{"status": "pass", "engine": "powersvx"}
+		checks["dns_dataplane"] = map[string]any{"status": "disabled", "hint": "no Dataplane expected outside a host deployment"}
 		checks["dns_udp"] = map[string]any{"status": "pass", "addr": a.srv.UDPAddr()}
 		// Probe Unbound if configured as backend or in forwarders
 		isUnboundFwd := false
@@ -372,10 +365,6 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 			checks["unbound"] = map[string]any{"status": "disabled", "hint": "Resolver mode: " + a.srv.RuntimeFlags().ResolverMode}
 		}
 	}
-	checks["dns_dot"] = statusOrDisabled(a.srv.DoTEnabled(), a.srv.DoTAddr())
-	checks["dns_doh"] = statusOrDisabled(a.srv.DoHEnabled(), a.srv.DoHAddr())
-	checks["dns_doh3"] = statusOrDisabled(a.srv.DoH3Enabled(), a.srv.DoHAddr())
-	checks["dns_doq"] = statusOrDisabled(a.srv.DoQEnabled(), a.srv.DoQAddr())
 
 	if a.cfg.Database.Enabled {
 		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -388,25 +377,17 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 			status = "degraded"
 		}
 	} else {
-		checks["database"] = map[string]any{"status": "disabled"}
+		checks["database"] = map[string]any{"status": "disabled", "hint": "not configured; query history needs the Observability Profile"}
 	}
 
-	hits, misses, size := a.cache.L1.Stats()
-	var ratio float64
-	if hits+misses > 0 {
-		ratio = float64(hits) / float64(hits+misses)
-	}
-	checks["cache"] = map[string]any{"status": "pass", "hit_ratio": ratio, "l1_size": size}
 	rpzDetail := map[string]any{"status": "pass", "entries": a.srv.RPZCount(), "policies": len(a.cfg.RPZ.Policies)}
-	if config.UnboundDataplane() {
-		a.refreshUnboundEntryCount()
-		rpzDetail["entries"] = a.unboundRPZEntryCount()
-		rpzDetail["engine"] = "unbound"
-	}
 	if config.DNSDistDataplane() {
 		a.refreshUnboundEntryCount()
 		rpzDetail["entries"] = a.unboundRPZEntryCount()
 		rpzDetail["engine"] = "dnsdist-cdb"
+		if ls := a.filterSyncPayload(); ls != nil {
+			rpzDetail["last_sync"] = ls
+		}
 	}
 	if a.cfg.RPZ.Enabled {
 		if len(a.cfg.RPZ.Policies) == 0 {
@@ -415,7 +396,7 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 			if status == "healthy" {
 				status = "degraded"
 			}
-		} else if !config.UnboundDataplane() && !config.DNSDistDataplane() && a.srv.RPZCount() == 0 {
+		} else if !config.DNSDistDataplane() && a.srv.RPZCount() == 0 {
 			loading := false
 			if eng := a.srv.RPZ(); eng != nil {
 				loading = eng.LoadStatus().Loading
@@ -430,14 +411,14 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 					status = "degraded"
 				}
 			}
-		} else if (config.UnboundDataplane() || config.DNSDistDataplane()) && a.unboundRPZEntryCount() == 0 {
+		} else if config.DNSDistDataplane() && a.unboundRPZEntryCount() == 0 {
 			rpzDetail["status"] = "pass"
 			rpzDetail["reason"] = "waiting for filter sync"
 		} else if config.DNSDistDataplane() && a.unboundRPZEntryCount() > 0 {
 			// Last sync may have failed while still serving a good CDB.
-			if feedSyncFailed(a.axfrFeedSnapshot()) {
+			if ls, ok := blockcdb.ReadSyncStatus(a.dataDir); feedSyncFailed(a.axfrFeedSnapshot()) || (ok && (ls.Status == blockcdb.SyncFailed || ls.Status == blockcdb.SyncInterrupted)) {
 				rpzDetail["status"] = "pass"
-				rpzDetail["reason"] = "filter sync failed; serving last CDB"
+				rpzDetail["reason"] = "filter sync did not complete; serving last CDB"
 				rpzDetail["filter_sync"] = "failed"
 			} else {
 				rpzDetail["filter_sync"] = "ok"
@@ -581,16 +562,8 @@ func (a *API) healthPayload(ctx context.Context) map[string]any {
 	return out
 }
 
-func statusOrDisabled(on bool, addr string) map[string]any {
-	if on {
-		return map[string]any{"status": "pass", "addr": addr}
-	}
-	return map[string]any{"status": "disabled"}
-}
-
 func (a *API) statusPayload() map[string]any {
 	queries, uptime := a.srv.Stats()
-	hits, misses, size := a.cache.L1.Stats()
 	zones := 0
 	if a.auth != nil {
 		zones = a.auth.ZoneCount()
@@ -598,20 +571,16 @@ func (a *API) statusPayload() map[string]any {
 	flags := a.srv.RuntimeFlags()
 	out := map[string]any{
 		"uptime_seconds": int(uptime.Seconds()),
-		"mode":           a.cfg.Resolver.Mode, "dnssec_mode": a.srv.DNSSECMode(),
-		"dot_enabled": a.srv.DoTEnabled(), "doh_enabled": a.srv.DoHEnabled(), "doh3_enabled": a.srv.DoH3Enabled(), "doq_enabled": a.srv.DoQEnabled(),
-		"dot_addr": a.srv.DoTAddr(), "doh_addr": a.srv.DoHAddr(), "doq_addr": a.srv.DoQAddr(),
+		"dnssec_mode":    a.srv.DNSSECMode(),
 		"queries_total": queries, "rate_limited": a.srv.Blocked(),
-		"cache_hits": hits, "cache_misses": misses, "cache_l1_size": size,
+		"cache_hits": uint64(0), "cache_misses": uint64(0),
 		"rpz_entries": a.srv.RPZCount(), "zones": zones, "udp_addr": a.srv.UDPAddr(),
 		"ratelimit_enabled": flags.RateLimit, "rpz_enabled": flags.RPZ,
 		"ecs_enabled":           flags.ECS,
 		"geodns_enabled":        flags.GeoDNS,
 		"split_horizon_enabled": flags.SplitHorizon,
-		"dns_dataplane":         config.DNSDataplane(),
 	}
 	if config.DNSDistDataplane() {
-		out["mode"] = "dnsdist"
 		out["udp_addr"] = "0.0.0.0:53 (dnsdist)"
 		out["rpz_entries"] = a.unboundRPZEntryCount()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -623,16 +592,6 @@ func (a *API) statusPayload() map[string]any {
 			out["cache_misses"] = uint64(st["cache-misses"])
 			out["dnsdist_self_answered"] = uint64(st["self-answered"])
 			out["dnsdist_latency_avg100"] = st["latency-avg100"]
-		}
-	} else if config.UnboundDataplane() {
-		out["mode"] = "unbound"
-		out["udp_addr"] = "0.0.0.0:53 (Unbound)"
-		out["rpz_entries"] = a.unboundRPZEntryCount()
-		if st, err := unboundrpz.Stats(); err == nil {
-			out["queries_total"] = uint64(st["total.num.queries"])
-			out["cache_hits"] = uint64(st["total.num.cachehits"])
-			out["cache_misses"] = uint64(st["total.num.cachemiss"])
-			out["unbound_rpz_actions"] = uint64(unboundrpz.RPZActionTotal(st))
 		}
 	}
 	for k, v := range versionFields() {
@@ -680,17 +639,6 @@ func (a *API) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		payload["monitor"] = monitor.New().Snapshot(allow, active)
 	}
 	payload["health"] = a.healthPayload(r.Context())
-	payload["dns_dataplane"] = config.DNSDataplane()
-	if config.UnboundDataplane() {
-		if st, err := unboundrpz.Stats(); err == nil {
-			payload["unbound"] = st
-			q := st["total.num.queries"]
-			h := st["total.num.cachehits"]
-			if q > 0 {
-				payload["unbound_cache_hit_ratio"] = h / q
-			}
-		}
-	}
 	writeJSON(w, http.StatusOK, payload)
 }
 
@@ -706,14 +654,9 @@ func (a *API) handleZones(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "name required", http.StatusBadRequest)
 			return
 		}
-		if a.db != nil && a.cfg.Database.Enabled {
-			if _, err := a.db.CreateZone(r.Context(), body.Name); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			_ = a.reloadZones()
-		} else {
-			a.auth.UpsertZone(body.Name)
+		a.auth.CreateZone(body.Name)
+		if a.persistFailed(w) {
+			return
 		}
 		a.SyncAllDataplanes()
 		writeJSON(w, http.StatusCreated, map[string]any{"name": config.NormalizeName(body.Name)})
@@ -741,10 +684,8 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			payload := map[string]any{"name": config.NormalizeName(zone), "records": recordsDTO(recs)}
-			if a.db != nil && a.cfg.Database.Enabled {
-				if meta, err := a.db.GetZoneMeta(r.Context(), zone); err == nil {
-					payload["meta"] = meta
-				}
+			if meta, ok := a.auth.GetZoneMeta(zone); ok {
+				payload["meta"] = zoneMetaPayload(zone, meta)
 			}
 			writeJSON(w, http.StatusOK, payload)
 		case http.MethodPut, http.MethodPatch:
@@ -760,12 +701,19 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
-			if a.db == nil || !a.cfg.Database.Enabled {
-				http.Error(w, "zone meta requires database", http.StatusBadRequest)
+			if msg := validateMetaPatch(body.SOASerial, body.SOARefresh, body.SOARetry, body.SOAExpire, body.SOAMinimum); msg != "" {
+				http.Error(w, msg, http.StatusBadRequest)
 				return
 			}
-			if err := a.db.UpdateZoneMeta(r.Context(), zone, body.DNSSECEnabled, body.SOASerial, body.SOARefresh, body.SOARetry, body.SOAExpire, body.SOAMinimum); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+			meta, ok := a.auth.UpdateZoneMeta(zone, authoritative.ZoneMetaPatch{
+				DNSSECEnabled: body.DNSSECEnabled, SOASerial: body.SOASerial, SOARefresh: body.SOARefresh,
+				SOARetry: body.SOARetry, SOAExpire: body.SOAExpire, SOAMinimum: body.SOAMinimum,
+			})
+			if !ok {
+				http.Error(w, "zone not found", http.StatusNotFound)
+				return
+			}
+			if a.persistFailed(w) {
 				return
 			}
 			if body.DNSSECEnabled != nil && *body.DNSSECEnabled {
@@ -776,28 +724,21 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			meta, err := a.db.GetZoneMeta(r.Context(), zone)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+			out := zoneMetaPayload(zone, meta)
 			if sig := a.srv.Signer(); sig != nil && sig.Enabled(zone) {
-				meta["signing"] = true
+				out["signing"] = true
 				if ds, err := sig.DS(zone); err == nil && ds != nil {
-					meta["ds"] = ds.String()
+					out["ds"] = ds.String()
 				}
 			}
-			writeJSON(w, http.StatusOK, meta)
+			writeJSON(w, http.StatusOK, out)
 			return
 		case http.MethodDelete:
-			if a.db != nil && a.cfg.Database.Enabled {
-				if err := a.db.DeleteZone(r.Context(), zone); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				_ = a.reloadZones()
-			} else if !a.auth.DeleteZone(zone) {
+			if !a.auth.DeleteZone(zone) {
 				http.Error(w, "zone not found", http.StatusNotFound)
+				return
+			}
+			if a.persistFailed(w) {
 				return
 			}
 			a.SyncAllDataplanes()
@@ -864,6 +805,7 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 				Action    string `json:"action"` // enable | rollover
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			beforePol, _ := sig.Policy(normZone)
 			if strings.EqualFold(body.Action, "rollover") {
 				if err := sig.RolloverZSK(normZone); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -879,10 +821,13 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			if a.db != nil && a.cfg.Database.Enabled {
-				on := true
-				_ = a.db.UpdateZoneMeta(r.Context(), zone, &on, nil, nil, nil, nil, nil)
+			// NSEC3PARAM follows the policy; a secondary learns of a change through the serial.
+			if afterPol, _ := sig.Policy(normZone); afterPol.NSEC3 != beforePol.NSEC3 || afterPol.NSEC3 && afterPol.Salt != beforePol.Salt {
+				_, _ = a.auth.BumpSOASerial(normZone)
+				a.srv.NotifySecondaries(normZone)
 			}
+			on := true
+			a.auth.UpdateZoneMeta(zone, authoritative.ZoneMetaPatch{DNSSECEnabled: &on})
 			pol, _ := sig.Policy(normZone)
 			ds, _ := sig.DS(normZone)
 			out := map[string]any{
@@ -924,15 +869,9 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if a.db != nil && a.cfg.Database.Enabled {
-			if err := a.db.AddRecord(r.Context(), zone, rec); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			_ = a.reloadZones()
-		} else {
-			a.auth.UpsertZone(zone)
-			a.auth.AddRecord(zone, rec)
+		a.auth.AddRecords(zone, []authoritative.Record{rec})
+		if a.persistFailed(w) {
+			return
 		}
 		if config.DNSDistDataplane() {
 			go func(qname string) {
@@ -964,18 +903,13 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if a.db != nil && a.cfg.Database.Enabled {
-			if err := a.db.UpdateRecord(r.Context(), zone, body.OldName, body.OldType, rec); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			_ = a.reloadZones()
-		} else {
-			qt := authoritative.TypeFromString(body.OldType)
-			if !a.auth.UpdateRecord(zone, body.OldName, qt, rec) {
-				http.Error(w, "record not found", http.StatusNotFound)
-				return
-			}
+		qt := authoritative.TypeFromString(body.OldType)
+		if !a.auth.UpdateRecord(zone, body.OldName, qt, rec) {
+			http.Error(w, "record not found", http.StatusNotFound)
+			return
+		}
+		if a.persistFailed(w) {
+			return
 		}
 		if config.DNSDistDataplane() {
 			go func(qname, oldName string) {
@@ -997,15 +931,10 @@ func (a *API) handleZoneSub(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "name required", http.StatusBadRequest)
 			return
 		}
-		if a.db != nil && a.cfg.Database.Enabled {
-			if err := a.db.DeleteRecord(r.Context(), zone, name, typ); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			_ = a.reloadZones()
-		} else {
-			qt := authoritative.TypeFromString(typ)
-			a.auth.DeleteRecord(zone, name, qt)
+		qt := authoritative.TypeFromString(typ)
+		a.auth.DeleteRecord(zone, name, qt)
+		if a.persistFailed(w) {
+			return
 		}
 		if config.DNSDistDataplane() {
 			go func(qname string) {
@@ -1044,23 +973,10 @@ func (a *API) handleZoneImport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "zone parse failed: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if a.db != nil && a.cfg.Database.Enabled {
-		if _, err := a.db.CreateZone(r.Context(), zone); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		for _, rec := range recs {
-			if err := a.db.AddRecord(r.Context(), zone, rec); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
-		_ = a.reloadZones()
-	} else {
-		a.auth.UpsertZone(zone)
-		for _, rec := range recs {
-			a.auth.AddRecord(zone, rec)
-		}
+	a.auth.CreateZone(zone)
+	a.auth.AddRecords(zone, recs)
+	if a.persistFailed(w) {
+		return
 	}
 	a.SyncAllDataplanes()
 	a.srv.NotifySecondaries(zone)
@@ -1162,10 +1078,6 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.QueryLog != nil {
 			cur.QueryLog = *body.QueryLog
-			// Go-edge guard only — Unbound dataplane uses the same toggle for logfile sampling.
-			if config.QueryLogForcedOff() && !config.UnboundDataplane() {
-				cur.QueryLog = false
-			}
 		}
 		if body.QueryLogRetentionDays != nil {
 			if *body.QueryLogRetentionDays < 0 || *body.QueryLogRetentionDays > 3650 {
@@ -1200,11 +1112,19 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			if err := loopForwarderError(fwd, nil); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			cur.Forwarders = fwd
 		}
 		if body.ForwardZones != nil {
 			fz, err := config.NormalizeForwardZones(*body.ForwardZones)
 			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := loopForwarderError(nil, fz); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -1266,13 +1186,6 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			if config.UnboundDataplane() {
-				_ = unboundrpz.WriteAccessControl(
-					filepath.Join(unboundrpz.Dir(a.dataDir), "access-control.conf"), allow)
-				if err := unboundrpz.TryReload(); err != nil {
-					a.log.Warn("unbound reload after ACL update", "err", err)
-				}
-			}
 			a.SyncDNSDistACL()
 		}
 		mode := cur.ResolverMode
@@ -1285,6 +1198,8 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if fz == nil && a.cfg != nil {
 			fz = a.cfg.Resolver.ForwardZones
 		}
+		// Values nobody typed just now (TOML defaults, earlier settings) must not write a loop back.
+		fwd, fz, _ = dropLoopForwarders(fwd, fz)
 		rlLive := a.srv.RateLimitConfig()
 		kominfoOn := cur.KominfoSync
 		axfrTargets := []string(nil)
@@ -1299,7 +1214,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			maxMB = a.cfg.Logging.QueryLogMaxSizeMB
 			sampleRate = a.cfg.Logging.QueryLogSampleRate
 		}
-		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), a.withPreservedTProxy(config.RuntimeSettings{
+		_ = config.SaveRuntimeSettings(config.RuntimeSettingsPath(a.dataDir), a.withPreservedConntrack(config.RuntimeSettings{
 			GeoDNS: &cur.GeoDNS, RPZ: &cur.RPZ, RateLimit: &cur.RateLimit,
 			RateLimitQPS: &rlLive.QPS, RateLimitBurst: &rlLive.Burst, RateLimitBlockDur: &rlLive.BlockDuration,
 			RateLimitWhitelist: rlLive.Whitelist,
@@ -1310,6 +1225,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 			AxfrSyncEnabled: &kominfoOn, AxfrSyncTargets: axfrTargets,
 			KominfoSyncEnabled: &kominfoOn,
 		}))
+		a.SyncQueryLogRate()
 		a.SyncAllDataplanes()
 		writeJSON(w, http.StatusOK, a.settingsPayload())
 	default:
@@ -1362,10 +1278,13 @@ func (a *API) settingsPayload() map[string]any {
 		"rate_limit_block_duration": rl.BlockDuration,
 		"rate_limit_whitelist":      rl.Whitelist,
 		"query_log_enabled":         f.QueryLog,
+		"query_history_available":   a.db != nil && a.cfg.Database.Enabled,
+		"query_history_note":        queryHistoryUnavailable,
 		"query_log_mask_ip":         a.cfg.Logging.QueryLogMaskIP,
 		"query_log_retention_days":  a.cfg.Logging.QueryLogRetentionDays,
 		"query_log_max_size_mb":     a.cfg.Logging.QueryLogMaxSizeMB,
 		"query_log_sample_rate":     a.cfg.Logging.QueryLogSampleRate,
+		"query_log_dataplane_connected": a.queryLogConnected(),
 		"allow_query":               allow,
 		"deny_query":                deny,
 		"transfer": map[string]any{
@@ -1381,7 +1300,6 @@ func (a *API) settingsPayload() map[string]any {
 		"auth_type":            a.cfg.API.AuthType,
 		"auth_required":        apiauth.AuthRequired(a.cfg.API.AuthType),
 		"auth_configured":      a.authConfigured(),
-		"tls_min_version":      "1.3",
 		"editable": []string{
 			"geodns", "rpz_enabled", "rate_limit", "rate_limit_qps", "rate_limit_burst",
 			"rate_limit_block_duration", "rate_limit_whitelist",
@@ -1482,13 +1400,13 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 		force := body.Force != nil && *body.Force
 		var startErr error
 		if axfrOnly {
-			startErr = a.startRPZAXFRRefresh(sync)
+			startErr = a.startRPZAXFRRefresh(sync, "policy update")
 		} else {
 			if hostsFullReloadDaytime(time.Now()) && !force {
 				http.Error(w, "full hosts RPZ reload blocked 06:00–22:00 local; set force=true or wait for update_at", http.StatusForbidden)
 				return
 			}
-			startErr = a.startRPZReload(sync)
+			startErr = a.startRPZReload(sync, "policy update")
 		}
 		payload := a.rpzPayload()
 		if startErr != nil {
@@ -1507,13 +1425,13 @@ func (a *API) handleRPZ(w http.ResponseWriter, r *http.Request) {
 		force := r.URL.Query().Get("force") == "1" || r.URL.Query().Get("force") == "true"
 		var startErr error
 		if axfrOnly {
-			startErr = a.startRPZAXFRRefresh(false)
+			startErr = a.startRPZAXFRRefresh(false, "manual reload")
 		} else {
 			if hostsFullReloadDaytime(time.Now()) && !force {
 				http.Error(w, "full hosts RPZ reload blocked 06:00–22:00 local; set force=1 or wait for update_at", http.StatusForbidden)
 				return
 			}
-			startErr = a.startRPZReload(false)
+			startErr = a.startRPZReload(false, "manual reload")
 		}
 		if startErr != nil {
 			http.Error(w, startErr.Error(), http.StatusConflict)
@@ -1538,7 +1456,7 @@ func (a *API) rpzPayload() map[string]any {
 		pols = []config.RPZPolicyTOML{}
 	}
 	entries := a.srv.RPZCount()
-	if config.UnboundDataplane() || config.DNSDistDataplane() {
+	if config.DNSDistDataplane() {
 		a.refreshUnboundEntryCount()
 		entries = a.unboundRPZEntryCount()
 	}
@@ -1557,6 +1475,7 @@ func (a *API) rpzPayload() map[string]any {
 		"from_disk":            st.FromDisk,
 		"axfr_feeds":           axfrFeeds,
 		"axfr_events":          axfrEvents,
+		"filter_sync":          a.filterSyncPayload(),
 		"tsig_keys":            a.secondaryTSIGKeyNames(),
 		"filter_seed_url":      config.FilterSeedURL(),
 		"note":                 note,
@@ -1699,69 +1618,12 @@ func hostsFullReloadDaytime(now time.Time) bool {
 	return h >= 6 && h < 22
 }
 
-func (a *API) startRPZReload(sync bool) error {
-	if rpzUsesDNSDistDataplane() {
-		return a.startDNSDistCDBRefresh(sync)
-	}
-	if rpzUsesUnboundDataplane() {
-		return a.startUnboundRPZReload(sync)
-	}
-	eng := a.srv.RPZ()
-	if eng == nil {
-		return nil
-	}
-	if !eng.TryBeginLoad() {
-		return errRPZ("rpz sync already in progress")
-	}
-	policies := a.rpzPolicyConfigs(a.cfg.RPZ.Policies)
-	run := func() {
-		n, err := a.srv.ReloadRPZ(policies, 30*time.Minute)
-		eng.EndLoad(err)
-		if err != nil {
-			a.log.Warn("rpz reload failed", "err", err)
-			return
-		}
-		a.log.Info("rpz reloaded", "entries", n)
-	}
-	if sync {
-		run()
-		return nil
-	}
-	go run()
-	return nil
+func (a *API) startRPZReload(sync bool, reason string) error {
+	return a.startDNSDistCDBRefresh(sync, reason)
 }
 
-func (a *API) startRPZAXFRRefresh(sync bool) error {
-	if rpzUsesDNSDistDataplane() {
-		return a.startDNSDistCDBRefresh(sync)
-	}
-	if rpzUsesUnboundDataplane() {
-		return a.startUnboundAXFRRefresh(sync)
-	}
-	eng := a.srv.RPZ()
-	if eng == nil {
-		return nil
-	}
-	if !eng.TryBeginLoad() {
-		return errRPZ("rpz sync already in progress")
-	}
-	policies := a.rpzPolicyConfigs(a.cfg.RPZ.Policies)
-	run := func() {
-		n, err := a.srv.RefreshRPZAXFR(policies, 30*time.Minute)
-		eng.EndLoad(err)
-		if err != nil {
-			a.log.Warn("rpz axfr refresh failed", "err", err)
-			return
-		}
-		a.log.Info("rpz axfr refreshed", "entries", n)
-		a.exportAXFRToUnbound(policies)
-	}
-	if sync {
-		run()
-		return nil
-	}
-	go run()
-	return nil
+func (a *API) startRPZAXFRRefresh(sync bool, reason string) error {
+	return a.startDNSDistCDBRefresh(sync, reason)
 }
 
 func notifyMasterMatch(clientIP string, masters []string) bool {
@@ -1821,7 +1683,7 @@ func (a *API) HandleRPZNotify(zone, clientIP string, tsigValid bool) bool {
 		}
 		return false
 	}
-	if err := a.startRPZAXFRRefresh(false); err != nil {
+	if err := a.startRPZAXFRRefresh(false, "RPZ NOTIFY from master"); err != nil {
 		a.log.Debug("rpz notify reload skip", "zone", zone, "err", err)
 	} else {
 		a.log.Info("rpz axfr notify reload started", "zone", zone, "client", clientIP)
@@ -1920,7 +1782,7 @@ func (a *API) StartRPZAutoUpdate() {
 					armHosts()
 					continue
 				}
-				if err := a.startRPZReload(false); err != nil {
+				if err := a.startRPZReload(false, "scheduled hosts refresh"); err != nil {
 					a.log.Debug("rpz hosts auto-update skip", "err", err)
 				} else {
 					a.log.Info("rpz hosts auto-update started")
@@ -1931,7 +1793,7 @@ func (a *API) StartRPZAutoUpdate() {
 					armAxfr()
 					continue
 				}
-				if err := a.startRPZAXFRRefresh(false); err != nil {
+				if err := a.startRPZAXFRRefresh(false, "scheduled AXFR refresh"); err != nil {
 					a.log.Debug("rpz axfr auto-update skip", "err", err)
 				} else {
 					a.log.Info("rpz axfr auto-update started")
@@ -1998,16 +1860,22 @@ func (a *API) handleAnomaly(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, det.Snapshot())
 }
 
+// queryHistoryUnavailable is shown when no database is configured. The live query
+// stream does not need a database and keeps working.
+const queryHistoryUnavailable = "Query history is unavailable: it needs the Observability Profile (Postgres). The live query stream still works."
+
 func (a *API) handleQueryLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if a.db == nil || !a.cfg.Database.Enabled {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"logs": []any{}, "total": 0, "limit": 50, "offset": 0,
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error":     "query_history_unavailable",
+			"available": false,
+			"message":   queryHistoryUnavailable,
+			"logs":      []any{}, "total": 0, "limit": 50, "offset": 0,
 			"enabled": a.cfg.Logging.QueryLogEnabled,
-			"note":    "PostgreSQL required for query logs",
 		})
 		return
 	}
@@ -2059,17 +1927,6 @@ func (a *API) handleQueryLogs(w http.ResponseWriter, r *http.Request) {
 		"dns_dataplane": config.DNSDataplane(),
 		"sample_rate":   a.cfg.Logging.QueryLogSampleRate,
 	}
-	if config.UnboundDataplane() {
-		out["source"] = "unbound_sample"
-		out["unbound_querylog"] = config.UnboundQueryLogAllowed()
-		if a.cfg.Logging.QueryLogEnabled && config.UnboundQueryLogAllowed() {
-			out["note"] = "Unbound dataplane: sampled query lines (default ~5%, max ~40/s) from Unbound logfile -> Postgres. protocol=unbound; rcode may be -1."
-		} else if config.UnboundQueryLogAllowed() {
-			out["note"] = "Unbound query sampling is available — enable Query log in Settings to write samples to Postgres."
-		} else {
-			out["note"] = "Unbound querylog disabled (POWERSVX_UNBOUND_QUERYLOG=0)."
-		}
-	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -2107,10 +1964,8 @@ func (a *API) handleBackup(w http.ResponseWriter, r *http.Request) {
 		for _, z := range zones {
 			recs, _ := a.auth.GetRecords(z.Name)
 			entry := map[string]any{"name": z.Name, "records": recordsDTO(recs)}
-			if a.db != nil && a.cfg.Database.Enabled {
-				if meta, err := a.db.GetZoneMeta(r.Context(), z.Name); err == nil {
-					entry["meta"] = meta
-				}
+			if meta, ok := a.auth.GetZoneMeta(z.Name); ok {
+				entry["meta"] = zoneMetaPayload(z.Name, meta)
 			}
 			if sig := a.srv.Signer(); sig != nil && sig.Enabled(z.Name) {
 				entry["dnssec_signing"] = true
@@ -2140,27 +1995,16 @@ func (a *API) handleBackup(w http.ResponseWriter, r *http.Request) {
 			if z.Name == "" {
 				continue
 			}
-			if a.db != nil && a.cfg.Database.Enabled {
-				if _, err := a.db.CreateZone(r.Context(), z.Name); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				for _, rec := range z.Records {
-					if err := a.db.AddRecord(r.Context(), z.Name, rec.toRecord()); err != nil {
-						http.Error(w, err.Error(), http.StatusInternalServerError)
-						return
-					}
-				}
-			} else {
-				a.auth.UpsertZone(z.Name)
-				for _, rec := range z.Records {
-					a.auth.AddRecord(z.Name, rec.toRecord())
-				}
+			a.auth.CreateZone(z.Name)
+			recs := make([]authoritative.Record, 0, len(z.Records))
+			for _, rec := range z.Records {
+				recs = append(recs, rec.toRecord())
+			}
+			a.auth.AddRecords(z.Name, recs)
+			if a.persistFailed(w) {
+				return
 			}
 			imported++
-		}
-		if a.db != nil && a.cfg.Database.Enabled {
-			_ = a.reloadZones()
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"imported_zones": imported})
 	default:
@@ -2226,23 +2070,6 @@ func writeSSE(w http.ResponseWriter, ev eventlog.Event) error {
 	return err
 }
 
-func (a *API) reloadZones() error {
-	if a.reloadFn != nil {
-		return a.reloadFn()
-	}
-	if a.db == nil || !a.cfg.Database.Enabled {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	zones, err := a.db.LoadZones(ctx)
-	if err != nil {
-		return err
-	}
-	a.auth.Replace(zones)
-	return nil
-}
-
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -2256,4 +2083,33 @@ func LoadWebDir(dir string) (fs.FS, error) {
 		return nil, err
 	}
 	return os.DirFS(dir), nil
+}
+
+// persistFailed answers 500 when the last zone file write failed.
+func (a *API) persistFailed(w http.ResponseWriter) bool {
+	if err := a.auth.PersistError(); err != nil {
+		http.Error(w, "zone file write failed: "+err.Error(), http.StatusInternalServerError)
+		return true
+	}
+	return false
+}
+
+func zoneMetaPayload(zone string, m authoritative.ZoneMeta) map[string]any {
+	return map[string]any{
+		"name": config.NormalizeName(zone), "type": m.Type, "dnssec_enabled": m.DNSSECEnabled,
+		"soa_serial": m.SOASerial, "soa_refresh": m.SOARefresh, "soa_retry": m.SOARetry,
+		"soa_expire": m.SOAExpire, "soa_minimum": m.SOAMinimum,
+	}
+}
+
+func validateMetaPatch(serial *int64, refresh, retry, expire, minimum *int) string {
+	if serial != nil && (*serial < 0 || *serial > 4294967295) {
+		return "soa_serial out of range"
+	}
+	for _, v := range []*int{refresh, retry, expire, minimum} {
+		if v != nil && (*v < 0 || *v > 2147483647) {
+			return "soa timer out of range"
+		}
+	}
+	return ""
 }

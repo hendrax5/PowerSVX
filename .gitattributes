@@ -2,3 +2,7 @@
 
 deploy/docker/*.sh text eol=lf
 deploy/linux/*.sh text eol=lf
+scripts/bench/*.sh text eol=lf
+scripts/bench/testdata/* text eol=lf
+deploy/linux/testdata/** text eol=lf
+internal/dnstap/testdata/* -text

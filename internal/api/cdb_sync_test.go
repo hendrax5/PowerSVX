@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"os"
@@ -82,7 +83,7 @@ func TestMultiPolicyCDBPreservesUnchangedAXFRAndHostsFeeds(t *testing.T) {
 		},
 	}
 
-	n, err := a.pullAndWriteBlockCDB(policies)
+	n, err := a.pullAndWriteBlockCDB(context.Background(), policies)
 	if err != nil {
 		t.Fatalf("pullAndWriteBlockCDB failed: %v", err)
 	}

@@ -11,6 +11,7 @@ Never hardcodes passwords.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import sys
 from pathlib import Path
@@ -24,6 +25,21 @@ from ops.vault import find_host, host_ssh, load_vault  # noqa: E402
 
 INV_PATH = ROOT / "ops" / "inventory.local.yaml"
 
+WATCHTOWER_HEALTH = ROOT / "deploy" / "linux" / "watchtower-health.sh"
+WATCHTOWER_LABEL = "Watchtower auto-update"
+
+
+def watchtower_command() -> str:
+    """The health check script itself, run on the node: it never needs a checkout there."""
+    try:
+        script = WATCHTOWER_HEALTH.read_text(encoding="utf-8").replace("\r\n", "\n")
+        # base64 keeps the multi-line script intact through the shell quoting in probe_single_host.
+        payload = base64.b64encode(script.encode("utf-8")).decode("ascii")
+        return f"echo {payload} | base64 -d | sh"
+    except OSError:
+        return "echo 'WARNING: watchtower-health.sh missing from the local checkout'"
+
+
 DIAGNOSTIC_COMMANDS = [
     ("Docker Containers", "docker ps --format 'table {{.Names}}\t{{.Status}}' | head -12"),
     ("Listening Sockets (:53 / :5353)", "ss -ulnp | grep -E ':53 |:5353 ' | head -8"),
@@ -31,24 +47,28 @@ DIAGNOSTIC_COMMANDS = [
     ("DNS Dig Public (google.com)", "dig @127.0.0.1 -p 53 google.com +time=2 +tries=1 | tail -6"),
     ("DNS Dig Whitelist (bca.co.id)", "dig @127.0.0.1 -p 53 bca.co.id +short +time=2 | head -2"),
     ("DNS Dig Blocked Test", "dig @127.0.0.1 -p 53 gacor80819.bocoranmantap.cfd +short +time=2 | head -2"),
+    ("Configured Dataplane mode", "docker inspect powersvx --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep -E '^POWERSVX_DNS_DATAPLANE=' || echo 'POWERSVX_DNS_DATAPLANE unset (host default: dnsdist)'"),
     ("PowerSVX API Health", "curl -sS -m 5 http://127.0.0.1:5380/api/v1/health 2>/dev/null || echo 'API unreachable'"),
-    ("dnsdist Live Stats", "curl -sS -m 3 -u dontcare:powersvx 'http://127.0.0.1:8083/jsonstat?command=stats' 2>/dev/null | python3 -c \"import sys,json;d=json.load(sys.stdin);ks=['queries','cache-hits','cache-misses','self-answered','downstream-timeouts','servfail-responses','acl-drops','rule-drop','uptime'];print({k:d.get(k) for k in ks})\" 2>/dev/null || echo 'dnsdist stats unreachable'"),
+    ("dnsdist Live Stats", "curl -sS -m 3 -u \"dontcare:$(docker inspect powersvx --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | sed -n 's/^POWERSVX_DNSDIST_WEB_PASSWORD=//p')\" 'http://127.0.0.1:8083/jsonstat?command=stats' 2>/dev/null | python3 -c \"import sys,json;d=json.load(sys.stdin);ks=['queries','cache-hits','cache-misses','self-answered','downstream-timeouts','servfail-responses','acl-drops','rule-drop','uptime'];print({k:d.get(k) for k in ks})\" 2>/dev/null || echo 'dnsdist stats unreachable'"),
     ("Conntrack Limits", "sysctl net.netfilter.nf_conntrack_count net.netfilter.nf_conntrack_max 2>/dev/null || true"),
     ("Blocklist Meta", "python3 -c \"import json;print(open('/home/hendra/powersvx/data/blocklist/blocklist.meta.json').read())\" 2>/dev/null || cat data/blocklist/blocklist.meta.json 2>/dev/null || echo 'meta missing'"),
+    (WATCHTOWER_LABEL, watchtower_command()),
 ]
 
 
-def probe_single_host(host_row: dict, vault: dict):
+def probe_single_host(host_row: dict, vault: dict) -> bool:
+    """Probe one node. Returns True when its Watchtower check printed a WARNING."""
     name = host_row.get("name", "unknown")
     ip = host_row.get("ip")
+    watchtower_warned = False
     if not ip:
         print(f"[-] Host {name} has no IP configured, skipping.")
-        return
+        return watchtower_warned
 
     user, password = host_ssh(host_row, vault)
     if not password:
         print(f"[-] Host {name} ({ip}): No SSH password or vault credential found.")
-        return
+        return watchtower_warned
 
     port = int(host_row.get("ssh_port") or 22)
     print(f"\n{'='*30} PROBING {name.upper()} ({ip}) {'='*30}")
@@ -66,10 +86,13 @@ def probe_single_host(host_row: dict, vault: dict):
             stdin.flush()
             output = stdout.read().decode("utf-8", "replace").replace(password, "***").strip()
             print(output if output else "(no output)")
+            if label == WATCHTOWER_LABEL and "WARNING" in output:
+                watchtower_warned = True
     except Exception as exc:
         print(f"[!] Error probing {name} ({ip}): {exc}")
     finally:
         client.close()
+    return watchtower_warned
 
 
 def main():
@@ -88,8 +111,12 @@ def main():
     if args.target.lower() == "all":
         prod_hosts = [h for h in hosts if h.get("role") == "production"]
         print(f"Probing all {len(prod_hosts)} production hosts...")
-        for h in prod_hosts:
-            probe_single_host(h, vault)
+        never_update = [h.get("name", "unknown") for h in prod_hosts if probe_single_host(h, vault)]
+        print(f"\n{'='*30} WATCHTOWER SUMMARY {'='*30}")
+        if never_update:
+            print(f"WARNING: {len(never_update)} node(s) report that Watchtower cannot update them: {', '.join(never_update)}")
+        else:
+            print("No node reported a Watchtower registry problem.")
     else:
         try:
             h = find_host(args.target)
