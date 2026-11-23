@@ -74,10 +74,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/hendrax5/powersvx
+          # `latest` is what Watchtower pulls. A new major version (breaking changes, see its UPGRADE note) must not roll out by itself: only tags of the 1.x line move it; for 2.x and later run this workflow by hand with promote_latest once the nodes are migrated.
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.promote_latest) }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v1.') || (github.event_name == 'workflow_dispatch' && inputs.promote_latest) }}
             type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
             type=sha,prefix=sha-
 

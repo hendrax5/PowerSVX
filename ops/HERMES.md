@@ -49,7 +49,7 @@ Default target if unspecified: **isehat2 / 103.172.70.254**.
    eval "$(deploy/linux/calc-mem-env.sh)"
    export GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
    export BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-   export POWERSVX_VERSION=1.7.2 GOGC=50
+   export POWERSVX_VERSION=2.0.0 GOGC=50
    docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml build powersvx
    docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml \
      up -d --no-deps --force-recreate unbound dnsdist powersvx node-exporter prometheus grafana
