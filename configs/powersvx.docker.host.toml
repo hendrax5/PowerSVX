@@ -15,6 +15,10 @@ dot_port = 0
 doh_port = 0
 doq_port = 0
 workers = 2
+# "optional": a PROXY protocol v2 header from the Dataplane gives the real client address, a plain query
+# (a node whose dnsdist is not updated yet) is still answered. "required" refuses plain queries,
+# "off" ignores headers. Match POWERSVX_AUTH_PROXY_PROTOCOL of gen-dnsdist-conf.sh.
+proxy_protocol = "optional"
 tproxy = false
 
 [server.tls]
