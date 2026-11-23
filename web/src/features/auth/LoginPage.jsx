@@ -80,7 +80,7 @@ export default function LoginPage() {
             DNS control plane for resolve, filter, zones, and live ops.
           </p>
         </div>
-        <p className="text-xs text-[var(--muted)] mono">{release || 'recursive · rpz · axfr · observe'}</p>
+        <p className="text-xs text-[var(--muted)] mono">{release || 'dnsdist · unbound · zones · filter'}</p>
       </div>
       <div className="login-form-pane">
         <form onSubmit={submit} className="login-card space-y-5 reveal">

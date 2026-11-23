@@ -45,9 +45,6 @@ services:
       - "0.0.0.0:9100:9100"
     cap_add:
       - NET_BIND_SERVICE
-      # For [server] tproxy = true (Linux IP_TRANSPARENT), also add NET_ADMIN
-      # and prefer network_mode: host — published ports are not enough for TPROXY.
-      # - NET_ADMIN
     depends_on:
       postgres:
         condition: service_healthy

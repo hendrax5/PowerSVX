@@ -11,6 +11,9 @@ cd "$ROOT"
 # Stop before touching anything when this node is on a Dataplane mode being removed.
 sh "$ROOT/deploy/linux/dataplane-guard.sh" "$ROOT" || exit 1
 
+# Only warns; never removes anything and never fails the update.
+sh "$ROOT/deploy/linux/tproxy-leftover.sh" || true
+
 echo "==> disk free"
 df -h / | tail -1
 

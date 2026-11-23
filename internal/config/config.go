@@ -58,10 +58,6 @@ type ServerConfig struct {
 	// none, "required" takes only queries that carry one, "off" never reads one. A header is
 	// believed only from a loopback peer. See docs/adr/0003.
 	ProxyProtocol string `toml:"proxy_protocol"`
-	// TProxy enables IP_TRANSPARENT on UDP/TCP DNS sockets (Linux only).
-	// Needed for nftables/iptables TPROXY where the packet destination stays
-	// non-local (e.g. 8.8.8.8). Not required for MikroTik/iptables DNAT.
-	TProxy bool      `toml:"tproxy"`
 }
 
 type DatabaseConfig struct {

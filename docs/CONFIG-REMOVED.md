@@ -12,6 +12,7 @@ Delete the keys when convenient; nothing reads them.
 | `[cache]` (every key: `type`, `path`, `max_size_mb`, `ttl_seconds`, `min_ttl`, `negative_ttl`, `serve_stale`, `stale_ttl`, `prefetch_pct`) | Go two-tier answer cache | dnsdist and Unbound cache; tune them in their own configuration |
 | `server.dot_port`, `server.doh_port`, `server.doq_port` | Go DoT, DoH and DoQ listeners | dnsdist terminates encrypted transports |
 | `[server.tls]` (`enabled`, `cert_file`, `key_file`) | certificate for those listeners | dnsdist reads its own certificate; ACME settings stay under `[acme]` |
+| `server.tproxy` | `IP_TRANSPARENT` sockets for a kernel TPROXY intercept | none; the listener is gone. A TPROXY nftables table and fwmark route installed earlier stay on the host until removed: see "Leftover TPROXY intercept" in `docs/PRODUCTION.md` |
 | `resolver.root_hints_file`, `resolver.qname_minimization`, `resolver.timeout_ms`, `resolver.fallback_timeout_ms`, `resolver.max_inflight` | Go recursive resolver | Unbound |
 | `resolver.ecs_prefix_v4`, `resolver.ecs_prefix_v6` | ECS prefix of the Go resolver | dnsdist |
 | `logging.query_log_destination` | where the Go handler wrote query logs | the Observability Profile reads dnsdist |

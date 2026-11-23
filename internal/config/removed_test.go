@@ -57,3 +57,21 @@ hot_cache_max = 1000
 		t.Fatalf("kept keys lost: %+v", cfg.Server)
 	}
 }
+
+func TestLoadWarnsOnceForServerTProxy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tproxy.toml")
+	body := "[server]\nudp_port = 5353\ntproxy = true\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("a file with server.tproxy must still load: %v", err)
+	}
+	if want := []string{"server.tproxy"}; !reflect.DeepEqual(cfg.RemovedKeys, want) {
+		t.Fatalf("removed keys = %v, want %v", cfg.RemovedKeys, want)
+	}
+	if cfg.Server.UDPPort != 5353 {
+		t.Fatalf("kept keys lost: %+v", cfg.Server)
+	}
+}

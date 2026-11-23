@@ -8,8 +8,6 @@ dot_port = 853
 doh_port = 443
 doq_port = 784
 workers = 0
-# Linux TPROXY: set true + host network + CAP_NET_ADMIN (see README). Not needed for DNAT/dstnat.
-tproxy = false
 
 [server.tls]
 enabled = true

@@ -618,27 +618,6 @@ func (s *Server) QueryRing() *queryring.Ring      { return s.ring }
 func (s *Server) Allowlist() *allowlist.List      { return s.allow }
 func (s *Server) Denylist() *denylist.List             { return s.deny }
 
-func (s *Server) BanIP(ip string, ttl time.Duration) error {
-	if s == nil || s.aclBan == nil {
-		return fmt.Errorf("aclban guard unavailable")
-	}
-	return s.aclBan.Ban(ip, ttl)
-}
-
-func (s *Server) UnbanIP(ip string) bool {
-	if s == nil || s.aclBan == nil {
-		return false
-	}
-	return s.aclBan.Unban(ip)
-}
-
-func (s *Server) ACLBanList() []aclban.BanEntry {
-	if s == nil || s.aclBan == nil {
-		return nil
-	}
-	return s.aclBan.BanList()
-}
-
 func (s *Server) RateLimitConfig() ratelimit.Config {
 	if s == nil || s.limiter == nil {
 		if s != nil && s.cfg != nil {

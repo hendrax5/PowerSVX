@@ -51,6 +51,8 @@ func TestPayloadsCarryNothingForRemovedFeatures(t *testing.T) {
 		},
 		"/api/v1/settings":    {"tls_min_version"},
 		"/api/v1/cache/stats": {"go", "dataplane"},
+		// The Go limiter and ban guard no longer see queries; these lists describe nothing.
+		"/api/v1/security/blocks": {"acl_bans", "ratelimit_blocked"},
 	}
 	for path, keys := range gone {
 		out := getJSON(t, h, path)
