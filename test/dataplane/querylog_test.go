@@ -104,6 +104,7 @@ func startQueryLogDataplane(t *testing.T, authProxy string) *qlRig {
 	genEnv := []string{
 		"POWERSVX_DNS_DATAPLANE=dnsdist",
 		"POWERSVX_DNSDIST_IPV6=0",
+		"POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1",
 		"POWERSVX_HOST_CPUS=2",
 		"POWERSVX_HOST_MEM_MB=2048",
 		"POWERSVX_QUERY_LOG_DNSTAP=1",
@@ -425,7 +426,7 @@ func TestDefaultDnsdistConfigHasNoQueryLogHook(t *testing.T) {
 	generate := func(extra ...string) string {
 		work := t.TempDir()
 		copyFile(t, filepath.Join(root, "deploy", "linux", "gen-dnsdist-conf.sh"), filepath.Join(work, "deploy", "linux", "gen-dnsdist-conf.sh"))
-		run(t, work, append([]string{"POWERSVX_DNSDIST_IPV6=0", "POWERSVX_HOST_CPUS=2", "POWERSVX_HOST_MEM_MB=2048"}, extra...), "sh", "deploy/linux/gen-dnsdist-conf.sh", "out.conf")
+		run(t, work, append([]string{"POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1", "POWERSVX_DNSDIST_IPV6=0", "POWERSVX_HOST_CPUS=2", "POWERSVX_HOST_MEM_MB=2048"}, extra...), "sh", "deploy/linux/gen-dnsdist-conf.sh", "out.conf")
 		b, err := os.ReadFile(filepath.Join(work, "out.conf"))
 		if err != nil {
 			t.Fatal(err)

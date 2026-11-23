@@ -30,8 +30,9 @@ services:
       - POWERSVX_DNSDIST_KEY=${POWERSVX_DNSDIST_KEY:-powersvx-dnsdist-console}
       - POWERSVX_DNSDIST_CONTROL=127.0.0.1:5199
       - POWERSVX_DNSDIST_WEB=http://127.0.0.1:8083
-      - POWERSVX_DNSDIST_WEB_PASSWORD=${POWERSVX_DNSDIST_WEB_PASSWORD:-powersvx}
-      - POWERSVX_DNSDIST_API_KEY=${POWERSVX_DNSDIST_API_KEY:-powersvx-api}
+      # No fixed fallback: an unset value is empty and the dnsdist web calls fail with 401, they never fall back to a public default. deploy/linux/ensure-dnsdist-credentials.sh creates the values in .env.
+      - POWERSVX_DNSDIST_WEB_PASSWORD=${POWERSVX_DNSDIST_WEB_PASSWORD:-}
+      - POWERSVX_DNSDIST_API_KEY=${POWERSVX_DNSDIST_API_KEY:-}
       - POWERSVX_UNBOUND_CONTROL=127.0.0.1:8953
       - POWERSVX_CONNTRACK_SYS_DIR=/powersvx-sys
     depends_on:

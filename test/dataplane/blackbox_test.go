@@ -118,6 +118,7 @@ func startDataplane(t *testing.T, tuning ...string) *dataplane {
 	genEnv := []string{
 		"POWERSVX_DNS_DATAPLANE=dnsdist",
 		"POWERSVX_DNSDIST_IPV6=0",
+		"POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1",
 		"POWERSVX_HOST_CPUS=2",
 		"POWERSVX_HOST_MEM_MB=2048",
 	}

@@ -46,13 +46,7 @@ func (a *API) StartDNSDistStatsBridge() {
 		user = "dontcare"
 	}
 	pass := strings.TrimSpace(os.Getenv("POWERSVX_DNSDIST_WEB_PASSWORD"))
-	if pass == "" {
-		pass = "powersvx"
-	}
 	apiKey := strings.TrimSpace(os.Getenv("POWERSVX_DNSDIST_API_KEY"))
-	if apiKey == "" {
-		apiKey = "powersvx-api"
-	}
 	client := &http.Client{Timeout: 2 * time.Second}
 	go func() {
 		var (

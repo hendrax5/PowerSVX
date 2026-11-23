@@ -54,7 +54,7 @@ func golden(t *testing.T, kind, cpus, mem string) string {
 //	  POWERSVX_DNS_DATAPLANE=dnsdist POWERSVX_DNSDIST_IPV6=1 POWERSVX_HOST_CPUS=$1 POWERSVX_HOST_MEM_MB=$2 \
 //	    sh deploy/linux/gen-unbound-conf.sh deploy/linux/testdata/default/unbound-$1cpu-$2mb.conf; \
 //	  POWERSVX_DNS_DATAPLANE=dnsdist POWERSVX_DNSDIST_IPV6=1 POWERSVX_HOST_CPUS=$1 POWERSVX_HOST_MEM_MB=$2 \
-//	    sh deploy/linux/gen-dnsdist-conf.sh deploy/linux/testdata/default/dnsdist-$1cpu-$2mb.conf; \
+//	    POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1 sh deploy/linux/gen-dnsdist-conf.sh deploy/linux/testdata/default/dnsdist-$1cpu-$2mb.conf; \
 //	done
 //
 // (The generators also create data/ under the repository root; delete it afterwards.) Never

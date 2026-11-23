@@ -111,6 +111,29 @@ Two settings meet here: `POWERSVX_AUTH_PROXY_PROTOCOL` in `gen-dnsdist-conf.sh` 
 
 Order in `apply-update.sh`: it generates the dnsdist configuration into `configs/dnsdist/dnsdist.conf.new`, builds and recreates the Control Plane, waits until `/api/v1/health` answers (up to 120 s), and only then moves the new file into place and recreates `unbound` and `dnsdist`. dnsdist therefore never starts sending headers to a Control Plane that cannot read them. If the Control Plane does not come up, the script stops before replacing the dnsdist configuration and leaves `dnsdist.conf.new` for you. Watchtower replaces only the Control Plane image, so it is the same safe order. `bootstrap-node.sh` on a new node generates both sides from this version.
 
+## dnsdist web password and API key (ticket #56)
+
+dnsdist serves a web server and API on `127.0.0.1:8083`, protected by a password and an API key. The Control Plane reads statistics and issues runtime commands through it. Both values live in the node's `.env` as `POWERSVX_DNSDIST_WEB_PASSWORD` and `POWERSVX_DNSDIST_API_KEY` (mode 600). There is no built-in default: `gen-dnsdist-conf.sh` refuses to write a configuration without them, unless `POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1` is set (local development and tests only), and the compose file passes an unset value to the Control Plane as empty, never as a default.
+
+`bootstrap-node.sh` and `apply-update.sh` run `deploy/linux/ensure-dnsdist-credentials.sh`, which creates random values (`openssl rand`, else `/dev/urandom`) for whichever of the two is missing or empty in `.env`, keeps the file at mode 600, leaves present values alone and never prints a value.
+
+| State of the node | What happens |
+|---|---|
+| `.env` has both values | Nothing is created. The generator writes them into the dnsdist configuration, the Control Plane gets them from compose. They agree. |
+| `.env` lacks them (node set up by hand, or `.env` edited), running dnsdist still uses the old public defaults | `apply-update.sh` creates new values and generates `dnsdist.conf.new` with them. The Control Plane is recreated first (as for PROXY protocol, above) and from then on holds the new values; dnsdist is recreated with the new configuration a few seconds later, after the health wait. In that window the Control Plane's statistics and runtime-control calls to dnsdist are refused (401) and recover on their own. DNS answering is not affected. |
+| The Control Plane does not become healthy within 120 s | `apply-update.sh` stops before replacing the dnsdist configuration (see above). The Control Plane already holds the new values, so the same refusals persist until you move `configs/dnsdist/dnsdist.conf.new` into place and recreate dnsdist. |
+| Generator run by hand without the values in the environment | It fails with a message. Export the two values from `.env` first (or run `apply-update.sh`). |
+
+Rotating the values (every command from the repository root on the node; nothing prints a secret):
+
+1. Remove both lines: `sed -i '/^POWERSVX_DNSDIST_WEB_PASSWORD=/d;/^POWERSVX_DNSDIST_API_KEY=/d' .env`
+2. Create new values: `sh deploy/linux/ensure-dnsdist-credentials.sh .env` (prints only `created ...` lines).
+3. Regenerate the configuration from the new values: `set -a; . ./.env; set +a; bash deploy/linux/gen-dnsdist-conf.sh configs/dnsdist/dnsdist.conf.new` (source `.env` only if every line in it is shell-safe; otherwise export the two variables as `apply-update.sh` does).
+4. Recreate the Control Plane first, so it holds the new values: `docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --no-deps --force-recreate powersvx`, and wait for `curl -fsS http://127.0.0.1:5380/api/v1/health`.
+5. Move the configuration into place and recreate dnsdist: `mv -f configs/dnsdist/dnsdist.conf.new configs/dnsdist/dnsdist.conf`, then `docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d --no-deps --force-recreate dnsdist`. Only dnsdist and the Control Plane restart; between steps 4 and 5 the Control Plane's dnsdist calls are refused, as in the table. Port 53 is interrupted only for the dnsdist recreation. Add the Core Profile overlay `-f deploy/linux/docker-compose.core.yml` to both compose commands on a Core Profile node.
+
+The simplest way is `bash deploy/linux/apply-update.sh` after step 1: it does steps 2 to 5 in this order.
+
 ## Query ACL
 - `[acl] allow_query` — CIDRs/IPs allowed to query DNS. **Empty = allow all.**
 - `[acl] deny_query` — always refused (wins over allow).

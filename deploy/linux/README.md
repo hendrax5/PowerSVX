@@ -312,6 +312,8 @@ POWERSVX_QUERY_LOG_DNSTAP=1 bash deploy/linux/gen-dnsdist-conf.sh
 docker compose -f docker-compose.yml -f deploy/linux/docker-compose.host.yml up -d dnsdist
 ```
 
+The generator needs `POWERSVX_DNSDIST_WEB_PASSWORD` and `POWERSVX_DNSDIST_API_KEY` in its environment (the values in `.env`; `apply-update.sh` exports them for you) and refuses to run without them. On a throwaway benchmark or development machine you can set `POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1` instead. See `docs/PRODUCTION.md`, "dnsdist web password and API key".
+
 `apply-update.sh` and `bootstrap-node.sh` regenerate the file, so export `POWERSVX_QUERY_LOG_DNSTAP=1` in the environment they run in to keep it on.
 
 Then turn it on in the console: **Settings → Query log**, enable it and set the sample rate (0–1). `query_log_enabled` off, or a sample rate of 0, means no sampling. The Control Plane writes the rate to `data/dnstap/rate`, and dnsdist picks it up within about a second, with no restart. At rate 0 dnsdist has no sampling rule installed, so nothing is added to the query path; the generated configuration only holds an idle connection to the Control Plane and reads the rate file once a second.

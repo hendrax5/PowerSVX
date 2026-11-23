@@ -58,6 +58,16 @@ export POWERSVX_DNS_DATAPLANE="${POWERSVX_DNS_DATAPLANE:-dnsdist}"
 bash "$ROOT/deploy/linux/gen-unbound-conf.sh" "$ROOT/configs/unbound/unbound.conf"
 if [ "$POWERSVX_DNS_DATAPLANE" = "dnsdist" ] || [ "$POWERSVX_DNS_DATAPLANE" = "cdb" ]; then
   chmod +x "$ROOT/deploy/linux/gen-dnsdist-conf.sh" || true
+  # The dnsdist web password and API key live in .env: created there only when missing (never
+  # printed), then exported so the generator writes what compose hands to the Control Plane.
+  # A node that still has the old public defaults gets new values here; the order below
+  # (Control Plane first, then the dnsdist configuration) is unchanged, see docs/PRODUCTION.md.
+  sh "$ROOT/deploy/linux/ensure-dnsdist-credentials.sh" "$ROOT/.env"
+  for k in POWERSVX_DNSDIST_WEB_PASSWORD POWERSVX_DNSDIST_API_KEY; do
+    if [ -z "${!k:-}" ]; then
+      export "$k=$(grep -E "^$k=" "$ROOT/.env" | tail -n1 | cut -d= -f2- | tr -d "\"'\r")"
+    fi
+  done
   # Written beside the live file and moved into place only after the new Control Plane is up
   # (see below): a dnsdist that sends PROXY headers must never meet a Control Plane that
   # does not understand them.
@@ -123,6 +133,7 @@ if [ "$POWERSVX_DNS_DATAPLANE" = "dnsdist" ] || [ "$POWERSVX_DNS_DATAPLANE" = "c
   if [ "$cp_up" != 1 ]; then
     echo "WARNING: the Control Plane did not answer /api/v1/health within 120 s; the dnsdist configuration was NOT replaced." >&2
     echo "The new configuration is configs/dnsdist/dnsdist.conf.new. Move it into place and recreate dnsdist once the Control Plane is healthy." >&2
+    echo "The Control Plane already uses the dnsdist web credentials from .env, so until dnsdist is recreated its statistics and runtime-control calls are refused (DNS answering is not affected)." >&2
     exit 1
   fi
   # 2. Then the dnsdist configuration and the Dataplane containers.

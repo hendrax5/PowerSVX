@@ -25,7 +25,7 @@ func generatedAuthLine(t *testing.T, root string, env ...string) string {
 	t.Helper()
 	work := t.TempDir()
 	copyFile(t, filepath.Join(root, "deploy", "linux", "gen-dnsdist-conf.sh"), filepath.Join(work, "deploy", "linux", "gen-dnsdist-conf.sh"), 0o755)
-	run(t, work, append([]string{"POWERSVX_DNS_DATAPLANE=dnsdist", "POWERSVX_DNSDIST_IPV6=0", "POWERSVX_HOST_CPUS=2", "POWERSVX_HOST_MEM_MB=2048"}, env...),
+	run(t, work, append([]string{"POWERSVX_DNS_DATAPLANE=dnsdist", "POWERSVX_ALLOW_DEFAULT_DNSDIST_CREDENTIALS=1", "POWERSVX_DNSDIST_IPV6=0", "POWERSVX_HOST_CPUS=2", "POWERSVX_HOST_MEM_MB=2048"}, env...),
 		"sh", "deploy/linux/gen-dnsdist-conf.sh")
 	b, err := os.ReadFile(filepath.Join(work, "configs", "dnsdist", "dnsdist.conf"))
 	if err != nil {
