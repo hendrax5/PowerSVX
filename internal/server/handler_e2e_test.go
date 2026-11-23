@@ -1130,10 +1130,10 @@ func TestGeoAnswersTheRecordForTheClientsCountryAndFallsBackToDefault(t *testing
 	wantA(t, h.ask("198.51.100.20", "cdn.example.com.", dns.TypeA), "192.0.2.100")
 }
 
-func TestGeoAnswersStayWithTheClientAddressWhenTheQueryCarriesAClientSubnet(t *testing.T) {
-	// Current behaviour: the location of an authoritative answer is chosen from
-	// the address of the client that sent the query. The EDNS client subnet in the
-	// query is not used for steering; it is ignored by the handler.
+func TestGeoAnswersStayWithTheClientAddressWhenTheQueryDidNotComeFromTheDataplane(t *testing.T) {
+	// A source that is not the loopback Dataplane is not trusted with a client subnet: the
+	// location of the answer is chosen from the address that sent the query. (From the
+	// Dataplane the subnet steers GeoDNS: handler_proxy_e2e_test.go.)
 	h := newHarness(t, withECS(), withGeo(map[string]string{"198.51.100.20": "ID", "198.51.100.30": "US"}))
 	h.addZone(zoneName,
 		authoritative.Record{Name: "cdn.example.com.", Type: dns.TypeA, TTL: 300, Content: "192.0.2.100", GeoTag: "ID"},

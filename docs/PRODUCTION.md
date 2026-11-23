@@ -15,7 +15,7 @@ On production hosts (`POWERSVX_DNS_DATAPLANE=dnsdist`, default):
 - **CDB refresh:** RFC 1982 serial comparison on SOA check first (skip unchanged policies while preserving their entries in the merged CDB); if serial advanced, stream AXFR or apply incremental **IXFR** delta with automatic AXFR fallback. Serials in `data/rpz-axfr-state.json`. `dnsdist` forwards `OpcodeNotify` directly to the Auth Backend (`127.0.0.1:5354`).
 - Spoof blocked A → `139.255.196.196` (Komdigi sinkhole). Regen conf: `deploy/linux/gen-dnsdist-conf.sh`.
 - **The Go process never answers public queries.** The Auth Backend binds loopback (`[server] bind_address = "127.0.0.1"`, port `5354`) and answers only Authoritative Zones and Secondary Zones; a name outside every hosted zone gets REFUSED, and so does any query whose source address is not loopback. Recursion, the resolver cache, the Filter check, rate limits, bans and query access rules run in dnsdist and Unbound only; the Control Plane stores those rules and pushes them. See `docs/adr/0001-dnsdist-is-the-only-dataplane.md`.
-- **Source addresses behind the Dataplane.** Other hosts can no longer reach the Auth Backend port directly. Queries, NOTIFY, zone transfers and updates arrive through dnsdist, so the handler sees the Dataplane's loopback address as the source. IP allow lists (secondary master list, `[transfer] allow_from`, `[update] allow_from`, Kominfo target addresses) and split-horizon or GeoDNS selection therefore do not distinguish clients; TSIG still gates transfers, updates and NOTIFY. Client-aware handling behind the Dataplane is tracked in ticket #36.
+- **Source addresses behind the Dataplane.** Other hosts cannot reach the Auth Backend port directly: queries, NOTIFY, zone transfers and updates arrive through dnsdist. dnsdist passes the real client address to the Auth Backend in a PROXY protocol v2 header, which is accepted only from a loopback peer, so split-horizon views, GeoDNS, the secondary master list, `[transfer] allow_from`, `[update] allow_from`, Kominfo target addresses and the query log use the client. See "PROXY protocol: updating an existing node" below and `docs/adr/0003-proxy-protocol-for-the-client-address.md`.
 
 ### Removed: Unbound on the public port
 
@@ -71,6 +71,19 @@ If `list_forwards` cannot connect, the control interface is disabled: Unbound is
 4. Verify: `unbound-control list_forwards` shows no `.` entry and `bash deploy/linux/dns-ready.sh -r` exits 0.
 
 **Why a node can have the control interface disabled.** `deploy/linux/gen-unbound-conf.sh` has always written `control-enable: yes` on `127.0.0.1:8953`. Two other files in the field say `control-enable: no`: the sample `configs/unbound/unbound.conf` that used to be committed (it also lacked the `include:` lines for the Control Plane's runtime files), and the default configuration the `mvance/unbound` image writes when no `unbound.conf` is mounted. A node runs one of them when the generated file was overwritten or never produced before the container started (for example `git checkout` or a tarball restoring the sample after generation, or `docker compose up` before `gen-unbound-conf.sh`). We could not establish which of these happened on the two lab nodes that showed it. The sample now matches the generator, and `check-unbound-conf.sh` refuses to continue on a configuration with the control interface disabled.
+
+## PROXY protocol: updating an existing node
+
+Two settings meet here: `POWERSVX_AUTH_PROXY_PROTOCOL` in `gen-dnsdist-conf.sh` (default `1`: dnsdist sends a PROXY v2 header to the Auth Backend, adds no ECS, and has no packet cache for hosted zones) and `[server] proxy_protocol` in the Control Plane TOML (`optional` by default, also `required` and `off`).
+
+| State of the node | What happens |
+|---|---|
+| New Control Plane image, dnsdist configuration generated before this change | Works. dnsdist sends plain queries, the Control Plane accepts them in `optional` mode. Every client still appears as `127.0.0.1`: views, GeoDNS and the allow lists do not distinguish clients, as before. |
+| Dnsdist configuration regenerated and dnsdist recreated, new Control Plane | Real client addresses everywhere. |
+| New Control Plane, `proxy_protocol = "required"`, dnsdist configuration not yet regenerated | Hosted zones stop answering: a plain query is refused in `required` mode. Switch to `required` only after the regenerated dnsdist is running. A plain loopback query is accepted only in `optional` mode. |
+| Control Plane rolled back to an image without PROXY support while dnsdist sends headers | Every query for a hosted zone fails. Set `POWERSVX_AUTH_PROXY_PROTOCOL=0`, run `bash deploy/linux/gen-dnsdist-conf.sh`, recreate dnsdist, then roll back. |
+
+Order in `apply-update.sh`: it generates the dnsdist configuration into `configs/dnsdist/dnsdist.conf.new`, builds and recreates the Control Plane, waits until `/api/v1/health` answers (up to 120 s), and only then moves the new file into place and recreates `unbound` and `dnsdist`. dnsdist therefore never starts sending headers to a Control Plane that cannot read them. If the Control Plane does not come up, the script stops before replacing the dnsdist configuration and leaves `dnsdist.conf.new` for you. Watchtower replaces only the Control Plane image, so it is the same safe order. `bootstrap-node.sh` on a new node generates both sides from this version.
 
 ## Query ACL
 - `[acl] allow_query` — CIDRs/IPs allowed to query DNS. **Empty = allow all.**

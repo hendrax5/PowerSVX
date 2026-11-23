@@ -123,6 +123,7 @@ type stack struct {
 type options struct {
 	toml     func(string) string // rewrites the shipped host configuration
 	settings string              // content of data/runtime-settings.json saved by an earlier console session
+	genEnv   []string            // extra environment for gen-dnsdist-conf.sh and gen-unbound-conf.sh
 }
 
 // startStack brings up dnsdist and Unbound. The Control Plane is created but started by
@@ -153,6 +154,7 @@ func startStack(t *testing.T, o options) *stack {
 		"POWERSVX_HOST_MEM_MB=2048",
 		"POWERSVX_CDB_REFRESH_SEC=3", // dnsdist picks up the zone CDB quickly
 	}
+	genEnv = append(genEnv, o.genEnv...)
 	run(t, work, genEnv, "sh", "deploy/linux/gen-dnsdist-conf.sh")
 	if err := os.MkdirAll(filepath.Join(work, "configs", "unbound"), 0o755); err != nil {
 		t.Fatal(err)
