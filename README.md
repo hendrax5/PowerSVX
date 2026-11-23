@@ -32,7 +32,7 @@ git clone https://github.com/hendrax5/PowerSVX.git /home/hendra/powersvx && cd /
 | Area | Capabilities |
 |------|----------------|
 | DNS Dataplane | **Dnsdist (port 53, 1M packet cache, memory-mapped CDB)** + **Unbound (127.0.0.1:5353 multi-threaded recursive backend)** |
-| Performance | **>10k QPS**, kernel `NOTRACK` bypass conntrack, 3M conntrack table, 16MB socket buffers, 4096 NIC ring buffers |
+| Performance | **>10k QPS**, kernel `NOTRACK` bypass conntrack for DNS to the node itself, 3M conntrack table, 16MB socket buffers, 4096 NIC ring buffers |
 | Filter & Policy | Kominfo TrustPositif (seed bootstrap + SOA/IXFR/AXFR delta to per-policy CDB), banks whitelist bypass, RPZ, query ACL, rate-limiting |
 | Authoritative & Slave | Multi-algo DNSSEC (ECDSA/ED25519/RSA) + NSEC3, BIND import/export, Secondary (Slave) RFC 1995 IXFR + AXFR, RFC 2845 TSIG, SOA timers & disk cache |
 | Control & UI | PowerSVX Go `:5380`, scoped API tokens, live SSE query stream, Cache Explorer, Security & Bans, DNS Lookup/Root Trace, EN/ID switcher |

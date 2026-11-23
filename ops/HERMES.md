@@ -30,7 +30,7 @@ For a **brand-new host** (or fresh VPS):
    ```bash
    sudo bash deploy/linux/bootstrap-node.sh
    ```
-   *This automatically installs Docker, applies kernel `NOTRACK` + 3M conntrack hardening, creates random `.env` secrets, auto-sizes Unbound/Dnsdist configs, and spins up the full stack including Grafana on port 3000.*
+   *This automatically installs Docker, applies kernel `NOTRACK` (UDP/53 to the node only) + 3M conntrack hardening, creates random `.env` secrets, auto-sizes Unbound/Dnsdist configs, and spins up the full stack including Grafana on port 3000.*
 
 ## When the user says “deploy” or “update” (Existing Nodes)
 
